@@ -1,0 +1,17 @@
+{
+  "project": "MyProject",
+  "session_name": "myproject-company",
+  "compact_threshold": 50,
+  "skill_index_refresh_interval": 300,
+  "agents": [
+    { "id": "orch",     "engine": "claude", "agent_file": "ceo",                  "label": "Orch" },
+    { "id": "pm",       "engine": "claude", "agent_file": "product-manager",      "label": "PM" },
+    { "id": "design",   "engine": "claude", "agent_file": "ui-ux-designer",       "label": "Design" },
+    { "id": "frontend", "engine": "claude", "agent_file": "frontend-engineer",    "label": "Frontend" },
+    { "id": "fe-qa",    "engine": "claude", "agent_file": "fe-qa",               "label": "FE-QA" },
+    { "id": "backend",  "engine": "claude", "agent_file": "backend-engineer",     "label": "Backend" },
+    { "id": "be-qa",    "engine": "claude", "agent_file": "be-qa",               "label": "BE-QA" },
+    { "id": "marketing","engine": "claude", "agent_file": "marketing-strategist", "label": "Marketing" },
+    { "id": "gemini",   "engine": "gemini", "agent_file": "",                     "label": "Gemini" }
+  ]
+}
