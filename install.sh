@@ -36,24 +36,40 @@ if [ -f "$TARGET_DIR/config.json" ]; then
 fi
 
 # 디렉토리 생성
-mkdir -p "$TARGET_DIR"/{agents,scripts,inbox,outbox,channel,logs,state}
+mkdir -p "$TARGET_DIR"/{agents,scripts,inbox,outbox,channel,logs,state,state/tasks}
 
-# 템플릿 복사
+# 템플릿 복사 — 모든 스크립트 (template 구조와 1:1 대응)
 cp "$TEMPLATE_DIR/run.sh"          "$TARGET_DIR/"
 cp "$TEMPLATE_DIR/stop.sh"         "$TARGET_DIR/"
 cp "$TEMPLATE_DIR/kickoff.sh"      "$TARGET_DIR/"
 cp "$TEMPLATE_DIR/router.sh"       "$TARGET_DIR/"
 cp "$TEMPLATE_DIR/monitor.sh"      "$TARGET_DIR/"
 cp "$TEMPLATE_DIR/setup.sh"        "$TARGET_DIR/"
+cp "$TEMPLATE_DIR/restart-agent.sh" "$TARGET_DIR/"
 cp "$TEMPLATE_DIR/agents/run-agent.sh"  "$TARGET_DIR/agents/"
 cp "$TEMPLATE_DIR/agents/run-gemini.sh" "$TARGET_DIR/agents/"
 cp "$TEMPLATE_DIR/scripts/build-skill-index.sh" "$TARGET_DIR/scripts/"
 cp "$TEMPLATE_DIR/scripts/suggest-skills.sh"    "$TARGET_DIR/scripts/"
 
-# config.json은 없을 때만 복사 (기존 설정 보존)
+# config.json 기본값 항상 복사 (참조용)
+cp "$TEMPLATE_DIR/config.json" "$TARGET_DIR/config.json.default"
+
+# config.json은 없을 때만 복사 (기존 사용자 설정 보존)
 if [ ! -f "$TARGET_DIR/config.json" ]; then
   cp "$TEMPLATE_DIR/config.json" "$TARGET_DIR/"
 fi
+
+# 에이전트 정의 파일 복사 (.claude/agents/ — 기존 파일 보존)
+PROJECT_AGENTS_DIR="$(dirname "$TARGET_DIR")/agents"
+mkdir -p "$PROJECT_AGENTS_DIR"
+for f in "$TEMPLATE_DIR/agents-definitions/"*.md; do
+  [ -f "$f" ] || continue
+  basename_f="$(basename "$f")"
+  if [ ! -f "$PROJECT_AGENTS_DIR/$basename_f" ]; then
+    cp "$f" "$PROJECT_AGENTS_DIR/"
+    echo -e "  에이전트 정의 복사: $basename_f"
+  fi
+done
 
 # 실행 권한
 chmod +x "$TARGET_DIR"/*.sh "$TARGET_DIR/agents/"*.sh "$TARGET_DIR/scripts/"*.sh
