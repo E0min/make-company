@@ -75,6 +75,8 @@ config = {
     "project": project,
     "session_name": session,
     "compact_threshold": threshold,
+    "cost_limit_tokens": 200000,
+    "cost_warning_tokens": 150000,
     "skill_index_refresh_interval": 300,
     "agents": [
         {"id": "orch",     "engine": "claude", "agent_file": "ceo",                "label": "Orch"},

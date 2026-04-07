@@ -30,6 +30,19 @@ set_state() {
   printf '%s %s' "$1" "$(date +%s)" > "${STATE_DIR}/${AGENT_ID}.state.tmp" && \
   mv "${STATE_DIR}/${AGENT_ID}.state.tmp" "${STATE_DIR}/${AGENT_ID}.state"
 }
+
+# mkdir 기반 atomic lock (의존성 없음)
+acquire_lock() {
+  local lockdir="$1.lock.d"
+  local waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    sleep 0.1
+    waited=$((waited + 1))
+    [ $waited -gt 50 ] && return 1
+  done
+  return 0
+}
+release_lock() { rmdir "$1.lock.d" 2>/dev/null; }
 get_ts() { date '+%H:%M:%S'; }
 
 AGENT_UPPER=$(echo "$AGENT_ID" | tr '[:lower:]' '[:upper:]')
@@ -205,13 +218,57 @@ watcher() {
       fi
 
       if [ -n "$response" ]; then
-        printf '%s' "$response" > "$OUTBOX"
-        # 태스크 status 갱신: → done (current_task.txt 기반)
+        # outbox 쓰기에 atomic lock 적용
+        if acquire_lock "$OUTBOX"; then
+          printf '%s' "$response" > "$OUTBOX"
+          release_lock "$OUTBOX"
+        else
+          printf '%s' "$response" > "$OUTBOX"  # fallback
+        fi
+        # 태스크 status 갱신: → done
         _current_task=$(cat "$COMPANY_DIR/state/current_task.txt" 2>/dev/null)
         _task_file="$COMPANY_DIR/state/tasks/${_current_task}.json"
         [ -n "$_current_task" ] && [ -f "$_task_file" ] && \
           sed -i '' 's/"status":"[^"]*"/"status":"done"/' "$_task_file" 2>/dev/null
-        # macOS notification (백그라운드, 실패 무시)
+
+        # ━━━ 비용 추적 (ctx % → 토큰 추정) ━━━
+        _ctx_now=$(get_ctx_pct)
+        _ctx_now="${_ctx_now:-0}"
+        # ctx 1% ≈ 2000 tokens (200K 컨텍스트 기준)
+        _tokens_used=$((_ctx_now * 2000))
+        _cost_file="$COMPANY_DIR/state/cost.json"
+        if acquire_lock "$_cost_file"; then
+          python3 -c "
+import json, sys
+try:
+  with open(sys.argv[1]) as f: data = json.load(f)
+except: data = {}
+agent = sys.argv[2]
+data[agent] = {'tokens': int(sys.argv[3]), 'messages': data.get(agent, {}).get('messages', 0) + 1}
+with open(sys.argv[1], 'w') as f: json.dump(data, f)
+" "$_cost_file" "$AGENT_ID" "$_tokens_used" 2>/dev/null
+          release_lock "$_cost_file"
+        fi
+
+        # 비용 한도 체크
+        _cost_limit=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('cost_limit_tokens',200000))" "$COMPANY_DIR/config.json" 2>/dev/null || echo 200000)
+        # 모든 에이전트의 누적 토큰 합산
+        _total_tokens=$(python3 -c "
+import json, sys
+try:
+  with open(sys.argv[1]) as f: data = json.load(f)
+  print(sum(v.get('tokens', 0) for v in data.values()))
+except: print(0)
+" "$_cost_file" 2>/dev/null || echo 0)
+        if [ "$_total_tokens" -gt "$_cost_limit" ] 2>/dev/null; then
+          set_state "cost-paused"
+          printf '[%s] 💰 비용 한도 초과 (%s/%s tokens) — cost-paused\n' "$(get_ts)" "$_total_tokens" "$_cost_limit"
+          osascript -e "display notification \"비용 한도 초과 — 회사 일시정지\" with title \"Virtual Company\"" 2>/dev/null &
+          sleep 60  # 1분 대기 후 다시 폴링
+          continue
+        fi
+
+        # macOS notification
         osascript -e "display notification \"${AGENT_UPPER} 응답 완료\" with title \"Virtual Company\"" 2>/dev/null &
       fi
       rm -f "$_snap"

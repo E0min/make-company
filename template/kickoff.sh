@@ -57,8 +57,14 @@ SESSION=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['sessi
 # 채널에 태스크 시작 공지
 printf '\n[%s] 🚀 새 태스크: %s\n' "$TS" "$TASK" >> "$CHANNEL"
 
-# Orchestrator inbox에 전달 (atomic: tmp → append → mv 아닌 직접 append — inbox는 watcher가 mv로 읽으므로 안전)
-# 기존 inbox 내용 보존하면서 새 메시지 추가
+# Orchestrator inbox에 전달 (atomic mkdir lock으로 동시 쓰기 보호)
+_lockdir="${INBOX}.lock.d"
+_waited=0
+while ! mkdir "$_lockdir" 2>/dev/null; do
+  sleep 0.1
+  _waited=$((_waited + 1))
+  [ $_waited -gt 50 ] && break
+done
 _kickoff_tmp="${INBOX}.kickoff.$$"
 if [ -s "$INBOX" ]; then
   cp "$INBOX" "$_kickoff_tmp"
@@ -67,6 +73,7 @@ else
 fi
 printf '\n[TEAM-TASK from:human time:%s]\n%s\n' "$TS" "$TASK" >> "$_kickoff_tmp"
 mv "$_kickoff_tmp" "$INBOX"
+rmdir "$_lockdir" 2>/dev/null
 
 echo ""
 echo "  ✅ Orchestrator에게 태스크 전달 완료"

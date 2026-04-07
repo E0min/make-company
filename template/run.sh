@@ -69,7 +69,19 @@ for agent_id in $AGENT_IDS; do
   > "$COMPANY_DIR/inbox/${agent_id}.md"
   > "$COMPANY_DIR/outbox/${agent_id}.md"
   > "$COMPANY_DIR/state/${agent_id}.state"
+  # 페르소나 사칭 방지: 소유자만 읽기/쓰기
+  chmod 600 "$COMPANY_DIR/inbox/${agent_id}.md" "$COMPANY_DIR/outbox/${agent_id}.md" 2>/dev/null
 done
+
+# cost.json 초기화 (Cost Guardrail)
+echo '{}' > "$COMPANY_DIR/state/cost.json"
+chmod 600 "$COMPANY_DIR/state/cost.json" 2>/dev/null
+
+# 잔류 lock 디렉토리 정리
+find "$COMPANY_DIR/inbox" "$COMPANY_DIR/outbox" "$COMPANY_DIR/state" -type d -name "*.lock.d" -exec rmdir {} + 2>/dev/null
+
+# 잔류 restart_count 초기화
+rm -f "$COMPANY_DIR/state/restart_count_"* 2>/dev/null
 
 # crash 후 잔류한 .processing 파일 정리 (메시지 유실 방지)
 for f in "$COMPANY_DIR"/inbox/*.processing.* "$COMPANY_DIR"/outbox/*.processing.*; do

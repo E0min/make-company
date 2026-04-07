@@ -45,6 +45,12 @@ print(agent['engine'] if agent else '')
 
 echo "  $AGENT_ID 재시작 중... (윈도우 $WIN_IDX, 엔진 $ENGINE)"
 
+# restart_count 표시 (자동 복구 추적)
+if [ -f "$COMPANY_DIR/state/restart_count_${AGENT_ID}" ]; then
+  _rc=$(cat "$COMPANY_DIR/state/restart_count_${AGENT_ID}" 2>/dev/null)
+  echo "  재시작 횟수: ${_rc}/3"
+fi
+
 # 기존 pane 강제 종료 후 재생성 (zombie watcher 방지)
 # respawn-pane -k: pane의 모든 프로세스를 kill하고 새 쉘 시작
 tmux respawn-pane -t "${SESSION}:${WIN_IDX}" -k 2>/dev/null

@@ -29,6 +29,19 @@ log() {
   echo "[$ts] $*" | tee -a "$LOG"
 }
 
+# mkdir 기반 atomic lock (의존성 없음)
+acquire_lock() {
+  local lockdir="$1.lock.d"
+  local waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    sleep 0.1
+    waited=$((waited + 1))
+    [ $waited -gt 50 ] && return 1  # 5초 타임아웃
+  done
+  return 0
+}
+release_lock() { rmdir "$1.lock.d" 2>/dev/null; }
+
 route_message() {
   local sender="$1"
   local content="$2"
@@ -56,13 +69,20 @@ route_message() {
     fi
     # 유효한 에이전트인지 확인
     if echo "$AGENTS" | tr ' ' '\n' | grep -qx "$recipient"; then
-      printf '\n[TEAM-MSG from:%s time:%s]\n%s\n' "$sender" "$ts" "$content" >> "$INBOX_DIR/${recipient}.md"
-      log "  $sender -> @$recipient"
-      # 태스크 status 갱신: → routed (current_task.txt 기반)
-      _current_task=$(cat "$COMPANY_DIR/state/current_task.txt" 2>/dev/null)
-      _task_file="$COMPANY_DIR/state/tasks/${_current_task}.json"
-      [ -n "$_current_task" ] && [ -f "$_task_file" ] && \
-        sed -i '' 's/"status":"working"/"status":"routed"/' "$_task_file" 2>/dev/null
+      _target="$INBOX_DIR/${recipient}.md"
+      # atomic lock으로 동시 쓰기 보호
+      if acquire_lock "$_target"; then
+        printf '\n[TEAM-MSG from:%s time:%s]\n%s\n' "$sender" "$ts" "$content" >> "$_target"
+        release_lock "$_target"
+        log "  $sender -> @$recipient"
+        # 태스크 status 갱신: → routed (current_task.txt 기반)
+        _current_task=$(cat "$COMPANY_DIR/state/current_task.txt" 2>/dev/null)
+        _task_file="$COMPANY_DIR/state/tasks/${_current_task}.json"
+        [ -n "$_current_task" ] && [ -f "$_task_file" ] && \
+          sed -i '' 's/"status":"working"/"status":"routed"/' "$_task_file" 2>/dev/null
+      else
+        log "  실패: $recipient inbox 잠금 획득 타임아웃"
+      fi
     else
       log "  경고: $sender가 알 수 없는 에이전트 @$recipient 멘션"
     fi

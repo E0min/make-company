@@ -58,8 +58,10 @@ state_display() {
     working)      printf "${GREEN}● 작업중${NC}" ;;
     done)         printf "${CYAN}✓ 완료${NC}" ;;
     error)        printf "${RED}✗ 오류${NC}" ;;
-    timeout)      printf "${RED}⏱ 타임아웃${NC}" ;;
-    dead)         printf "${RED}💀 죽음${NC}" ;;
+    timeout)             printf "${RED}⏱ 타임아웃${NC}" ;;
+    dead)                printf "${RED}💀 죽음${NC}" ;;
+    cost-paused)         printf "${YELLOW}💰 비용한도${NC}" ;;
+    permanently-failed)  printf "${RED}☠ 영구실패${NC}" ;;
     rate-limited) printf "${YELLOW}⏳ 리밋${NC}" ;;
     compacting)   printf "${MAG}♻ compact${NC}" ;;
     booting)      printf "${YELLOW}⏳ 부팅${NC}" ;;
@@ -109,6 +111,27 @@ print(f'{s} | {t}')
     state_line=$(get_state "$agent_id")
     state=$(echo "$state_line" | awk '{print $1}')
     state_ts=$(echo "$state_line" | awk '{print $2}')
+
+    # ━━━ 자동 복구: dead 감지 시 자동 restart (3회 상한) ━━━
+    if [ "$state" = "dead" ]; then
+      restart_file="$STATE_DIR/restart_count_${agent_id}"
+      restart_count=$(cat "$restart_file" 2>/dev/null || echo 0)
+      if [ "$restart_count" -lt 3 ] 2>/dev/null; then
+        restart_count=$((restart_count + 1))
+        echo "$restart_count" > "$restart_file"
+        # 백그라운드로 restart (모니터 블로킹 방지)
+        (bash "$COMPANY_DIR/restart-agent.sh" "$agent_id" >/dev/null 2>&1 &)
+      else
+        # 3회 초과 → 영구 실패
+        printf 'permanently-failed %s' "$(date +%s)" > "$STATE_DIR/${agent_id}.state.tmp" 2>/dev/null && \
+        mv "$STATE_DIR/${agent_id}.state.tmp" "$STATE_DIR/${agent_id}.state" 2>/dev/null
+        state="permanently-failed"
+      fi
+    fi
+    # 정상 응답 후(working/idle) restart_count 초기화
+    if [ "$state" = "idle" ] || [ "$state" = "working" ]; then
+      rm -f "$STATE_DIR/restart_count_${agent_id}" 2>/dev/null
+    fi
     # 경과 시간 계산
     elapsed=""
     if [ -n "$state_ts" ] && [ "$state_ts" != "0" ] 2>/dev/null; then
@@ -131,9 +154,23 @@ print(f'{s} | {t}')
     if [ "$inbox_size" -gt 0 ] 2>/dev/null; then
       inbox_display="📨"
     fi
+    # 비용 표시 (state/cost.json에서 읽기)
+    cost_display=""
+    if [ -f "$COMPANY_DIR/state/cost.json" ]; then
+      cost_display=$(python3 -c "
+import json, sys
+try:
+  d = json.load(open(sys.argv[1]))
+  t = d.get(sys.argv[2], {}).get('tokens', 0)
+  if t >= 1000: print(f'{t//1000}K')
+  elif t > 0: print(str(t))
+  else: print('')
+except: print('')
+" "$COMPANY_DIR/state/cost.json" "$agent_id" 2>/dev/null)
+    fi
     printf "  ${BOLD}║${NC} %-14s %-8s " "$label" "$engine"
     state_display "$state"
-    printf " %-4s %2s%*s${BOLD}║${NC}\n" "$elapsed" "$inbox_display" 10 ""
+    printf " %-4s %-5s %2s%*s${BOLD}║${NC}\n" "$elapsed" "$cost_display" "$inbox_display" 4 ""
   done
 
   hline

@@ -17,6 +17,19 @@ set_state() {
   printf '%s %s' "$1" "$(date +%s)" > "${STATE_DIR}/gemini.state.tmp" && \
   mv "${STATE_DIR}/gemini.state.tmp" "${STATE_DIR}/gemini.state"
 }
+
+# mkdir 기반 atomic lock
+acquire_lock() {
+  local lockdir="$1.lock.d"
+  local waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    sleep 0.1
+    waited=$((waited + 1))
+    [ $waited -gt 50 ] && return 1
+  done
+  return 0
+}
+release_lock() { rmdir "$1.lock.d" 2>/dev/null; }
 get_ts() { date '+%H:%M:%S'; }
 
 # 현재 pane ID — $TMUX_PANE 우선 사용
@@ -119,7 +132,12 @@ watcher() {
       fi
 
       if [ -n "$response" ]; then
-        printf '%s' "$response" > "$OUTBOX"
+        if acquire_lock "$OUTBOX"; then
+          printf '%s' "$response" > "$OUTBOX"
+          release_lock "$OUTBOX"
+        else
+          printf '%s' "$response" > "$OUTBOX"
+        fi
       fi
       rm -f "$_snap"
 
