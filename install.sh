@@ -106,6 +106,7 @@ if [ ! -f "$TARGET_DIR/config.json" ]; then
   echo "    4) 📝 Content Marketing     - 콘텐츠 마케팅 팀"
   echo "    5) 📊 Data Team             - 데이터 팀"
   echo "    6) 👤 Solo Developer        - 1인 개발자"
+  echo "    7) ✏  Custom               - 직접 라이브러리에서 고르기"
   echo ""
   printf "  선택 [1]: "
   read -r preset_num
@@ -116,12 +117,66 @@ if [ ! -f "$TARGET_DIR/config.json" ]; then
     4) PRESET="content-marketing" ;;
     5) PRESET="data-team" ;;
     6) PRESET="solo-developer" ;;
+    7) PRESET="__custom__" ;;
     *) PRESET="default" ;;
   esac
 
-  echo ""
-  echo -e "  ${CYAN}프리셋 적용 중: $PRESET${NC}"
-  bash "$TEMPLATE_DIR/scripts/build-from-preset.sh" "$PRESET" "$TARGET_DIR" "$PROJECT_AGENTS_DIR"
+  if [ "$PRESET" = "__custom__" ]; then
+    echo ""
+    echo -e "  ${BOLD}라이브러리 에이전트 (카테고리/파일):${NC}"
+    cd "$TEMPLATE_DIR/agents-library"
+    for cat in */; do
+      cat_name=$(basename "$cat")
+      echo "  📁 $cat_name"
+      for f in "$cat"*.md; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f" .md)
+        echo "      ${cat_name}/${name}"
+      done
+    done
+    cd - >/dev/null
+    echo ""
+    echo "  사용할 에이전트를 콤마로 구분 입력 (예: leadership/ceo,product/product-manager,external/gemini)"
+    printf "  입력: "
+    read -r custom_input
+    if [ -z "$custom_input" ]; then
+      echo "  ⚠ 입력 없음, default 프리셋으로 진행"
+      bash "$TEMPLATE_DIR/scripts/build-from-preset.sh" default "$TARGET_DIR" "$PROJECT_AGENTS_DIR"
+    else
+      # 임시 custom 프리셋 생성
+      _custom_file="$TARGET_DIR/presets/__custom__.json"
+      mkdir -p "$TARGET_DIR/presets"
+      python3 -c "
+import json, sys
+paths = [p.strip() for p in sys.argv[1].split(',') if p.strip()]
+agents = []
+for p in paths:
+    aid = p.split('/')[-1].replace('-engineer', '').replace('-manager', '').replace('-strategist', '')
+    if aid in [a['id'] for a in agents]:
+        aid = p.split('/')[-1].replace('/', '-')
+    engine = 'gemini' if p == 'external/gemini' else 'claude'
+    agents.append({'library_path': p, 'id': aid, 'engine': engine, 'protected': aid == 'orch'})
+# 첫 에이전트를 orch로
+if agents and agents[0]['id'] != 'orch':
+    agents[0]['id'] = 'orch'
+    agents[0]['protected'] = True
+preset = {
+    'id': 'custom',
+    'name': 'Custom',
+    'description': '사용자 정의 회사',
+    'icon': '✏️',
+    'agents': agents,
+}
+with open(sys.argv[2], 'w') as f:
+    json.dump(preset, f, ensure_ascii=False, indent=2)
+" "$custom_input" "$_custom_file"
+      bash "$TEMPLATE_DIR/scripts/build-from-preset.sh" "__custom__" "$TARGET_DIR" "$PROJECT_AGENTS_DIR"
+    fi
+  else
+    echo ""
+    echo -e "  ${CYAN}프리셋 적용 중: $PRESET${NC}"
+    bash "$TEMPLATE_DIR/scripts/build-from-preset.sh" "$PRESET" "$TARGET_DIR" "$PROJECT_AGENTS_DIR"
+  fi
 else
   echo -e "  ${CYAN}기존 config.json 보존${NC}"
 fi

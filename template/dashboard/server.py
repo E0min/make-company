@@ -220,6 +220,173 @@ def read_skills():
         return {"skills": [{"name": s.get('name'), "desc": s.get('desc', '')[:60]} for s in data]}
     except: return {"skills": []}
 
+def parse_md_frontmatter(text):
+    """간단한 frontmatter 파서"""
+    if not text.startswith('---'):
+        return {}
+    end = text.find('---', 3)
+    if end == -1:
+        return {}
+    fm_text = text[3:end].strip()
+    meta = {}
+    for line in fm_text.split('\n'):
+        if ':' in line and not line.startswith(' '):
+            k, _, v = line.partition(':')
+            meta[k.strip()] = v.strip()
+    return meta
+
+def read_library():
+    """agents-library/ 에이전트 카탈로그"""
+    lib_dir = os.path.join(COMPANY_DIR, 'agents-library')
+    if not os.path.isdir(lib_dir):
+        return {"library": [], "categories": []}
+    items = []
+    cats = set()
+    for category in sorted(os.listdir(lib_dir)):
+        catdir = os.path.join(lib_dir, category)
+        if not os.path.isdir(catdir):
+            continue
+        cats.add(category)
+        for fname in sorted(os.listdir(catdir)):
+            if not fname.endswith('.md'):
+                continue
+            path = os.path.join(catdir, fname)
+            try:
+                with open(path) as f:
+                    text = f.read()
+                meta = parse_md_frontmatter(text)
+                items.append({
+                    "library_path": f"{category}/{fname[:-3]}",
+                    "category": category,
+                    "name": meta.get('name', fname[:-3]),
+                    "default_label": meta.get('default_label', ''),
+                    "description": meta.get('description', ''),
+                    "default_skills": meta.get('default_skills', '[]'),
+                })
+            except: pass
+    return {"library": items, "categories": sorted(cats)}
+
+def read_presets():
+    """presets/*.json 목록"""
+    pdir = os.path.join(COMPANY_DIR, 'presets')
+    if not os.path.isdir(pdir):
+        return {"presets": []}
+    items = []
+    for fname in sorted(os.listdir(pdir)):
+        if not fname.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(pdir, fname)) as f:
+                p = json.load(f)
+            items.append({
+                "id": p.get('id'),
+                "name": p.get('name'),
+                "icon": p.get('icon', '🏢'),
+                "description": p.get('description', ''),
+                "agent_count": len(p.get('agents', [])),
+            })
+        except: pass
+    return {"presets": items}
+
+def add_agent_from_library(library_path, custom_id=None, custom_label=None, if_match=None):
+    """라이브러리에서 에이전트를 가져와 활성화"""
+    lib_file = os.path.join(COMPANY_DIR, 'agents-library', f"{library_path}.md")
+    if not os.path.exists(lib_file):
+        return False, f"library not found: {library_path}"
+
+    with open(lib_file) as f:
+        md_text = f.read()
+    meta = parse_md_frontmatter(md_text)
+
+    aid = (custom_id or library_path.split('/')[-1]).strip().lower()
+    label = custom_label or meta.get('default_label') or aid
+    engine = 'gemini' if library_path == 'external/gemini' else 'claude'
+
+    # default_skills 파싱
+    import re
+    skills_str = meta.get('default_skills', '[]').strip()
+    skills = []
+    m = re.match(r'^\[(.*)\]$', skills_str)
+    if m:
+        skills = [s.strip() for s in m.group(1).split(',') if s.strip()]
+
+    # create_agent 호출 (재사용)
+    body = {
+        "id": aid,
+        "label": label,
+        "engine": engine,
+        "agent_file": aid,
+        "description": meta.get('description', ''),
+        "role_body": "",
+        "skills": skills,
+    }
+    # role body는 라이브러리 .md를 그대로 사용
+    ok, result = create_agent(body, if_match)
+    if not ok:
+        return ok, result
+
+    # 라이브러리 .md를 .claude/agents/{aid}.md로 덮어쓰기 (frontmatter 제외, 본문만)
+    claude_dir = os.path.dirname(COMPANY_DIR)
+    md_path = os.path.join(claude_dir, 'agents', f"{aid}.md")
+    try:
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(md_text)
+    except: pass
+
+    return True, result
+
+def export_current_as_preset(preset_id, name, description, icon='🏢'):
+    """현재 config의 에이전트를 프리셋 JSON으로 export"""
+    if not os.path.exists(CONFIG_PATH):
+        return False, "config not found"
+    with open(CONFIG_PATH) as f:
+        config = json.load(f)
+
+    # 라이브러리에서 역매핑 (agent_file 기반)
+    lib_dir = os.path.join(COMPANY_DIR, 'agents-library')
+    file_to_path = {}
+    if os.path.isdir(lib_dir):
+        for cat in os.listdir(lib_dir):
+            catdir = os.path.join(lib_dir, cat)
+            if not os.path.isdir(catdir): continue
+            for f in os.listdir(catdir):
+                if f.endswith('.md'):
+                    file_to_path[f[:-3]] = f"{cat}/{f[:-3]}"
+
+    agents = []
+    for a in config.get('agents', []):
+        af = a.get('agent_file', a['id'])
+        # 라이브러리에서 매칭, 없으면 leadership/ceo로 fallback
+        lib_path = file_to_path.get(af, file_to_path.get(a['id'], 'leadership/ceo'))
+        agents.append({
+            "library_path": lib_path,
+            "id": a['id'],
+            "label": a.get('label', a['id']),
+            "protected": a.get('protected', False),
+            **({"engine": "gemini"} if a.get('engine') == 'gemini' else {}),
+        })
+
+    preset = {
+        "id": preset_id,
+        "name": name,
+        "description": description,
+        "icon": icon,
+        "agents": agents,
+    }
+
+    out_path = os.path.join(COMPANY_DIR, 'presets', f"{preset_id}.json")
+    if not acquire_lock(out_path):
+        return False, "lock timeout"
+    try:
+        tmp = out_path + ".tmp"
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(preset, f, ensure_ascii=False, indent=2)
+        os.rename(tmp, out_path)
+    finally:
+        release_lock(out_path)
+
+    return True, {"file": f"{preset_id}.json", "preset": preset}
+
 # ━━━ Mutations (POST) ━━━
 RESERVED_AGENT_IDS = {'human', 'system', 'router', 'monitor', 'dashboard', 'admin', 'orch'}
 
@@ -597,6 +764,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(read_knowledge())
         elif path == '/api/skills':
             self._send_json(read_skills())
+        elif path == '/api/library':
+            self._send_json(read_library())
+        elif path == '/api/presets':
+            self._send_json(read_presets())
         elif path.startswith('/api/workflows/template/'):
             wf_file = path.split('/')[-1]
             wf = get_workflow_template(wf_file)
@@ -629,6 +800,23 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/agents/create':
             ok, result = create_agent(body, if_match)
             if not ok and conflict_response(result): return
+            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
+        elif path == '/api/agents/from-library':
+            ok, result = add_agent_from_library(
+                body.get('library_path', ''),
+                body.get('id'),
+                body.get('label'),
+                if_match
+            )
+            if not ok and conflict_response(result): return
+            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
+        elif path == '/api/presets/export':
+            ok, result = export_current_as_preset(
+                body.get('id', 'my-preset'),
+                body.get('name', 'My Preset'),
+                body.get('description', ''),
+                body.get('icon', '🏢'),
+            )
             self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
         elif path.startswith('/api/agents/') and path.endswith('/delete'):
             aid = path.split('/')[3]

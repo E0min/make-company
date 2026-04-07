@@ -225,6 +225,11 @@ function setupModalHandlers() {
   document.getElementById('btn-pause').addEventListener('click', () => api('/api/pause', { method: 'POST' }));
   document.getElementById('btn-resume').addEventListener('click', () => api('/api/resume', { method: 'POST' }));
 
+  // Preset Export
+  document.getElementById('btn-export-preset').addEventListener('click', openExportPresetModal);
+  document.getElementById('btn-cancel-preset').addEventListener('click', () => closeModal('modal-export-preset'));
+  document.getElementById('btn-save-preset').addEventListener('click', saveCurrentAsPreset);
+
   // Workflow Builder
   document.getElementById('btn-new-workflow').addEventListener('click', () => openBuilderModal(null));
   document.getElementById('btn-cancel-builder').addEventListener('click', () => closeModal('modal-builder'));
@@ -405,7 +410,26 @@ async function saveWorkflow(thenRun) {
   poll();
 }
 
+let SELECTED_LIBRARY_PATH = null;
+let LIBRARY_DATA = null;
+
 async function openNewAgentModal() {
+  // 모드 탭 설정
+  document.querySelectorAll('.mode-tab').forEach(tab => {
+    tab.onclick = () => switchAgentMode(tab.dataset.mode);
+  });
+  switchAgentMode('library');
+
+  // 라이브러리 로드
+  LIBRARY_DATA = await api('/api/library');
+  renderLibraryList('');
+  // 카테고리 필터
+  const filter = document.getElementById('library-category-filter');
+  filter.innerHTML = '<option value="">전체</option>' +
+    (LIBRARY_DATA.categories || []).map(c => `<option value="${escape(c)}">${escape(c)}</option>`).join('');
+  filter.onchange = (e) => renderLibraryList(e.target.value);
+
+  // Custom 모드용 스킬 체크박스
   const skills = (await api('/api/skills')).skills || [];
   const container = document.getElementById('agent-skills-checkboxes');
   container.innerHTML = '<h4>할당할 스킬 (선택)</h4>';
@@ -417,10 +441,103 @@ async function openNewAgentModal() {
     grid.appendChild(lbl);
   }
   container.appendChild(grid);
+
   document.getElementById('modal-agent').classList.add('show');
 }
 
+function switchAgentMode(mode) {
+  document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+  document.querySelectorAll('.agent-mode-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(`agent-mode-${mode}`).classList.add('active');
+}
+
+function openExportPresetModal() {
+  document.getElementById('preset-id').value = '';
+  document.getElementById('preset-name').value = '';
+  document.getElementById('preset-description').value = '';
+  document.getElementById('preset-icon').value = '🏢';
+  document.getElementById('modal-export-preset').classList.add('show');
+}
+
+async function saveCurrentAsPreset() {
+  const body = {
+    id: document.getElementById('preset-id').value.trim(),
+    name: document.getElementById('preset-name').value.trim(),
+    description: document.getElementById('preset-description').value.trim(),
+    icon: document.getElementById('preset-icon').value.trim() || '🏢',
+  };
+  if (!body.id || !body.name) {
+    alert('ID와 이름은 필수입니다');
+    return;
+  }
+  const res = await api('/api/presets/export', { method: 'POST', body: JSON.stringify(body) });
+  if (res.ok) {
+    closeModal('modal-export-preset');
+    alert(`✓ 프리셋 저장: ${res.result.file}\n\n다음 install.sh부터 선택 가능합니다.`);
+  } else {
+    alert('실패: ' + (res.result || 'unknown'));
+  }
+}
+
+function renderLibraryList(categoryFilter) {
+  const container = document.getElementById('library-list');
+  container.innerHTML = '';
+  SELECTED_LIBRARY_PATH = null;
+  const items = (LIBRARY_DATA?.library || []).filter(it =>
+    !categoryFilter || it.category === categoryFilter
+  );
+  // 이미 활성화된 에이전트는 제외 (agent_file 기준)
+  const activeFiles = new Set(CACHED_AGENTS.map(a => a.agent_file));
+  for (const it of items) {
+    const isActive = activeFiles.has(it.library_path.split('/').pop());
+    const card = document.createElement('div');
+    card.className = 'library-card';
+    if (isActive) {
+      card.style.opacity = '0.4';
+      card.style.cursor = 'not-allowed';
+    }
+    card.innerHTML = `
+      <div class="library-card-header">
+        <span class="lib-name">${escape(it.name)}</span>
+        <span class="lib-category">${escape(it.category)}</span>
+      </div>
+      <div class="lib-desc">${escape(it.description)}</div>
+      ${isActive ? '<div style="margin-top:4px;font-size:10px;color:var(--green);">✓ 이미 활성화됨</div>' : ''}
+    `;
+    if (!isActive) {
+      card.onclick = () => {
+        document.querySelectorAll('.library-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        SELECTED_LIBRARY_PATH = it.library_path;
+      };
+    }
+    container.appendChild(card);
+  }
+}
+
 async function createAgent() {
+  // 라이브러리 모드인지 Custom 모드인지 확인
+  const libraryActive = document.getElementById('agent-mode-library').classList.contains('active');
+
+  if (libraryActive) {
+    if (!SELECTED_LIBRARY_PATH) {
+      alert('라이브러리에서 에이전트를 선택해주세요');
+      return;
+    }
+    closeModal('modal-agent');
+    const res = await api('/api/agents/from-library', {
+      method: 'POST',
+      body: JSON.stringify({ library_path: SELECTED_LIBRARY_PATH })
+    });
+    if (res.ok) {
+      poll();
+    } else if (!res.conflict) {
+      alert('실패: ' + (res.result || 'unknown'));
+    }
+    return;
+  }
+
+  // Custom 모드
   const skills = Array.from(
     document.querySelectorAll('#agent-skills-checkboxes input:checked')
   ).map(i => i.value);

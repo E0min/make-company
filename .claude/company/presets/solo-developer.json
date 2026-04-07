@@ -1,0 +1,12 @@
+{
+  "id": "solo-developer",
+  "name": "Solo Developer",
+  "description": "1인 개발자 부스트 (CEO + Fullstack + Designer + Gemini)",
+  "icon": "👤",
+  "agents": [
+    {"library_path": "leadership/ceo",                    "id": "orch",     "label": "CEO",       "protected": true},
+    {"library_path": "engineering/fullstack-engineer",    "id": "dev",      "label": "Dev"},
+    {"library_path": "design/ui-designer",                "id": "design",   "label": "Design"},
+    {"library_path": "external/gemini",                   "id": "gemini",   "label": "Gemini",    "engine": "gemini"}
+  ]
+}
