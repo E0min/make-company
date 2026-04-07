@@ -28,9 +28,17 @@ strip_ansi() {
 
 is_ready() {
   local pane_content
-  pane_content=$(tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -v '^$' | tail -5)
-  # Gemini 프롬프트: ❯, $ 또는 Gemini 표시
-  echo "$pane_content" | grep -qE '❯|Gemini\s*>'
+  pane_content=$(tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -v '^$' | tail -15)
+  # Gemini 실행 중 표시가 있으면 ready 아님 (대소문자 모두)
+  if echo "$pane_content" | grep -qiE 'esc to cancel|esc to interrupt|Loading|Thinking|Investigating|Processing|Reading file|Listing files'; then
+    return 1
+  fi
+  # 진행 인디케이터 (스피너) 패턴
+  if echo "$pane_content" | grep -qE '⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏'; then
+    return 1
+  fi
+  # 빈 입력박스 = "Type your message" 텍스트가 보이면 ready
+  echo "$pane_content" | grep -q 'Type your message'
 }
 
 watcher() {
@@ -62,7 +70,10 @@ watcher() {
 
       local flat
       flat=$(printf '%s' "$msg" | tr '\n' ' ' | sed 's/  */ /g')
-      tmux send-keys -t "$PANE_ID" "$flat" Enter
+      # Gemini CLI는 빠른 키 입력을 multi-line으로 해석할 수 있음 — literal + 분리 Enter
+      tmux send-keys -t "$PANE_ID" -l "$flat"
+      sleep 1
+      tmux send-keys -t "$PANE_ID" C-m
 
       # 응답 완료 대기: is_ready() + scrollback 변화 없음
       sleep 10
@@ -97,12 +108,13 @@ watcher() {
       msg_line_num=$(grep -nF -- "$msg_marker" "$_snap" 2>/dev/null | tail -1 | cut -d: -f1)
 
       if [ -n "$msg_line_num" ]; then
-        # 메시지 마커 이후의 내용에서 프롬프트 전까지 추출
+        # 메시지 마커 이후의 내용에서 입력박스 전까지 추출
         local start_line=$((msg_line_num + 1))
         response=$(sed -n "${start_line},\$p" "$_snap" | \
-          sed '/^❯/,$d' | \
-          grep -v '^─' | \
-          grep -v 'Gemini\s*>' | \
+          sed '/Type your message/,$d' | \
+          grep -v '^─\|^╭\|^│\|^╰' | \
+          grep -v 'YOLO Ctrl\|workspace\|sandbox\|MCP server' | \
+          grep -v '^\s*$' | \
           sed '/^$/N;/^\n$/d')
       fi
 
