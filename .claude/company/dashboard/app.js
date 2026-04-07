@@ -7,11 +7,26 @@ let WORKFLOW_TEMPLATES = [];
 let BUILDER_NODES = [];
 let BUILDER_EDIT_FILE = null;
 let CACHED_AGENTS = [];
+let CONFIG_ETAG = null;  // Lost Update 방지용 (서버 응답 ETag 헤더에서 추출)
 
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json' };
-  if (opts.method && opts.method !== 'GET' && TOKEN) headers['X-Token'] = TOKEN;
+  if (opts.method && opts.method !== 'GET' && TOKEN) {
+    headers['X-Token'] = TOKEN;
+    // POST에 If-Match 헤더 자동 추가 (Lost Update 방지)
+    if (CONFIG_ETAG) headers['X-If-Match'] = CONFIG_ETAG;
+  }
   const res = await fetch(path, { ...opts, headers });
+  // GET 응답의 ETag 헤더 캐시
+  const newEtag = res.headers.get('ETag');
+  if (newEtag) CONFIG_ETAG = newEtag;
+  // 409 충돌 처리
+  if (res.status === 409) {
+    const data = await res.json();
+    alert('⚠ 충돌: ' + (data.result || '다른 곳에서 수정됨'));
+    poll();  // 즉시 재로드
+    return { ok: false, conflict: true, result: data.result };
+  }
   return res.json();
 }
 
@@ -422,22 +437,53 @@ async function createAgent() {
     alert('id와 label은 필수입니다');
     return;
   }
+
+  // Optimistic UI: 모달 즉시 닫고 임시 카드 표시
+  closeModal('modal-agent');
+  const cards = document.getElementById('agents-cards');
+  const tempCard = document.createElement('div');
+  tempCard.className = 'agent-card';
+  tempCard.style.opacity = '0.5';
+  tempCard.id = `temp-agent-${body.id}`;
+  tempCard.innerHTML = `
+    <div class="agent-card-header">
+      <strong>${escape(body.label)}</strong>
+      <span class="agent-engine">${escape(body.engine)} (생성 중...)</span>
+    </div>
+    <div class="agent-meta">id: ${escape(body.id)}</div>
+  `;
+  cards.appendChild(tempCard);
+
   const res = await api('/api/agents/create', { method: 'POST', body: JSON.stringify(body) });
   if (res.ok) {
-    closeModal('modal-agent');
-    poll();
-    alert('에이전트 생성 완료: ' + body.id);
+    poll();  // 실제 데이터로 교체
   } else {
-    alert('실패: ' + (res.result || 'unknown error'));
+    // Rollback
+    tempCard.remove();
+    if (!res.conflict) alert('실패: ' + (res.result || 'unknown error'));
   }
 }
 
 async function handleAgentAction(action, aid) {
   if (action === 'delete') {
     if (!confirm(`에이전트 ${aid}를 삭제하시겠습니까?`)) return;
+    // Optimistic UI: 즉시 카드 숨김
+    const card = document.querySelector(`.agent-card [data-id="${aid}"]`)?.closest('.agent-card');
+    if (card) {
+      card.style.opacity = '0.4';
+      card.style.pointerEvents = 'none';
+    }
     const res = await api(`/api/agents/${aid}/delete`, { method: 'POST', body: '{}' });
-    if (res.ok) poll();
-    else alert('삭제 실패: ' + res.result);
+    if (res.ok) {
+      poll();
+    } else {
+      // Rollback
+      if (card) {
+        card.style.opacity = '';
+        card.style.pointerEvents = '';
+      }
+      if (!res.conflict) alert('삭제 실패: ' + res.result);
+    }
   } else if (action === 'skills') {
     openSkillsModal(aid);
   }

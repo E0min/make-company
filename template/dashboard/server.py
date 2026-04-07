@@ -6,9 +6,12 @@ Virtual Company Dashboard Server (의존성 0)
 - CSRF: dashboard_token.txt + X-Token 헤더
 - Atomic mkdir lock (Bash와 호환)
 """
-import os, sys, json, time, uuid, subprocess
+import os, sys, json, time, uuid, subprocess, signal, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+# 작업 큐 직렬화: 모든 config.json 쓰기는 이 락으로 직렬화
+CONFIG_LOCK = threading.Lock()
 
 COMPANY_DIR = os.path.dirname(os.path.abspath(__file__)).rsplit('/dashboard', 1)[0]
 DASHBOARD_DIR = os.path.join(COMPANY_DIR, 'dashboard')
@@ -50,6 +53,28 @@ def atomic_write_json(path, data):
         return True
     finally:
         release_lock(path)
+
+def get_config_etag():
+    """config.json의 mtime을 ETag로 사용 (정수 초)"""
+    if not os.path.exists(CONFIG_PATH):
+        return "0"
+    return str(int(os.path.getmtime(CONFIG_PATH)))
+
+def signal_reload():
+    """router.sh와 dag-scheduler.sh에 SIGHUP 전송 → 즉시 config 재로드"""
+    try:
+        # pgrep 패턴으로 프로세스 찾기
+        for script in ['router.sh', 'dag-scheduler.sh']:
+            r = subprocess.run(['pgrep', '-f', f'{COMPANY_DIR}/{script}'],
+                               capture_output=True, text=True)
+            for pid in r.stdout.strip().split('\n'):
+                if pid:
+                    try:
+                        os.kill(int(pid), signal.SIGHUP)
+                    except (ProcessLookupError, ValueError):
+                        pass
+    except Exception:
+        pass
 
 # ━━━ Token (CSRF) ━━━
 def get_or_create_token():
@@ -196,37 +221,49 @@ def read_skills():
     except: return {"skills": []}
 
 # ━━━ Mutations (POST) ━━━
-def create_agent(body):
+RESERVED_AGENT_IDS = {'human', 'system', 'router', 'monitor', 'dashboard', 'admin', 'orch'}
+
+def create_agent(body, if_match=None):
     """body: {id, label, engine, agent_file, description, role_body, skills}"""
-    aid = body.get('id', '').strip()
+    aid = body.get('id', '').strip().lower()
     if not aid or not aid.replace('-', '').replace('_', '').isalnum():
-        return False, "invalid id"
+        return False, "invalid id (영문/숫자/-/_ 만 허용)"
+    if aid in RESERVED_AGENT_IDS:
+        return False, f"reserved id: {aid}"
+    if len(aid) < 2 or len(aid) > 30:
+        return False, "id length must be 2-30"
     label = body.get('label', aid)
     engine = body.get('engine', 'claude')
+    if engine not in ('claude', 'gemini'):
+        return False, "engine must be claude or gemini"
     agent_file = body.get('agent_file', aid)
     description = body.get('description', f'{label} 에이전트')
     role_body = body.get('role_body', f'당신은 {label} 에이전트입니다.')
     skills = body.get('skills', [])
 
-    # 1. config.json에 추가
-    if not acquire_lock(CONFIG_PATH):
-        return False, "config lock timeout"
-    try:
-        with open(CONFIG_PATH) as f:
-            config = json.load(f)
-        if any(a['id'] == aid for a in config.get('agents', [])):
-            return False, "agent id already exists"
-        new_agent = {
-            "id": aid, "engine": engine, "agent_file": agent_file,
-            "label": label, "assigned_skills": skills, "protected": False
-        }
-        config.setdefault('agents', []).append(new_agent)
-        tmp = CONFIG_PATH + ".tmp"
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        os.rename(tmp, CONFIG_PATH)
-    finally:
-        release_lock(CONFIG_PATH)
+    # 1. config.json에 추가 (작업 큐 직렬화 + 파일 락 + ETag 검증)
+    with CONFIG_LOCK:
+        # ETag 검증 (Lost Update 방지)
+        if if_match is not None and if_match != get_config_etag():
+            return False, "conflict_409"
+        if not acquire_lock(CONFIG_PATH):
+            return False, "config lock timeout"
+        try:
+            with open(CONFIG_PATH) as f:
+                config = json.load(f)
+            if any(a['id'] == aid for a in config.get('agents', [])):
+                return False, "agent id already exists"
+            new_agent = {
+                "id": aid, "engine": engine, "agent_file": agent_file,
+                "label": label, "assigned_skills": skills, "protected": False
+            }
+            config.setdefault('agents', []).append(new_agent)
+            tmp = CONFIG_PATH + ".tmp"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            os.rename(tmp, CONFIG_PATH)
+        finally:
+            release_lock(CONFIG_PATH)
 
     # 2. .claude/agents/{agent_file}.md 생성
     project_root = os.path.dirname(os.path.dirname(COMPANY_DIR))
@@ -272,26 +309,34 @@ recommended-skills: [{skills_str}]
                                 cmd, 'Enter'], capture_output=True)
         except: pass
 
-    return True, {"id": aid, "agent_file": agent_file}
+    # 4. router/scheduler에 SIGHUP → 즉시 재로드 (30초 폴링 대기 없음)
+    signal_reload()
 
-def delete_agent(aid):
-    if not acquire_lock(CONFIG_PATH):
-        return False, "config lock timeout"
-    try:
-        with open(CONFIG_PATH) as f:
-            config = json.load(f)
-        target = next((a for a in config.get('agents', []) if a['id'] == aid), None)
-        if not target:
-            return False, "not found"
-        if target.get('protected'):
-            return False, "protected agent — 삭제 불가"
-        config['agents'] = [a for a in config['agents'] if a['id'] != aid]
-        tmp = CONFIG_PATH + ".tmp"
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        os.rename(tmp, CONFIG_PATH)
-    finally:
-        release_lock(CONFIG_PATH)
+    return True, {"id": aid, "agent_file": agent_file, "etag": get_config_etag()}
+
+def delete_agent(aid, if_match=None):
+    target = None
+    config = None
+    with CONFIG_LOCK:
+        if if_match is not None and if_match != get_config_etag():
+            return False, "conflict_409"
+        if not acquire_lock(CONFIG_PATH):
+            return False, "config lock timeout"
+        try:
+            with open(CONFIG_PATH) as f:
+                config = json.load(f)
+            target = next((a for a in config.get('agents', []) if a['id'] == aid), None)
+            if not target:
+                return False, "not found"
+            if target.get('protected'):
+                return False, "protected agent — 삭제 불가"
+            config['agents'] = [a for a in config['agents'] if a['id'] != aid]
+            tmp = CONFIG_PATH + ".tmp"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            os.rename(tmp, CONFIG_PATH)
+        finally:
+            release_lock(CONFIG_PATH)
 
     # tmux 윈도우 종료
     session_name = config.get('session_name', '')
@@ -301,25 +346,32 @@ def delete_agent(aid):
                            capture_output=True)
         except: pass
 
-    return True, {"deleted": aid}
+    signal_reload()
+    return True, {"deleted": aid, "etag": get_config_etag()}
 
-def assign_skills(aid, skills):
-    if not acquire_lock(CONFIG_PATH):
-        return False, "config lock timeout"
-    try:
-        with open(CONFIG_PATH) as f:
-            config = json.load(f)
-        target = next((a for a in config.get('agents', []) if a['id'] == aid), None)
-        if not target:
-            return False, "not found"
-        target['assigned_skills'] = skills
-        tmp = CONFIG_PATH + ".tmp"
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        os.rename(tmp, CONFIG_PATH)
-    finally:
-        release_lock(CONFIG_PATH)
-    return True, {"skills": skills}
+def assign_skills(aid, skills, if_match=None):
+    if not isinstance(skills, list):
+        return False, "skills must be array"
+    with CONFIG_LOCK:
+        if if_match is not None and if_match != get_config_etag():
+            return False, "conflict_409"
+        if not acquire_lock(CONFIG_PATH):
+            return False, "config lock timeout"
+        try:
+            with open(CONFIG_PATH) as f:
+                config = json.load(f)
+            target = next((a for a in config.get('agents', []) if a['id'] == aid), None)
+            if not target:
+                return False, "not found"
+            target['assigned_skills'] = skills
+            tmp = CONFIG_PATH + ".tmp"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            os.rename(tmp, CONFIG_PATH)
+        finally:
+            release_lock(CONFIG_PATH)
+    signal_reload()
+    return True, {"skills": skills, "etag": get_config_etag()}
 
 def run_workflow(wf_file, user_request):
     """workflows/{wf_file} → kickoff.sh --dag 호출"""
@@ -336,29 +388,78 @@ def run_workflow(wf_file, user_request):
 def create_workflow(body):
     """워크플로 빌더가 생성한 JSON을 workflows/에 저장
     body: {workflow_id, title, nodes: [{id, agent, input_template, depends_on, on_failure}]}"""
+    import re
     wf_id = body.get('workflow_id', '').strip()
     if not wf_id or not all(c.isalnum() or c in '-_' for c in wf_id):
-        return False, "invalid workflow_id"
+        return False, "invalid workflow_id (영문/숫자/-/_ 만)"
+    if len(wf_id) < 2 or len(wf_id) > 50:
+        return False, "workflow_id 길이는 2-50자"
     title = body.get('title', wf_id)
     nodes = body.get('nodes', [])
     if not nodes:
-        return False, "no nodes"
+        return False, "노드 1개 이상 필요"
+    if len(nodes) > 50:
+        return False, "노드는 최대 50개"
+
+    # config에서 유효한 에이전트 ID 목록 로드
+    valid_agents = set()
+    try:
+        with open(CONFIG_PATH) as f:
+            valid_agents = {a['id'] for a in json.load(f).get('agents', [])}
+    except: pass
 
     # 노드 검증
     node_ids = set()
     for n in nodes:
-        nid = n.get('id', '').strip()
-        if not nid or nid in node_ids:
-            return False, f"invalid or duplicate node id: {nid}"
+        nid = (n.get('id') or '').strip()
+        if not nid:
+            return False, "노드 id 필수"
+        if nid in node_ids:
+            return False, f"중복된 노드 id: {nid}"
+        if not all(c.isalnum() or c in '-_' for c in nid):
+            return False, f"노드 id에 잘못된 문자: {nid}"
         node_ids.add(nid)
-        if not n.get('agent'):
-            return False, f"node {nid}: agent required"
+        agent = n.get('agent', '')
+        if not agent:
+            return False, f"노드 {nid}: agent 필수"
+        if valid_agents and agent not in valid_agents:
+            return False, f"노드 {nid}: 알 수 없는 에이전트 '{agent}'"
 
-    # depends_on 검증 (존재하는 노드만 참조 가능)
+    # depends_on 검증 (존재하는 노드만 참조 가능 + 자기 참조 차단 + 순환 차단)
     for n in nodes:
         for dep in n.get('depends_on', []):
             if dep not in node_ids:
-                return False, f"node {n['id']}: invalid depends_on '{dep}'"
+                return False, f"노드 {n['id']}: 잘못된 depends_on '{dep}'"
+            if dep == n['id']:
+                return False, f"노드 {n['id']}: 자기 자신 참조 불가"
+
+    # 순환 의존성 감지 (단순 BFS)
+    def has_cycle():
+        graph = {n['id']: set(n.get('depends_on', [])) for n in nodes}
+        for start in graph:
+            visited, stack = set(), [start]
+            while stack:
+                cur = stack.pop()
+                if cur in visited:
+                    continue
+                visited.add(cur)
+                for dep in graph.get(cur, []):
+                    if dep == start:
+                        return True
+                    stack.append(dep)
+        return False
+    if has_cycle():
+        return False, "순환 의존성 감지됨"
+
+    # input_template의 {{node_id.output_artifact}} 변수가 실제 노드 참조인지 검증
+    var_pattern = re.compile(r'\{\{(\w+)\.output_artifact\}\}')
+    for n in nodes:
+        tmpl = n.get('input_template', '')
+        for ref in var_pattern.findall(tmpl):
+            if ref not in node_ids:
+                return False, f"노드 {n['id']}: input_template이 존재하지 않는 노드 '{ref}' 참조"
+            if ref == n['id']:
+                return False, f"노드 {n['id']}: input_template에서 자기 참조 불가"
 
     # 기본값 채우기
     for n in nodes:
@@ -441,12 +542,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # 조용하게
 
-    def _send_json(self, data, status=200):
+    def _send_json(self, data, status=200, etag=None):
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Access-Control-Allow-Origin', 'http://localhost:7777')
+        if etag:
+            self.send_header('ETag', etag)
         self.end_headers()
         self.wfile.write(body)
 
@@ -482,7 +585,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/token':
             self._send_json({"token": DASHBOARD_TOKEN})
         elif path == '/api/state':
-            self._send_json(read_state())
+            self._send_json(read_state(), etag=get_config_etag())
         elif path == '/api/channel':
             self._send_json(read_channel())
         elif path == '/api/workflows':
@@ -513,17 +616,28 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 body = json.loads(self.rfile.read(length).decode('utf-8'))
             except: body = {}
+        if_match = self.headers.get('X-If-Match')
+
+        # Lost Update 응답 헬퍼
+        def conflict_response(result):
+            if result == "conflict_409":
+                self._send_json({"ok": False, "result": "다른 곳에서 수정되었습니다. 새로고침 후 다시 시도해주세요.", "code": 409}, 409)
+                return True
+            return False
 
         if path == '/api/agents/create':
-            ok, result = create_agent(body)
+            ok, result = create_agent(body, if_match)
+            if not ok and conflict_response(result): return
             self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
         elif path.startswith('/api/agents/') and path.endswith('/delete'):
             aid = path.split('/')[3]
-            ok, result = delete_agent(aid)
+            ok, result = delete_agent(aid, if_match)
+            if not ok and conflict_response(result): return
             self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
         elif path.startswith('/api/agents/') and path.endswith('/skills'):
             aid = path.split('/')[3]
-            ok, result = assign_skills(aid, body.get('skills', []))
+            ok, result = assign_skills(aid, body.get('skills', []), if_match)
+            if not ok and conflict_response(result): return
             self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
         elif path.startswith('/api/workflows/') and path.endswith('/run'):
             wf_file = path.split('/')[3]

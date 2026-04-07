@@ -21,6 +21,10 @@ except: print('')
 load_agents
 CONFIG_MTIME=$(stat -f %m "$CONFIG" 2>/dev/null || echo 0)
 
+# SIGHUP 수신 시 즉시 config 재로드 (대시보드의 즉시 알림)
+SIGHUP_RELOAD=false
+trap 'SIGHUP_RELOAD=true' HUP
+
 mkdir -p "$INBOX_DIR" "$OUTBOX_DIR" "$COMPANY_DIR/channel" "$COMPANY_DIR/logs" "$COMPANY_DIR/state"
 touch "$CHANNEL"
 
@@ -192,20 +196,28 @@ printf '\n[%s] 라우터 시작\n' "$(date '+%H:%M:%S')" >> "$CHANNEL"
 
 _loop_iter=0
 while true; do
-  # config.json hot-reload (30회 폴링 = 30초마다 mtime 체크)
+  # SIGHUP 수신 또는 30초 mtime 폴링 → config 재로드
   _loop_iter=$((_loop_iter + 1))
-  if [ $((_loop_iter % 30)) -eq 0 ]; then
+  _need_reload=false
+  if [ "$SIGHUP_RELOAD" = true ]; then
+    _need_reload=true
+    SIGHUP_RELOAD=false
+  elif [ $((_loop_iter % 30)) -eq 0 ]; then
     _new_mtime=$(stat -f %m "$CONFIG" 2>/dev/null || echo 0)
     if [ "$_new_mtime" != "$CONFIG_MTIME" ]; then
-      load_agents
+      _need_reload=true
       CONFIG_MTIME=$_new_mtime
-      log "  config.json 변경 감지 → AGENTS 재로드: $AGENTS"
-      # 새 에이전트의 inbox/outbox 파일 생성
-      for agent_id in $AGENTS; do
-        touch "$INBOX_DIR/${agent_id}.md" 2>/dev/null
-        touch "$OUTBOX_DIR/${agent_id}.md" 2>/dev/null
-      done
     fi
+  fi
+  if [ "$_need_reload" = true ]; then
+    load_agents
+    CONFIG_MTIME=$(stat -f %m "$CONFIG" 2>/dev/null || echo 0)
+    log "  config.json 재로드: $AGENTS"
+    # 새 에이전트의 inbox/outbox 파일 생성
+    for agent_id in $AGENTS; do
+      touch "$INBOX_DIR/${agent_id}.md" 2>/dev/null
+      touch "$OUTBOX_DIR/${agent_id}.md" 2>/dev/null
+    done
   fi
 
   for agent_id in $AGENTS; do

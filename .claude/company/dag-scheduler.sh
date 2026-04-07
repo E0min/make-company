@@ -29,6 +29,10 @@ acquire_lock() {
 }
 release_lock() { rmdir "$1.lock.d" 2>/dev/null; }
 
+# SIGHUP 수신 시 즉시 워크플로 재스캔 (대시보드에서 새 워크플로 등록 시)
+SIGHUP_RECEIVED=false
+trap 'SIGHUP_RECEIVED=true; log "  SIGHUP 수신 → 즉시 재스캔"' HUP
+
 log "DAG 스케줄러 시작 (workflows: $WF_DIR)"
 
 while true; do
