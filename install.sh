@@ -56,6 +56,13 @@ cp "$TEMPLATE_DIR/agents/run-gemini.sh" "$TARGET_DIR/agents/"
 cp "$TEMPLATE_DIR/scripts/build-skill-index.sh"      "$TARGET_DIR/scripts/"
 cp "$TEMPLATE_DIR/scripts/suggest-skills.sh"         "$TARGET_DIR/scripts/"
 cp "$TEMPLATE_DIR/scripts/update-knowledge-index.sh" "$TARGET_DIR/scripts/"
+cp "$TEMPLATE_DIR/scripts/build-from-preset.sh"      "$TARGET_DIR/scripts/"
+
+# agents-library/ + presets/ 복사 (14차 — 회사 프리셋)
+mkdir -p "$TARGET_DIR/agents-library" "$TARGET_DIR/presets"
+cp -R "$TEMPLATE_DIR/agents-library/" "$TARGET_DIR/agents-library/" 2>/dev/null || \
+  rsync -a "$TEMPLATE_DIR/agents-library/" "$TARGET_DIR/agents-library/" 2>/dev/null || true
+cp "$TEMPLATE_DIR/presets/"*.json "$TARGET_DIR/presets/" 2>/dev/null || true
 
 # knowledge-init/ 디렉토리 복사
 mkdir -p "$TARGET_DIR/knowledge-init"
@@ -86,22 +93,38 @@ chmod +x "$TARGET_DIR/dashboard/server.py" 2>/dev/null
 # config.json 기본값 항상 복사 (참조용)
 cp "$TEMPLATE_DIR/config.json" "$TARGET_DIR/config.json.default"
 
-# config.json은 없을 때만 복사 (기존 사용자 설정 보존)
-if [ ! -f "$TARGET_DIR/config.json" ]; then
-  cp "$TEMPLATE_DIR/config.json" "$TARGET_DIR/"
-fi
-
-# 에이전트 정의 파일 복사 (.claude/agents/ — 기존 파일 보존)
 PROJECT_AGENTS_DIR="$(dirname "$TARGET_DIR")/agents"
 mkdir -p "$PROJECT_AGENTS_DIR"
-for f in "$TEMPLATE_DIR/agents-definitions/"*.md; do
-  [ -f "$f" ] || continue
-  basename_f="$(basename "$f")"
-  if [ ! -f "$PROJECT_AGENTS_DIR/$basename_f" ]; then
-    cp "$f" "$PROJECT_AGENTS_DIR/"
-    echo -e "  에이전트 정의 복사: $basename_f"
-  fi
-done
+
+# ━━━ 프리셋 선택 (config.json이 없을 때만) ━━━
+if [ ! -f "$TARGET_DIR/config.json" ]; then
+  echo ""
+  echo -e "  ${BOLD}회사 종류를 선택하세요:${NC}"
+  echo "    1) Default                  - 9인 일반 회사"
+  echo "    2) 🎨 Web Design Agency     - 디자인 에이전시"
+  echo "    3) 🚀 IT Startup            - 린 스타트업"
+  echo "    4) 📝 Content Marketing     - 콘텐츠 마케팅 팀"
+  echo "    5) 📊 Data Team             - 데이터 팀"
+  echo "    6) 👤 Solo Developer        - 1인 개발자"
+  echo ""
+  printf "  선택 [1]: "
+  read -r preset_num
+
+  case "$preset_num" in
+    2) PRESET="web-design-agency" ;;
+    3) PRESET="it-startup" ;;
+    4) PRESET="content-marketing" ;;
+    5) PRESET="data-team" ;;
+    6) PRESET="solo-developer" ;;
+    *) PRESET="default" ;;
+  esac
+
+  echo ""
+  echo -e "  ${CYAN}프리셋 적용 중: $PRESET${NC}"
+  bash "$TEMPLATE_DIR/scripts/build-from-preset.sh" "$PRESET" "$TARGET_DIR" "$PROJECT_AGENTS_DIR"
+else
+  echo -e "  ${CYAN}기존 config.json 보존${NC}"
+fi
 
 # 실행 권한
 chmod +x "$TARGET_DIR"/*.sh "$TARGET_DIR/agents/"*.sh "$TARGET_DIR/scripts/"*.sh
