@@ -99,6 +99,13 @@ chmod +x "$COMPANY_DIR/scripts/"*.sh 2>/dev/null
 # 스킬 인덱스 사전 빌드
 bash "$COMPANY_DIR/scripts/build-skill-index.sh" 2>/dev/null || true
 
+# knowledge/ 디렉토리 초기화 + INDEX 생성
+mkdir -p "$COMPANY_DIR/knowledge/decisions" "$COMPANY_DIR/knowledge/conventions"
+if [ ! -f "$COMPANY_DIR/knowledge/README.md" ] && [ -f "$COMPANY_DIR/knowledge-init/README.md" ]; then
+  cp "$COMPANY_DIR/knowledge-init/README.md" "$COMPANY_DIR/knowledge/README.md"
+fi
+bash "$COMPANY_DIR/scripts/update-knowledge-index.sh" "$COMPANY_DIR/knowledge" 2>/dev/null || true
+
 # 기존 세션 종료
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 

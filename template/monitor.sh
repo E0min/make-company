@@ -101,6 +101,13 @@ print(f'{s} | {t}')
     row "Task: $_task_info"
   fi
 
+  # knowledge 항목 수
+  if [ -d "$COMPANY_DIR/knowledge" ]; then
+    _kb_dec=$(find "$COMPANY_DIR/knowledge/decisions" -type f -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+    _kb_con=$(find "$COMPANY_DIR/knowledge/conventions" -type f -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+    row "KB: ${_kb_dec} decisions, ${_kb_con} conventions"
+  fi
+
   hline
   row "Agent            Engine     Status"
   hline

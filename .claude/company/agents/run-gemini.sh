@@ -77,12 +77,13 @@ watcher() {
 
       set_state "working"
 
-      # 전송할 메시지의 첫 30자 (마커)
-      local msg_marker
-      msg_marker=$(printf '%s' "$msg" | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-30)
+      # 고유 메시지 ID 마커
+      local msg_id="msg_$(date +%s)_$$_${RANDOM}"
+      local msg_marker="[MSG:${msg_id}]"
 
       local flat
       flat=$(printf '%s' "$msg" | tr '\n' ' ' | sed 's/  */ /g')
+      flat="${msg_marker} ${flat}"
       # Gemini CLI는 빠른 키 입력을 multi-line으로 해석할 수 있음 — literal + 분리 Enter
       tmux send-keys -t "$PANE_ID" -l "$flat"
       sleep 1

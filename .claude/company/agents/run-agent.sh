@@ -116,16 +116,27 @@ watcher() {
       local skills_hint
       skills_hint=$(bash "$COMPANY_DIR/scripts/suggest-skills.sh" "$AGENT_ID" "$msg" 2>/dev/null)
 
-      # 전송할 메시지의 첫 20자 (응답 추출 시 마커로 사용)
-      local msg_marker
-      msg_marker=$(printf '%s' "$msg" | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-30)
+      # 고유 메시지 ID 마커 생성 (응답 추출의 정확한 경계 식별용)
+      local msg_id="msg_$(date +%s)_$$_${RANDOM}"
+      local msg_marker="[MSG:${msg_id}]"
 
       # 메시지 전송 (개행 → 공백 변환, 여분 공백 정리)
       local flat
       flat=$(printf '%s' "$msg" | tr '\n' ' ' | sed 's/  */ /g')
+      flat="${msg_marker} ${flat}"
       if [ -n "$skills_hint" ]; then
         flat="$flat  |  $(printf '%s' "$skills_hint" | tr '\n' ' ')"
       fi
+
+      # knowledge/INDEX.md 주입 (KB-INDEX) — 활성화된 경우만
+      local _kb_inject
+      _kb_inject=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('knowledge_inject',True))" "$COMPANY_DIR/config.json" 2>/dev/null || echo "True")
+      if [ "$_kb_inject" = "True" ] && [ -f "$COMPANY_DIR/knowledge/INDEX.md" ]; then
+        local _kb
+        _kb=$(head -15 "$COMPANY_DIR/knowledge/INDEX.md" 2>/dev/null | tr '\n' ' ')
+        [ -n "$_kb" ] && flat="$flat  |  [KB] $_kb"
+      fi
+
       tmux send-keys -t "$PANE_ID" "$flat" Enter
 
       # 응답 완료 대기: is_ready() + scrollback 변화 없음으로 안정화 판단
@@ -203,7 +214,6 @@ watcher() {
         if [ -n "$resp_start_num" ]; then
           local abs_start=$((msg_line_num + resp_start_num - 1))
           # 화이트리스트 방식: ⏺ 텍스트 블록과 그 continuation(들여쓰기)만 추출
-          # 도구 출력(Explore, Bash, Running, ├─, ⎿ 등) 전부 자동 제거
           response=$(sed -n "${abs_start},\$p" "$_snap" | \
             sed '/^❯/,$d' | \
             grep -E '^⏺ |^  [^ ]' | \
@@ -214,6 +224,30 @@ watcher() {
             sed 's/^⏺ //' | \
             sed 's/^  //' | \
             sed '/^$/N;/^\n$/d')
+
+          # Fallback: 필터링이 너무 강해 응답이 비었으면 ⏺ 줄만이라도 추출
+          if [ -z "$response" ]; then
+            response=$(sed -n "${abs_start},\$p" "$_snap" | \
+              sed '/^❯/,$d' | \
+              grep '^⏺ ' | \
+              sed 's/^⏺ //')
+          fi
+        fi
+      fi
+
+      # KNOWLEDGE-WRITE 마커 처리 — 응답에 [KNOWLEDGE-WRITE category/file.md] 있으면 저장
+      if [ -n "$response" ] && echo "$response" | grep -q '\[KNOWLEDGE-WRITE'; then
+        local _kw_target
+        _kw_target=$(echo "$response" | grep -oE '\[KNOWLEDGE-WRITE [^]]+\]' | head -1 | sed 's/\[KNOWLEDGE-WRITE //; s/\]$//')
+        if [ -n "$_kw_target" ]; then
+          local _kw_file="$COMPANY_DIR/knowledge/${_kw_target}"
+          mkdir -p "$(dirname "$_kw_file")" 2>/dev/null
+          # 마커 다음 줄부터 저장
+          echo "$response" | sed -n '/\[KNOWLEDGE-WRITE/,$p' | tail -n +2 > "$_kw_file"
+          chmod 600 "$_kw_file" 2>/dev/null
+          # INDEX 재생성
+          bash "$COMPANY_DIR/scripts/update-knowledge-index.sh" "$COMPANY_DIR/knowledge" 2>/dev/null &
+          printf '[%s] knowledge 저장: %s\n' "$(get_ts)" "$_kw_target" >> "$LOG_DIR/knowledge.log"
         fi
       fi
 

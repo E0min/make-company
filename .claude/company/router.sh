@@ -69,6 +69,29 @@ route_message() {
     fi
     # 유효한 에이전트인지 확인
     if echo "$AGENTS" | tr ' ' '\n' | grep -qx "$recipient"; then
+      # ━━━ Critic Loop: config의 매핑이 있으면 1차 검증 ━━━
+      # CRITIC-REVIEW 메시지가 아닌 경우에만 (재귀 방지)
+      if ! echo "$content" | grep -q '\[CRITIC-REVIEW'; then
+        _critic=$(python3 -c "
+import json,sys
+try:
+  c = json.load(open(sys.argv[1])).get('critic_loop', {})
+  print(c.get(sys.argv[2], ''))
+except: print('')
+" "$CONFIG" "$recipient" 2>/dev/null)
+        if [ -n "$_critic" ] && [ "$_critic" != "$sender" ] && [ "$_critic" != "$recipient" ]; then
+          # critic에게 검토 요청 전달
+          _ctarget="$INBOX_DIR/${_critic}.md"
+          if acquire_lock "$_ctarget"; then
+            printf '\n[CRITIC-REVIEW from:%s for:%s time:%s]\n%s\n응답 형식: 첫 줄에 OK 또는 REJECT, 둘째 줄부터 사유.\n' \
+              "$sender" "$recipient" "$ts" "$content" >> "$_ctarget"
+            release_lock "$_ctarget"
+            log "  CRITIC: $sender→@$recipient 검토를 @$_critic에게 위임"
+            continue  # 원수신자 라우팅 보류 (critic 응답이 나중에 라우팅됨)
+          fi
+        fi
+      fi
+
       _target="$INBOX_DIR/${recipient}.md"
       # atomic lock으로 동시 쓰기 보호
       if acquire_lock "$_target"; then

@@ -48,8 +48,13 @@ cp "$TEMPLATE_DIR/setup.sh"        "$TARGET_DIR/"
 cp "$TEMPLATE_DIR/restart-agent.sh" "$TARGET_DIR/"
 cp "$TEMPLATE_DIR/agents/run-agent.sh"  "$TARGET_DIR/agents/"
 cp "$TEMPLATE_DIR/agents/run-gemini.sh" "$TARGET_DIR/agents/"
-cp "$TEMPLATE_DIR/scripts/build-skill-index.sh" "$TARGET_DIR/scripts/"
-cp "$TEMPLATE_DIR/scripts/suggest-skills.sh"    "$TARGET_DIR/scripts/"
+cp "$TEMPLATE_DIR/scripts/build-skill-index.sh"      "$TARGET_DIR/scripts/"
+cp "$TEMPLATE_DIR/scripts/suggest-skills.sh"         "$TARGET_DIR/scripts/"
+cp "$TEMPLATE_DIR/scripts/update-knowledge-index.sh" "$TARGET_DIR/scripts/"
+
+# knowledge-init/ 디렉토리 복사 (knowledge/ 초기 컨텐츠 템플릿)
+mkdir -p "$TARGET_DIR/knowledge-init"
+cp "$TEMPLATE_DIR/knowledge-init/"*.md "$TARGET_DIR/knowledge-init/" 2>/dev/null || true
 
 # config.json 기본값 항상 복사 (참조용)
 cp "$TEMPLATE_DIR/config.json" "$TARGET_DIR/config.json.default"

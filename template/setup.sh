@@ -78,6 +78,8 @@ config = {
     "cost_limit_tokens": 200000,
     "cost_warning_tokens": 150000,
     "skill_index_refresh_interval": 300,
+    "knowledge_inject": True,
+    "critic_loop": {},
     "agents": [
         {"id": "orch",     "engine": "claude", "agent_file": "ceo",                "label": "Orch"},
         {"id": "pm",       "engine": "claude", "agent_file": "product-manager",    "label": "PM"},
