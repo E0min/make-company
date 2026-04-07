@@ -4,6 +4,7 @@
 .claude/company/channel/
 .claude/company/logs/
 .claude/company/state/
+.claude/company/knowledge/
 .claude/company/.archive/
 .claude/company/.snap_*
 .claude/company/.tmp_*
