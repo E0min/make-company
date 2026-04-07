@@ -61,6 +61,76 @@ route_message() {
     return
   fi
 
+  # ━━━ DAG-NODE 응답 처리: 에이전트가 DAG 노드 작업을 완료한 경우 ━━━
+  if echo "$content" | grep -q '\[DAG-NODE'; then
+    _wf_id=$(echo "$content" | grep -m1 -oE '\[DAG-NODE wf:[^ ]+' | sed 's/.*wf://')
+    _node_id=$(echo "$content" | grep -m1 -oE 'node:[^ ]+' | sed 's/node://' | tr -d ']')
+    if [ -n "$_wf_id" ] && [ -n "$_node_id" ]; then
+      # artifact 저장: artifacts/{wf_id}/{node_id}_{agent}.md
+      _art_dir="$COMPANY_DIR/artifacts/${_wf_id}"
+      mkdir -p "$_art_dir"
+      _art_file="${_art_dir}/${_node_id}_${sender}.md"
+      # DAG-NODE 마커 다음 줄부터 저장
+      echo "$content" | sed -n '/\[DAG-NODE/,$p' | tail -n +2 > "$_art_file"
+
+      # workflow JSON에 status: done + output_artifact 갱신
+      _wf_file="$COMPANY_DIR/state/workflows/${_wf_id}.json"
+      if [ -f "$_wf_file" ]; then
+        python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+  wf = json.load(f)
+for n in wf['nodes']:
+  if n['id'] == sys.argv[2]:
+    n['status'] = 'done'
+    n['output_artifact'] = sys.argv[3]
+    n['completed_at'] = '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+    break
+# 모든 노드가 done이면 workflow status도 done
+if all(n.get('status') == 'done' for n in wf['nodes']):
+  wf['status'] = 'done'
+with open(sys.argv[1], 'w') as f:
+  json.dump(wf, f, indent=2, ensure_ascii=False)
+" "$_wf_file" "$_node_id" "$_art_file"
+        log "  DAG: wf=$_wf_id node=$_node_id done (artifact: $_art_file)"
+      fi
+      return
+    fi
+  fi
+
+  # CRITIC-RESPONSE 처리: 에이전트가 critic 응답으로 outbox에 쓴 경우
+  if echo "$content" | grep -q '\[CRITIC-RESPONSE'; then
+    _orig_target=$(echo "$content" | grep -m1 -oE '\[CRITIC-RESPONSE for:[a-z_-]+' | sed 's/.*for://')
+    _verdict=$(echo "$content" | grep -m1 -oE 'VERDICT:\s*(OK|REJECT)' | awk '{print $2}')
+    _orig_sender=$(echo "$content" | grep -m1 -oE 'orig_from:[a-z_-]+' | sed 's/orig_from://')
+    case "$_verdict" in
+      OK)
+        log "  CRITIC OK: $sender 승인 → 원수신자 @$_orig_target에게 라우팅"
+        # 원래 메시지를 추출 (CRITIC-RESPONSE 다음 줄부터)
+        _orig_msg=$(echo "$content" | sed -n '/\[CRITIC-RESPONSE/,$p' | tail -n +2)
+        if [ -n "$_orig_target" ] && echo "$AGENTS" | tr ' ' '\n' | grep -qx "$_orig_target"; then
+          _ot="$INBOX_DIR/${_orig_target}.md"
+          if acquire_lock "$_ot"; then
+            printf '\n[TEAM-MSG from:%s time:%s critic-approved:%s]\n%s\n' "$_orig_sender" "$ts" "$sender" "$_orig_msg" >> "$_ot"
+            release_lock "$_ot"
+          fi
+        fi
+        return  ;;
+      REJECT)
+        log "  CRITIC REJECT: $sender 거부 → 원발신자 @$_orig_sender에게 반송"
+        if [ -n "$_orig_sender" ] && echo "$AGENTS" | tr ' ' '\n' | grep -qx "$_orig_sender"; then
+          _os="$INBOX_DIR/${_orig_sender}.md"
+          if acquire_lock "$_os"; then
+            printf '\n[CRITIC-REJECTED by:%s time:%s]\n%s\n' "$sender" "$ts" "$content" >> "$_os"
+            release_lock "$_os"
+          fi
+        fi
+        return ;;
+      *)
+        log "  CRITIC WARN: 형식 파싱 실패, fail-open으로 원수신자 라우팅" ;;
+    esac
+  fi
+
   for recipient in $mentions; do
     # 자기 자신에게 보내는 것 차단 (무한 루프 방지)
     if [ "$recipient" = "$sender" ]; then
@@ -69,9 +139,9 @@ route_message() {
     fi
     # 유효한 에이전트인지 확인
     if echo "$AGENTS" | tr ' ' '\n' | grep -qx "$recipient"; then
-      # ━━━ Critic Loop: config의 매핑이 있으면 1차 검증 ━━━
-      # CRITIC-REVIEW 메시지가 아닌 경우에만 (재귀 방지)
-      if ! echo "$content" | grep -q '\[CRITIC-REVIEW'; then
+      # ━━━ Critic Loop: config 매핑이 있으면 1차 검증 ━━━
+      # CRITIC-REVIEW/RESPONSE 메시지는 재귀 방지로 critic 안 거침
+      if ! echo "$content" | grep -qE '\[CRITIC-(REVIEW|RESPONSE)'; then
         _critic=$(python3 -c "
 import json,sys
 try:
@@ -80,14 +150,13 @@ try:
 except: print('')
 " "$CONFIG" "$recipient" 2>/dev/null)
         if [ -n "$_critic" ] && [ "$_critic" != "$sender" ] && [ "$_critic" != "$recipient" ]; then
-          # critic에게 검토 요청 전달
           _ctarget="$INBOX_DIR/${_critic}.md"
           if acquire_lock "$_ctarget"; then
-            printf '\n[CRITIC-REVIEW from:%s for:%s time:%s]\n%s\n응답 형식: 첫 줄에 OK 또는 REJECT, 둘째 줄부터 사유.\n' \
-              "$sender" "$recipient" "$ts" "$content" >> "$_ctarget"
+            printf '\n[CRITIC-REVIEW orig_from:%s for:%s time:%s]\n%s\n\n응답 형식 (필수): 첫 줄에 정확히 "VERDICT: OK" 또는 "VERDICT: REJECT"를 쓰고, 다음 줄부터 사유. 응답은 [CRITIC-RESPONSE for:%s orig_from:%s]로 시작해야 합니다.\n' \
+              "$sender" "$recipient" "$ts" "$content" "$recipient" "$sender" >> "$_ctarget"
             release_lock "$_ctarget"
-            log "  CRITIC: $sender→@$recipient 검토를 @$_critic에게 위임"
-            continue  # 원수신자 라우팅 보류 (critic 응답이 나중에 라우팅됨)
+            log "  CRITIC: $sender→@$recipient 검토 위임 → @$_critic"
+            continue
           fi
         fi
       fi

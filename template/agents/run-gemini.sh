@@ -67,6 +67,8 @@ watcher() {
   set_state "idle"
 
   while true; do
+    # heartbeat 갱신
+    date +%s > "$STATE_DIR/gemini.heartbeat" 2>/dev/null
     # atomic inbox 읽기: mv 기반 TOCTOU 방지
     local _inbox_tmp="${INBOX}.processing.$$"
     if [ -s "$INBOX" ] && mv "$INBOX" "$_inbox_tmp" 2>/dev/null; then
@@ -96,6 +98,8 @@ watcher() {
       local prev_line_count=0
       local curr_line_count=0
       while [ $waited -lt 300 ]; do
+        # heartbeat 갱신 (응답 대기 중에도 alive)
+        date +%s > "$STATE_DIR/gemini.heartbeat" 2>/dev/null
         if is_ready; then
           curr_line_count=$(tmux capture-pane -t "$PANE_ID" -p -S -200 2>/dev/null | grep -cv '^$')
           if [ "$curr_line_count" = "$prev_line_count" ]; then

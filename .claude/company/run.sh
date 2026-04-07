@@ -143,6 +143,14 @@ tmux new-window -t "$SESSION" -n "Router"
 tmux send-keys -t "${SESSION}:${router_win}" \
   "bash '${COMPANY_DIR}/router.sh'" Enter
 
+# DAG 스케줄러 윈도우 (라우터 + 1)
+if [ -f "$COMPANY_DIR/dag-scheduler.sh" ]; then
+  dag_win=$((router_win + 1))
+  tmux new-window -t "$SESSION" -n "DAG"
+  tmux send-keys -t "${SESSION}:${dag_win}" \
+    "bash '${COMPANY_DIR}/dag-scheduler.sh'" Enter
+fi
+
 # 모니터 실행 (윈도우 0)
 tmux send-keys -t "${SESSION}:0" \
   "bash '${COMPANY_DIR}/monitor.sh'" Enter

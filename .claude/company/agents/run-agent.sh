@@ -112,6 +112,20 @@ watcher() {
       [ -n "$_current_task" ] && [ -f "$_task_file" ] && \
         sed -i '' 's/"status":"created"/"status":"working"/' "$_task_file" 2>/dev/null
 
+      # DAG-NODE 메타데이터 추출 — outbox에 자동 prefix 추가용
+      local _dag_meta=""
+      if echo "$msg" | grep -q '\[DAG-NODE'; then
+        _dag_meta=$(echo "$msg" | grep -m1 -oE '\[DAG-NODE wf:[^]]+\]')
+      fi
+
+      # CRITIC-REVIEW 메타데이터 추출 — 응답 시 CRITIC-RESPONSE prefix 자동 추가
+      local _critic_meta=""
+      if echo "$msg" | grep -q '\[CRITIC-REVIEW'; then
+        _orig_target=$(echo "$msg" | grep -m1 -oE 'for:[a-z_-]+' | sed 's/for://')
+        _orig_from=$(echo "$msg" | grep -m1 -oE 'orig_from:[a-z_-]+' | sed 's/orig_from://')
+        _critic_meta="[CRITIC-RESPONSE for:${_orig_target} orig_from:${_orig_from}]"
+      fi
+
       # 스킬 추천 (메시지 기반 자동 탐색)
       local skills_hint
       skills_hint=$(bash "$COMPANY_DIR/scripts/suggest-skills.sh" "$AGENT_ID" "$msg" 2>/dev/null)
@@ -150,6 +164,9 @@ watcher() {
       local approve_count=0
       local timed_out=false
       while [ $waited -lt 300 ]; do
+        # heartbeat 갱신 (응답 대기 중에도 alive 표시)
+        date +%s > "$STATE_DIR/${AGENT_ID}.heartbeat" 2>/dev/null
+
         # 권한 프롬프트 감지 → 자동 승인 (최대 5회)
         local pane_check
         pane_check=$(tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -v '^$' | tail -8)
@@ -198,8 +215,10 @@ watcher() {
 
       # 응답 추출: ⏺ 마커(Claude 응답 시작) 기반
       local _snap="${COMPANY_DIR}/.snap_${AGENT_ID}.$$"
-      # 최근 500줄 캡처 (서브에이전트 결과 포함)
-      tmux capture-pane -t "$PANE_ID" -p -S -500 2>/dev/null | strip_ansi > "$_snap"
+      local _extract_attempt=0
+      while [ $_extract_attempt -lt 4 ]; do
+        # 최근 500줄 캡처 (서브에이전트 결과 포함)
+        tmux capture-pane -t "$PANE_ID" -p -S -500 2>/dev/null | strip_ansi > "$_snap"
 
       local response
 
@@ -235,6 +254,16 @@ watcher() {
         fi
       fi
 
+      # 응답이 충분히 길면(50자+) 추출 종료, 아니면 5초 더 기다린 후 재시도
+      if [ -n "$response" ] && [ "${#response}" -gt 50 ]; then
+        break
+      fi
+      _extract_attempt=$((_extract_attempt + 1))
+      [ $_extract_attempt -ge 4 ] && break
+      sleep 5
+      date +%s > "$STATE_DIR/${AGENT_ID}.heartbeat" 2>/dev/null
+      done  # _extract_attempt loop
+
       # KNOWLEDGE-WRITE 마커 처리 — 응답에 [KNOWLEDGE-WRITE category/file.md] 있으면 저장
       if [ -n "$response" ] && echo "$response" | grep -q '\[KNOWLEDGE-WRITE'; then
         local _kw_target
@@ -252,12 +281,22 @@ watcher() {
       fi
 
       if [ -n "$response" ]; then
+        # DAG-NODE 또는 CRITIC-RESPONSE 메타데이터 prefix 자동 추가
+        local _final_response="$response"
+        if [ -n "$_dag_meta" ]; then
+          _final_response="${_dag_meta}
+${response}"
+        elif [ -n "$_critic_meta" ]; then
+          _final_response="${_critic_meta}
+${response}"
+        fi
+
         # outbox 쓰기에 atomic lock 적용
         if acquire_lock "$OUTBOX"; then
-          printf '%s' "$response" > "$OUTBOX"
+          printf '%s' "$_final_response" > "$OUTBOX"
           release_lock "$OUTBOX"
         else
-          printf '%s' "$response" > "$OUTBOX"  # fallback
+          printf '%s' "$_final_response" > "$OUTBOX"  # fallback
         fi
         # 태스크 status 갱신: → done
         _current_task=$(cat "$COMPANY_DIR/state/current_task.txt" 2>/dev/null)
@@ -321,6 +360,7 @@ except: print(0)
         sleep 5
         local compact_wait=5
         while [ $compact_wait -lt 60 ]; do
+          date +%s > "$STATE_DIR/${AGENT_ID}.heartbeat" 2>/dev/null
           if is_ready; then break; fi
           sleep 3
           compact_wait=$((compact_wait + 3))

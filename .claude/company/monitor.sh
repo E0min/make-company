@@ -61,6 +61,7 @@ state_display() {
     timeout)             printf "${RED}⏱ 타임아웃${NC}" ;;
     dead)                printf "${RED}💀 죽음${NC}" ;;
     cost-paused)         printf "${YELLOW}💰 비용한도${NC}" ;;
+    paused)              printf "${YELLOW}⏸ 일시정지${NC}" ;;
     permanently-failed)  printf "${RED}☠ 영구실패${NC}" ;;
     rate-limited) printf "${YELLOW}⏳ 리밋${NC}" ;;
     compacting)   printf "${MAG}♻ compact${NC}" ;;

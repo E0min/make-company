@@ -10,6 +10,43 @@ if [ "$1" = "--watch" ]; then
   shift
 fi
 
+# --dag 모드 감지
+if [ "$1" = "--dag" ]; then
+  shift
+  DAG_FILE="$1"
+  shift
+  USER_REQUEST="$*"
+  if [ ! -f "$DAG_FILE" ]; then
+    echo "  오류: DAG 파일 없음: $DAG_FILE"
+    exit 1
+  fi
+  # workflow_id 추출 + state/workflows/에 복사 + user_request 주입
+  WF_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('workflow_id', 'wf_'+'$(date +%s)'))" "$DAG_FILE")
+  mkdir -p "$COMPANY_DIR/state/workflows"
+  python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+  wf = json.load(f)
+wf['user_request'] = sys.argv[3]
+wf['status'] = 'in_progress'
+wf['kicked_at'] = '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+# 모든 노드 status를 pending으로 초기화
+for n in wf['nodes']:
+  n['status'] = 'pending'
+  n['output_artifact'] = None
+  n.setdefault('retry_count', 0)
+with open(sys.argv[2], 'w') as f:
+  json.dump(wf, f, indent=2, ensure_ascii=False)
+" "$DAG_FILE" "$COMPANY_DIR/state/workflows/${WF_ID}.json" "$USER_REQUEST"
+  echo ""
+  echo "  ✅ DAG 워크플로우 등록: $WF_ID"
+  echo "  📋 user_request: $USER_REQUEST"
+  echo "  📁 state: $COMPANY_DIR/state/workflows/${WF_ID}.json"
+  echo "  ⏳ dag-scheduler가 의존성 해결되는 노드부터 자동 실행합니다"
+  echo ""
+  exit 0
+fi
+
 TASK="$*"
 
 if [ -z "$TASK" ]; then
