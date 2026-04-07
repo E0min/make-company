@@ -2,16 +2,77 @@
   "project": "MyProject",
   "session_name": "myproject-company",
   "compact_threshold": 50,
+  "cost_limit_tokens": 200000,
+  "cost_warning_tokens": 150000,
   "skill_index_refresh_interval": 300,
+  "knowledge_inject": true,
+  "critic_loop": {},
+  "dashboard_port": 7777,
+  "dashboard_auto_open": true,
   "agents": [
-    { "id": "orch",     "engine": "claude", "agent_file": "ceo",                  "label": "Orch" },
-    { "id": "pm",       "engine": "claude", "agent_file": "product-manager",      "label": "PM" },
-    { "id": "design",   "engine": "claude", "agent_file": "ui-ux-designer",       "label": "Design" },
-    { "id": "frontend", "engine": "claude", "agent_file": "frontend-engineer",    "label": "Frontend" },
-    { "id": "fe-qa",    "engine": "claude", "agent_file": "fe-qa",               "label": "FE-QA" },
-    { "id": "backend",  "engine": "claude", "agent_file": "backend-engineer",     "label": "Backend" },
-    { "id": "be-qa",    "engine": "claude", "agent_file": "be-qa",               "label": "BE-QA" },
-    { "id": "marketing","engine": "claude", "agent_file": "marketing-strategist", "label": "Marketing" },
-    { "id": "gemini",   "engine": "gemini", "agent_file": "",                     "label": "Gemini" }
+    {
+      "id": "orch",
+      "engine": "claude",
+      "agent_file": "ceo",
+      "label": "Orch",
+      "protected": true,
+      "assigned_skills": ["autoplan", "plan-ceo-review", "office-hours", "retro", "ship", "land-and-deploy", "setup-deploy", "checkpoint", "learn", "make-company"]
+    },
+    {
+      "id": "pm",
+      "engine": "claude",
+      "agent_file": "product-manager",
+      "label": "PM",
+      "assigned_skills": ["plan-ceo-review", "office-hours", "autoplan", "retro", "learn", "document-release", "checkpoint"]
+    },
+    {
+      "id": "design",
+      "engine": "claude",
+      "agent_file": "ui-ux-designer",
+      "label": "Design",
+      "assigned_skills": ["design-consultation", "design-shotgun", "design-html", "plan-design-review", "design-review", "frontend-design", "brand-guidelines", "theme-factory", "canvas-design", "algorithmic-art"]
+    },
+    {
+      "id": "frontend",
+      "engine": "claude",
+      "agent_file": "frontend-engineer",
+      "label": "Frontend",
+      "assigned_skills": ["design-html", "design-review", "frontend-design", "browse", "webapp-testing", "connect-chrome", "setup-browser-cookies", "careful", "freeze", "unfreeze", "guard"]
+    },
+    {
+      "id": "fe-qa",
+      "engine": "claude",
+      "agent_file": "fe-qa",
+      "label": "FE-QA",
+      "assigned_skills": ["qa", "qa-only", "browse", "webapp-testing", "design-review", "canary", "benchmark", "investigate", "connect-chrome"]
+    },
+    {
+      "id": "backend",
+      "engine": "claude",
+      "agent_file": "backend-engineer",
+      "label": "Backend",
+      "assigned_skills": ["health", "investigate", "review", "code-review-expert", "codex", "benchmark", "setup-deploy", "careful", "freeze", "unfreeze", "guard"]
+    },
+    {
+      "id": "be-qa",
+      "engine": "claude",
+      "agent_file": "be-qa",
+      "label": "BE-QA",
+      "assigned_skills": ["qa", "qa-only", "health", "investigate", "review", "cso", "canary", "benchmark", "code-review-expert"]
+    },
+    {
+      "id": "marketing",
+      "engine": "claude",
+      "agent_file": "marketing-strategist",
+      "label": "Marketing",
+      "assigned_skills": ["brand-guidelines", "office-hours", "learn", "retro", "theme-factory", "canvas-design"]
+    },
+    {
+      "id": "gemini",
+      "engine": "gemini",
+      "agent_file": "",
+      "label": "Gemini",
+      "assigned_skills": ["codex", "review", "cso", "investigate", "plan-eng-review", "debate", "discussion"]
+    }
   ]
 }
