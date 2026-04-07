@@ -265,9 +265,10 @@ def create_agent(body, if_match=None):
         finally:
             release_lock(CONFIG_PATH)
 
-    # 2. .claude/agents/{agent_file}.md 생성
-    project_root = os.path.dirname(os.path.dirname(COMPANY_DIR))
-    agents_md_dir = os.path.join(project_root, 'agents')
+    # 2. .claude/agents/{agent_file}.md 생성 (Claude Code 에이전트 정의)
+    # COMPANY_DIR = .../.claude/company → 부모가 .claude
+    claude_dir = os.path.dirname(COMPANY_DIR)
+    agents_md_dir = os.path.join(claude_dir, 'agents')
     os.makedirs(agents_md_dir, exist_ok=True)
     md_path = os.path.join(agents_md_dir, f"{agent_file}.md")
     skills_str = ', '.join(skills) if skills else ''
