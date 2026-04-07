@@ -1,0 +1,12 @@
+# Virtual Company runtime state (생성되는 파일들)
+.claude/company/inbox/
+.claude/company/outbox/
+.claude/company/channel/
+.claude/company/logs/
+.claude/company/state/
+.claude/company/.archive/
+.claude/company/.snap_*
+.claude/company/.tmp_*
+.claude/company/.kickoff_*
+.claude/company/skill-index.json
+.claude/company/config.json.default

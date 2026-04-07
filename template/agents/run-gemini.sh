@@ -12,32 +12,30 @@ LOG_DIR="$COMPANY_DIR/logs"
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 touch "$INBOX"
 
-set_state() { echo "$1" > "$STATE_DIR/gemini.state"; }
-get_ts()    { date '+%H:%M:%S'; }
+# atomic state write: mv 기반 + 타임스탬프
+set_state() {
+  printf '%s %s' "$1" "$(date +%s)" > "${STATE_DIR}/gemini.state.tmp" && \
+  mv "${STATE_DIR}/gemini.state.tmp" "${STATE_DIR}/gemini.state"
+}
+get_ts() { date '+%H:%M:%S'; }
 
-PANE_ID=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+# 현재 pane ID — $TMUX_PANE 우선 사용
+PANE_ID="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
 
 strip_ansi() {
   sed $'s/\033\[[0-9;]*[a-zA-Z]//g; s/\033\][^\007]*\007//g; s/\r//g'
 }
 
 is_ready() {
-  local bottom
-  bottom=$(tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | tail -5)
-  echo "$bottom" | grep -qE '❯|^>|^\$|Gemini'
-}
-
-get_scrollback_lines() {
-  tmux capture-pane -t "$PANE_ID" -p -S - 2>/dev/null | wc -l | tr -d ' '
+  local pane_content
+  pane_content=$(tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -v '^$' | tail -5)
+  # Gemini 프롬프트: ❯, $ 또는 Gemini 표시
+  echo "$pane_content" | grep -qE '❯|Gemini\s*>'
 }
 
 watcher() {
-  sleep 12
-
-  # 프라이밍
-  local prime="MindLink 가상 회사의 외부 기술 자문으로 참여 중입니다. 역할: 동료 에이전트, 코드 리뷰어, 토론 상대. 팀원에게 전달할 때 @이름 사용. 팀원: @orch @pm @design @frontend @fe-qa @backend @be-qa @marketing. 이해했으면 확인."
-  tmux send-keys -t "$PANE_ID" "$prime" Enter
-
+  # gemini가 초기화될 때까지 대기
+  sleep 8
   local waited=0
   while [ $waited -lt 60 ]; do
     if is_ready; then break; fi
@@ -48,40 +46,70 @@ watcher() {
   set_state "idle"
 
   while true; do
-    if [ -s "$INBOX" ]; then
+    # atomic inbox 읽기: mv 기반 TOCTOU 방지
+    local _inbox_tmp="${INBOX}.processing.$$"
+    if [ -s "$INBOX" ] && mv "$INBOX" "$_inbox_tmp" 2>/dev/null; then
+      touch "$INBOX"
       local msg
-      msg=$(cat "$INBOX")
-      > "$INBOX"
+      msg=$(cat "$_inbox_tmp")
+      rm -f "$_inbox_tmp"
 
       set_state "working"
 
-      local pos_before
-      pos_before=$(get_scrollback_lines)
+      # 전송할 메시지의 첫 30자 (마커)
+      local msg_marker
+      msg_marker=$(printf '%s' "$msg" | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-30)
 
       local flat
-      flat=$(echo "$msg" | tr '\n' ' ')
+      flat=$(printf '%s' "$msg" | tr '\n' ' ' | sed 's/  */ /g')
       tmux send-keys -t "$PANE_ID" "$flat" Enter
 
-      sleep 8
-      waited=8
-      while [ $waited -lt 180 ]; do
-        if is_ready; then sleep 2; break; fi
-        sleep 4; waited=$((waited + 4))
+      # 응답 완료 대기: is_ready() + scrollback 변화 없음
+      sleep 10
+      waited=10
+      local ready_count=0
+      local prev_line_count=0
+      local curr_line_count=0
+      while [ $waited -lt 300 ]; do
+        if is_ready; then
+          curr_line_count=$(tmux capture-pane -t "$PANE_ID" -p -S -200 2>/dev/null | grep -cv '^$')
+          if [ "$curr_line_count" = "$prev_line_count" ]; then
+            ready_count=$((ready_count + 1))
+            if [ $ready_count -ge 3 ]; then sleep 2; break; fi
+          else
+            ready_count=0
+            prev_line_count=$curr_line_count
+          fi
+        else
+          ready_count=0
+          prev_line_count=$(tmux capture-pane -t "$PANE_ID" -p -S -200 2>/dev/null | grep -cv '^$')
+        fi
+        sleep 5
+        waited=$((waited + 5))
       done
 
-      local full_scroll
-      full_scroll=$(tmux capture-pane -t "$PANE_ID" -p -S - 2>/dev/null)
-      local total_lines
-      total_lines=$(echo "$full_scroll" | wc -l | tr -d ' ')
-      local new_lines=$((total_lines - pos_before))
+      # 응답 추출: 전송 메시지 이후 ~ 프롬프트 이전
+      local _snap="${COMPANY_DIR}/.snap_gemini.$$"
+      # 최근 200줄만 캡처 (도구 출력으로 인한 scrollback 오염 방지)
+      tmux capture-pane -t "$PANE_ID" -p -S -200 2>/dev/null | strip_ansi > "$_snap"
 
-      if [ "$new_lines" -gt 0 ]; then
-        local response
-        response=$(echo "$full_scroll" | tail -n "$new_lines" | strip_ansi)
-        if [ -n "$response" ]; then
-          printf '%s' "$response" > "$OUTBOX"
-        fi
+      local response msg_line_num
+      msg_line_num=$(grep -nF -- "$msg_marker" "$_snap" 2>/dev/null | tail -1 | cut -d: -f1)
+
+      if [ -n "$msg_line_num" ]; then
+        # 메시지 마커 이후의 내용에서 프롬프트 전까지 추출
+        local start_line=$((msg_line_num + 1))
+        response=$(sed -n "${start_line},\$p" "$_snap" | \
+          sed '/^❯/,$d' | \
+          grep -v '^─' | \
+          grep -v 'Gemini\s*>' | \
+          sed '/^$/N;/^\n$/d')
       fi
+
+      if [ -n "$response" ]; then
+        printf '%s' "$response" > "$OUTBOX"
+      fi
+      rm -f "$_snap"
 
       set_state "idle"
     fi
@@ -98,9 +126,9 @@ set_state "booting"
 watcher &
 WATCHER_PID=$!
 
+# signal trap: 종료 시 watcher 정리
+trap 'kill "$WATCHER_PID" 2>/dev/null; rm -f "$COMPANY_DIR"/.snap_gemini.* "${INBOX}.processing."*; set_state "stopped"' EXIT INT TERM HUP
+
 # Gemini 대화형 세션 (yolo 모드: 도구 자동 승인)
 cd "$(cd "$COMPANY_DIR/../.." && pwd)"
 gemini --yolo
-
-kill "$WATCHER_PID" 2>/dev/null
-set_state "stopped"
