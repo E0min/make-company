@@ -34,18 +34,36 @@ get_role_keywords() {
 
 ROLE_KW=$(get_role_keywords "$AGENT_ID")
 
-python3 - "$INDEX" "$ROLE_KW" "$MESSAGE" << 'PYEOF'
+# config.json에서 assigned_skills 읽기 (있으면 부분집합 추천)
+ASSIGNED=$(python3 -c "
+import json, sys
+try:
+  c = json.load(open(sys.argv[1]))
+  for a in c.get('agents', []):
+    if a['id'] == sys.argv[2]:
+      print(','.join(a.get('assigned_skills', [])))
+      break
+except: pass
+" "$COMPANY_DIR/config.json" "$AGENT_ID" 2>/dev/null)
+
+python3 - "$INDEX" "$ROLE_KW" "$MESSAGE" "$ASSIGNED" << 'PYEOF'
 import json, sys
 
 index_path = sys.argv[1]
 role_kw_str = sys.argv[2]
 message = sys.argv[3]
+assigned_str = sys.argv[4] if len(sys.argv) > 4 else ""
 
 try:
     with open(index_path) as f:
         skills = json.load(f)
 except:
     sys.exit(0)
+
+# 에이전트별 할당된 스킬이 있으면 부분집합으로 필터
+assigned = set(s.strip() for s in assigned_str.split(',') if s.strip())
+if assigned:
+    skills = [s for s in skills if s.get('name') in assigned]
 
 role_kw = set(w.lower() for w in role_kw_str.split() if len(w) >= 2)
 msg_kw = set(w.lower() for w in message.split() if len(w) >= 2)

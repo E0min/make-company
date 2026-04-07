@@ -80,8 +80,9 @@ config = {
     "skill_index_refresh_interval": 300,
     "knowledge_inject": True,
     "critic_loop": {},
+    "dashboard_port": 7777,
     "agents": [
-        {"id": "orch",     "engine": "claude", "agent_file": "ceo",                "label": "Orch"},
+        {"id": "orch",     "engine": "claude", "agent_file": "ceo",                "label": "Orch", "protected": True},
         {"id": "pm",       "engine": "claude", "agent_file": "product-manager",    "label": "PM"},
         {"id": "design",   "engine": "claude", "agent_file": "ui-ux-designer",     "label": "Design"},
         {"id": "frontend", "engine": "claude", "agent_file": "frontend-engineer",  "label": "Frontend"},

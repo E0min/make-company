@@ -36,7 +36,7 @@ if [ -f "$TARGET_DIR/config.json" ]; then
 fi
 
 # 디렉토리 생성
-mkdir -p "$TARGET_DIR"/{agents,scripts,inbox,outbox,channel,logs,state,state/tasks,state/workflows,artifacts,workflows,test/integration}
+mkdir -p "$TARGET_DIR"/{agents,scripts,inbox,outbox,channel,logs,state,state/tasks,state/workflows,artifacts,workflows,test/integration,dashboard}
 
 # 템플릿 복사 — 모든 스크립트 (template 구조와 1:1 대응)
 cp "$TEMPLATE_DIR/run.sh"          "$TARGET_DIR/"
@@ -73,6 +73,15 @@ mkdir -p "$TARGET_DIR/test/integration"
 cp "$TEMPLATE_DIR/test/integration/"*.sh "$TARGET_DIR/test/integration/" 2>/dev/null || true
 cp "$TEMPLATE_DIR/test/run_all.sh" "$TARGET_DIR/test/" 2>/dev/null || true
 chmod +x "$TARGET_DIR/test/run_all.sh" "$TARGET_DIR/test/integration/"*.sh 2>/dev/null
+
+# dashboard/ 복사
+mkdir -p "$TARGET_DIR/dashboard"
+cp "$TEMPLATE_DIR/dashboard/server.py"     "$TARGET_DIR/dashboard/" 2>/dev/null || true
+cp "$TEMPLATE_DIR/dashboard/index.html"    "$TARGET_DIR/dashboard/" 2>/dev/null || true
+cp "$TEMPLATE_DIR/dashboard/style.css"     "$TARGET_DIR/dashboard/" 2>/dev/null || true
+cp "$TEMPLATE_DIR/dashboard/app.js"        "$TARGET_DIR/dashboard/" 2>/dev/null || true
+cp "$TEMPLATE_DIR/dashboard/dag-render.js" "$TARGET_DIR/dashboard/" 2>/dev/null || true
+chmod +x "$TARGET_DIR/dashboard/server.py" 2>/dev/null
 
 # config.json 기본값 항상 복사 (참조용)
 cp "$TEMPLATE_DIR/config.json" "$TARGET_DIR/config.json.default"

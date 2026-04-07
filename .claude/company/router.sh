@@ -9,11 +9,17 @@ CHANNEL="$COMPANY_DIR/channel/general.md"
 LOG="$COMPANY_DIR/logs/router.log"
 
 # config.json에서 에이전트 ID 목록 추출
-AGENTS=$(python3 -c "
+load_agents() {
+  AGENTS=$(python3 -c "
 import json, sys
-agents = json.load(open(sys.argv[1]))['agents']
-print(' '.join(a['id'] for a in agents))
-" "$CONFIG")
+try:
+  agents = json.load(open(sys.argv[1]))['agents']
+  print(' '.join(a['id'] for a in agents))
+except: print('')
+" "$CONFIG" 2>/dev/null)
+}
+load_agents
+CONFIG_MTIME=$(stat -f %m "$CONFIG" 2>/dev/null || echo 0)
 
 mkdir -p "$INBOX_DIR" "$OUTBOX_DIR" "$COMPANY_DIR/channel" "$COMPANY_DIR/logs" "$COMPANY_DIR/state"
 touch "$CHANNEL"
@@ -184,7 +190,24 @@ except: print('')
 log "라우터 시작 (에이전트: $AGENTS)"
 printf '\n[%s] 라우터 시작\n' "$(date '+%H:%M:%S')" >> "$CHANNEL"
 
+_loop_iter=0
 while true; do
+  # config.json hot-reload (30회 폴링 = 30초마다 mtime 체크)
+  _loop_iter=$((_loop_iter + 1))
+  if [ $((_loop_iter % 30)) -eq 0 ]; then
+    _new_mtime=$(stat -f %m "$CONFIG" 2>/dev/null || echo 0)
+    if [ "$_new_mtime" != "$CONFIG_MTIME" ]; then
+      load_agents
+      CONFIG_MTIME=$_new_mtime
+      log "  config.json 변경 감지 → AGENTS 재로드: $AGENTS"
+      # 새 에이전트의 inbox/outbox 파일 생성
+      for agent_id in $AGENTS; do
+        touch "$INBOX_DIR/${agent_id}.md" 2>/dev/null
+        touch "$OUTBOX_DIR/${agent_id}.md" 2>/dev/null
+      done
+    fi
+  fi
+
   for agent_id in $AGENTS; do
     outbox="$OUTBOX_DIR/${agent_id}.md"
     # atomic outbox 읽기: mv 기반 TOCTOU 방지

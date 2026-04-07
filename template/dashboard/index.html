@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Virtual Company Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">🏢</span>
+      <span class="title" id="project-name">Virtual Company</span>
+      <span class="session" id="session-name"></span>
+    </div>
+    <div class="header-stats">
+      <div class="stat">
+        <span class="stat-label">💰 토큰</span>
+        <span class="stat-value" id="total-tokens">0</span>
+        <span class="stat-limit" id="cost-limit"></span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">⏱</span>
+        <span class="stat-value" id="now-time"></span>
+      </div>
+    </div>
+    <div class="header-controls">
+      <button id="btn-pause" class="btn-warn">⏸ 일시정지</button>
+      <button id="btn-resume" class="btn-ok">▶ 재개</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="overview">📊 Overview</button>
+    <button class="tab" data-tab="workflows">🔗 Workflows</button>
+    <button class="tab" data-tab="agents">🤖 Agents</button>
+    <button class="tab" data-tab="knowledge">📚 Knowledge</button>
+    <button class="tab" data-tab="channel">💬 Channel</button>
+  </nav>
+
+  <main>
+    <!-- Overview -->
+    <section id="tab-overview" class="tab-panel active">
+      <div class="agents-grid" id="agents-grid"></div>
+      <div class="overview-bottom">
+        <div class="card">
+          <h3>최근 태스크</h3>
+          <ul id="tasks-list" class="tasks-list"></ul>
+        </div>
+        <div class="card">
+          <h3>채널 (최근 10)</h3>
+          <pre id="channel-preview" class="channel-preview"></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Workflows -->
+    <section id="tab-workflows" class="tab-panel">
+      <h2>활성 워크플로</h2>
+      <div id="workflows-active"></div>
+      <h2>갤러리</h2>
+      <div id="workflows-gallery" class="gallery"></div>
+    </section>
+
+    <!-- Agents -->
+    <section id="tab-agents" class="tab-panel">
+      <div class="agents-header">
+        <h2>에이전트 관리</h2>
+        <button id="btn-new-agent" class="btn-primary">+ 에이전트 추가</button>
+      </div>
+      <div id="agents-cards" class="agents-cards"></div>
+    </section>
+
+    <!-- Knowledge -->
+    <section id="tab-knowledge" class="tab-panel">
+      <h2>Knowledge Base</h2>
+      <pre id="knowledge-content" class="knowledge"></pre>
+    </section>
+
+    <!-- Channel -->
+    <section id="tab-channel" class="tab-panel">
+      <h2>Team Channel</h2>
+      <pre id="channel-full" class="channel-full"></pre>
+    </section>
+  </main>
+
+  <!-- Modal: New Agent -->
+  <div id="modal-agent" class="modal">
+    <div class="modal-content">
+      <h3>새 에이전트 생성</h3>
+      <label>ID (소문자, 영문/숫자/-/_): <input type="text" id="agent-id" placeholder="tester"></label>
+      <label>Label (표시명): <input type="text" id="agent-label" placeholder="Tester"></label>
+      <label>Engine:
+        <select id="agent-engine">
+          <option value="claude">Claude</option>
+          <option value="gemini">Gemini</option>
+        </select>
+      </label>
+      <label>Description: <input type="text" id="agent-description" placeholder="테스트 자동화 담당"></label>
+      <label>역할 본문 (Markdown):
+        <textarea id="agent-role-body" rows="6" placeholder="- 단위 테스트 작성&#10;- 통합 테스트 검증&#10;..."></textarea>
+      </label>
+      <div id="agent-skills-checkboxes" class="skills-checkboxes"></div>
+      <div class="modal-actions">
+        <button id="btn-create-agent" class="btn-primary">생성</button>
+        <button id="btn-cancel-agent" class="btn-cancel">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Skills -->
+  <div id="modal-skills" class="modal">
+    <div class="modal-content">
+      <h3 id="skills-modal-title">스킬 할당</h3>
+      <div id="skills-modal-list" class="skills-checkboxes"></div>
+      <div class="modal-actions">
+        <button id="btn-save-skills" class="btn-primary">저장</button>
+        <button id="btn-cancel-skills" class="btn-cancel">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Run Workflow -->
+  <div id="modal-run-workflow" class="modal">
+    <div class="modal-content">
+      <h3 id="run-modal-title">워크플로 실행</h3>
+      <label>User Request: <input type="text" id="run-user-request" placeholder="구현할 기능 설명"></label>
+      <div class="modal-actions">
+        <button id="btn-run-confirm" class="btn-primary">실행</button>
+        <button id="btn-run-cancel" class="btn-cancel">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/dag-render.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

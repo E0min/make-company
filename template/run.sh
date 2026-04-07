@@ -151,6 +151,14 @@ if [ -f "$COMPANY_DIR/dag-scheduler.sh" ]; then
     "bash '${COMPANY_DIR}/dag-scheduler.sh'" Enter
 fi
 
+# Dashboard 윈도우 (DAG + 1) — supervisor 패턴 (죽으면 자동 재시작)
+if [ -f "$COMPANY_DIR/dashboard/server.py" ]; then
+  dash_win=$((dag_win + 1))
+  tmux new-window -t "$SESSION" -n "Dashboard"
+  tmux send-keys -t "${SESSION}:${dash_win}" \
+    "while true; do python3 '${COMPANY_DIR}/dashboard/server.py' || sleep 5; done" Enter
+fi
+
 # 모니터 실행 (윈도우 0)
 tmux send-keys -t "${SESSION}:0" \
   "bash '${COMPANY_DIR}/monitor.sh'" Enter
