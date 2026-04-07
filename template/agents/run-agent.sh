@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Interactive Claude 에이전트 러너
-# 대화형 세션으로 컨텍스트 누적 + ctx:50% 초과 시 자동 /compact
+# 대화형 세션으로 컨텍스트 누적 + ctx 초과 시 자동 /compact
 
 AGENT_ID="$1"
 COMPANY_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,33 +11,31 @@ OUTBOX="$COMPANY_DIR/outbox/${AGENT_ID}.md"
 STATE_DIR="$COMPANY_DIR/state"
 LOG_DIR="$COMPANY_DIR/logs"
 
-# bash 3.x 호환: declare -A 대신 case 사용
-get_agent_file() {
-  case "$1" in
-    orch)      echo "ceo" ;;
-    pm)        echo "product-manager" ;;
-    design)    echo "ui-ux-designer" ;;
-    frontend)  echo "frontend-engineer" ;;
-    fe-qa)     echo "fe-qa" ;;
-    backend)   echo "backend-engineer" ;;
-    be-qa)     echo "be-qa" ;;
-    marketing) echo "marketing-strategist" ;;
-    *)         echo "$1" ;;
-  esac
-}
+# compact threshold를 config에서 읽기
+COMPACT_THRESHOLD=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('compact_threshold',50))" "$COMPANY_DIR/config.json" 2>/dev/null || echo 50)
 
-CLAUDE_AGENT=$(get_agent_file "$AGENT_ID")
+# config.json에서 agent_file 읽기 (하드코딩 제거)
+CLAUDE_AGENT=$(python3 -c "
+import json, sys
+agents = json.load(open(sys.argv[1]))['agents']
+agent = next((a for a in agents if a['id'] == sys.argv[2]), None)
+print(agent.get('agent_file', sys.argv[2]) if agent else sys.argv[2])
+" "$COMPANY_DIR/config.json" "$AGENT_ID" 2>/dev/null || echo "$AGENT_ID")
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 touch "$INBOX"
 
-set_state() { echo "$1" > "$STATE_DIR/${AGENT_ID}.state"; }
-get_ts()    { date '+%H:%M:%S'; }
+# atomic state write: mv 기반 + 타임스탬프
+set_state() {
+  printf '%s %s' "$1" "$(date +%s)" > "${STATE_DIR}/${AGENT_ID}.state.tmp" && \
+  mv "${STATE_DIR}/${AGENT_ID}.state.tmp" "${STATE_DIR}/${AGENT_ID}.state"
+}
+get_ts() { date '+%H:%M:%S'; }
 
 AGENT_UPPER=$(echo "$AGENT_ID" | tr '[:lower:]' '[:upper:]')
 
-# 현재 pane ID
-PANE_ID=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+# 현재 pane ID — $TMUX_PANE 우선 사용 (tmux가 각 pane에 자동 설정)
+PANE_ID="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
 
 # ANSI 제거
 strip_ansi() {
@@ -46,10 +44,18 @@ strip_ansi() {
 
 # Claude가 입력 대기 상태인지 확인
 is_ready() {
-  local bottom
-  bottom=$(tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | tail -5)
-  # Claude Code 프롬프트 패턴: ❯, >, $
-  echo "$bottom" | grep -qE '❯|^>|^\$'
+  local pane_content
+  pane_content=$(tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -v '^$' | tail -8)
+  # 권한 프롬프트(Yes/No 선택)가 있으면 아직 ready가 아님
+  if echo "$pane_content" | grep -q 'Do you want to proceed\|Yes, allow\|Esc to cancel'; then
+    return 1
+  fi
+  # 도구 실행 중(Running…, Initializing…)이면 ready가 아님
+  if echo "$pane_content" | grep -q 'Running…\|Initializing…'; then
+    return 1
+  fi
+  # Claude Code 입력 프롬프트: ❯
+  echo "$pane_content" | grep -q '❯'
 }
 
 # ctx 퍼센트 읽기
@@ -59,20 +65,10 @@ get_ctx_pct() {
   echo "$pane" | grep -oE 'ctx:[0-9]+' | tail -1 | grep -oE '[0-9]+'
 }
 
-# 스크롤백 줄 수
-get_scrollback_lines() {
-  tmux capture-pane -t "$PANE_ID" -p -S - 2>/dev/null | wc -l | tr -d ' '
-}
-
 # ━━━━━━ 백그라운드 워처 ━━━━━━
 watcher() {
-  # claude가 초기화될 때까지 대기
-  sleep 12
-
-  # 프라이밍: 팀 통신 프로토콜 안내
-  local prime="가상 회사 시스템에서 실행 중입니다. 팀원에게 전달할 메시지에는 @이름 멘션을 사용하세요. 팀원: @orch @pm @design @frontend @fe-qa @backend @be-qa @marketing @gemini. 이해했으면 간단히 확인해주세요."
-  tmux send-keys -t "$PANE_ID" "$prime" Enter
-
+  # claude가 초기화될 때까지 대기 (프라이밍은 에이전트 파일에 포함)
+  sleep 8
   local waited=0
   while [ $waited -lt 60 ]; do
     if is_ready; then break; fi
@@ -84,63 +80,160 @@ watcher() {
 
   # 메인 루프
   while true; do
-    if [ -s "$INBOX" ]; then
+    # heartbeat 기록 (모니터의 죽음 감지용)
+    date +%s > "$STATE_DIR/${AGENT_ID}.heartbeat" 2>/dev/null
+
+    # atomic inbox 읽기: mv 기반 TOCTOU 방지
+    local _inbox_tmp="${INBOX}.processing.$$"
+    if [ -s "$INBOX" ] && mv "$INBOX" "$_inbox_tmp" 2>/dev/null; then
+      touch "$INBOX"
       local msg
-      msg=$(cat "$INBOX")
-      > "$INBOX"
+      msg=$(cat "$_inbox_tmp")
+      rm -f "$_inbox_tmp"
 
       set_state "working"
 
-      # 스크롤백 위치 기록 (응답 추출용)
-      local pos_before
-      pos_before=$(get_scrollback_lines)
+      # 태스크 status 갱신: created → working (current_task.txt 기반)
+      _current_task=$(cat "$COMPANY_DIR/state/current_task.txt" 2>/dev/null)
+      _task_file="$COMPANY_DIR/state/tasks/${_current_task}.json"
+      [ -n "$_current_task" ] && [ -f "$_task_file" ] && \
+        sed -i '' 's/"status":"created"/"status":"working"/' "$_task_file" 2>/dev/null
 
       # 스킬 추천 (메시지 기반 자동 탐색)
       local skills_hint
       skills_hint=$(bash "$COMPANY_DIR/scripts/suggest-skills.sh" "$AGENT_ID" "$msg" 2>/dev/null)
 
-      # 메시지 전송 (개행 → 공백 변환, Enter = 제출)
+      # 전송할 메시지의 첫 20자 (응답 추출 시 마커로 사용)
+      local msg_marker
+      msg_marker=$(printf '%s' "$msg" | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-30)
+
+      # 메시지 전송 (개행 → 공백 변환, 여분 공백 정리)
       local flat
-      flat=$(echo "$msg" | tr '\n' ' ')
+      flat=$(printf '%s' "$msg" | tr '\n' ' ' | sed 's/  */ /g')
       if [ -n "$skills_hint" ]; then
-        flat="$flat  |  $(echo "$skills_hint" | tr '\n' ' ')"
+        flat="$flat  |  $(printf '%s' "$skills_hint" | tr '\n' ' ')"
       fi
       tmux send-keys -t "$PANE_ID" "$flat" Enter
 
-      # 응답 완료 대기
-      sleep 8
-      waited=8
-      while [ $waited -lt 180 ]; do
-        if is_ready; then sleep 2; break; fi
-        sleep 4
-        waited=$((waited + 4))
+      # 응답 완료 대기: is_ready() + scrollback 변화 없음으로 안정화 판단
+      # 서브에이전트/도구 사용 시 중간에 ❯가 잠깐 나타날 수 있으므로
+      # "ready이고 scrollback 줄 수가 더 이상 변하지 않을 때"를 완료로 판단
+      sleep 10
+      waited=10
+      local ready_count=0
+      local prev_line_count=0
+      local curr_line_count=0
+      local approve_count=0
+      local timed_out=false
+      while [ $waited -lt 300 ]; do
+        # 권한 프롬프트 감지 → 자동 승인 (최대 5회)
+        local pane_check
+        pane_check=$(tmux capture-pane -t "$PANE_ID" -p 2>/dev/null | grep -v '^$' | tail -8)
+        if echo "$pane_check" | grep -q 'Do you want to proceed\|Esc to cancel'; then
+          approve_count=$((approve_count + 1))
+          if [ $approve_count -gt 5 ]; then
+            set_state "error"
+            timed_out=true
+            break
+          fi
+          tmux send-keys -t "$PANE_ID" Enter
+          sleep 2
+          waited=$((waited + 2))
+          ready_count=0
+          continue
+        fi
+
+        if is_ready; then
+          curr_line_count=$(tmux capture-pane -t "$PANE_ID" -p -S -200 2>/dev/null | grep -cv '^$')
+          if [ "$curr_line_count" = "$prev_line_count" ]; then
+            ready_count=$((ready_count + 1))
+            if [ $ready_count -ge 3 ]; then sleep 2; break; fi
+          else
+            ready_count=0
+            prev_line_count=$curr_line_count
+          fi
+        else
+          ready_count=0
+          prev_line_count=$(tmux capture-pane -t "$PANE_ID" -p -S -200 2>/dev/null | grep -cv '^$')
+        fi
+        sleep 5
+        waited=$((waited + 5))
       done
 
-      # 응답 추출: 전송 전 스크롤백 위치 이후 새 줄
-      local full_scroll
-      full_scroll=$(tmux capture-pane -t "$PANE_ID" -p -S - 2>/dev/null)
-      local total_lines
-      total_lines=$(echo "$full_scroll" | wc -l | tr -d ' ')
-      local new_lines=$((total_lines - pos_before))
+      # 타임아웃 처리
+      if [ $waited -ge 300 ] && [ "$timed_out" != true ]; then
+        timed_out=true
+        set_state "timeout"
+      fi
+      if [ "$timed_out" = true ]; then
+        rm -f "${COMPANY_DIR}/.snap_${AGENT_ID}.$$"
+        sleep 5
+        set_state "idle"
+        continue
+      fi
 
-      if [ "$new_lines" -gt 0 ]; then
-        local response
-        response=$(echo "$full_scroll" | tail -n "$new_lines" | strip_ansi)
-        if [ -n "$response" ]; then
-          printf '%s' "$response" > "$OUTBOX"
+      # 응답 추출: ⏺ 마커(Claude 응답 시작) 기반
+      local _snap="${COMPANY_DIR}/.snap_${AGENT_ID}.$$"
+      # 최근 500줄 캡처 (서브에이전트 결과 포함)
+      tmux capture-pane -t "$PANE_ID" -p -S -500 2>/dev/null | strip_ansi > "$_snap"
+
+      local response
+
+      # 전송 메시지 이후의 첫 ⏺ 줄 찾기 (Claude 응답 시작점)
+      local msg_line_num resp_start_num
+      msg_line_num=$(grep -nF -- "$msg_marker" "$_snap" 2>/dev/null | tail -1 | cut -d: -f1)
+
+      if [ -n "$msg_line_num" ]; then
+        # msg_marker 이후에서 첫 ⏺ 줄 찾기 (Claude 응답 시작점)
+        resp_start_num=$(sed -n "${msg_line_num},\$p" "$_snap" | grep -n '^⏺' | head -1 | cut -d: -f1)
+
+        if [ -n "$resp_start_num" ]; then
+          local abs_start=$((msg_line_num + resp_start_num - 1))
+          # 화이트리스트 방식: ⏺ 텍스트 블록과 그 continuation(들여쓰기)만 추출
+          # 도구 출력(Explore, Bash, Running, ├─, ⎿ 등) 전부 자동 제거
+          response=$(sed -n "${abs_start},\$p" "$_snap" | \
+            sed '/^❯/,$d' | \
+            grep -E '^⏺ |^  [^ ]' | \
+            grep -v '^\s*[├└│⎿]' | \
+            grep -vE '^\s*(Bash|Read|Edit|Write|Explore|Search|Glob|Grep|Task|TodoWrite|WebFetch|WebSearch|Agent|NotebookEdit|MultiEdit|Skill|ToolSearch)\(' | \
+            grep -v 'Running…\|Searching for\|Read [0-9]* files\|agents\? finished' | \
+            grep -v 'ctrl+o\|ctrl+v\|ctrl+b' | \
+            sed 's/^⏺ //' | \
+            sed 's/^  //' | \
+            sed '/^$/N;/^\n$/d')
         fi
       fi
 
+      if [ -n "$response" ]; then
+        printf '%s' "$response" > "$OUTBOX"
+        # 태스크 status 갱신: → done (current_task.txt 기반)
+        _current_task=$(cat "$COMPANY_DIR/state/current_task.txt" 2>/dev/null)
+        _task_file="$COMPANY_DIR/state/tasks/${_current_task}.json"
+        [ -n "$_current_task" ] && [ -f "$_task_file" ] && \
+          sed -i '' 's/"status":"[^"]*"/"status":"done"/' "$_task_file" 2>/dev/null
+        # macOS notification (백그라운드, 실패 무시)
+        osascript -e "display notification \"${AGENT_UPPER} 응답 완료\" with title \"Virtual Company\"" 2>/dev/null &
+      fi
+      rm -f "$_snap"
+
       set_state "idle"
 
-      # ━━━ auto-compact: ctx > 50% → /compact ━━━
+      # ━━━ auto-compact: ctx > threshold → /compact ━━━
       local ctx
       ctx=$(get_ctx_pct)
-      if [ -n "$ctx" ] && [ "$ctx" -gt 50 ]; then
-        printf '[%s] ctx:%s%% > 50%% — /compact 실행\n' "$(get_ts)" "$ctx"
+      ctx="${ctx:-0}"
+      if [ "$ctx" -gt "$COMPACT_THRESHOLD" ]; then
+        printf '[%s] ctx:%s%% > %s%% — /compact 실행\n' "$(get_ts)" "$ctx" "$COMPACT_THRESHOLD"
         set_state "compacting"
         tmux send-keys -t "$PANE_ID" "/compact" Enter
-        sleep 15
+        # compact 완료를 is_ready()로 확인 (최대 60초)
+        sleep 5
+        local compact_wait=5
+        while [ $compact_wait -lt 60 ]; do
+          if is_ready; then break; fi
+          sleep 3
+          compact_wait=$((compact_wait + 3))
+        done
         set_state "idle"
       fi
     fi
@@ -159,10 +252,9 @@ set_state "booting"
 watcher &
 WATCHER_PID=$!
 
+# signal trap: 종료 시 watcher 정리
+trap 'kill "$WATCHER_PID" 2>/dev/null; rm -f "$COMPANY_DIR"/.snap_${AGENT_ID}.* "${INBOX}.processing."* "$STATE_DIR/${AGENT_ID}.heartbeat"; set_state "stopped"' EXIT INT TERM HUP
+
 # claude 대화형 세션 (포그라운드)
 cd "$PROJECT_DIR"
 claude --agent "$CLAUDE_AGENT"
-
-# 종료 시 정리
-kill "$WATCHER_PID" 2>/dev/null
-set_state "stopped"
