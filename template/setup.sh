@@ -15,7 +15,7 @@ echo ""
 
 # 1. 프로젝트(회사) 이름
 current_project="MindLink"
-[ -f "$CONFIG" ] && current_project=$(python3 -c "import json; print(json.load(open('$CONFIG')).get('project','MindLink'))" 2>/dev/null)
+[ -f "$CONFIG" ] && current_project=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('project','MindLink'))" "$CONFIG" 2>/dev/null)
 
 printf "  회사(프로젝트) 이름 [%s]: " "$current_project"
 read -r input_project
@@ -24,7 +24,7 @@ PROJECT="${input_project:-$current_project}"
 # 2. tmux 세션 이름
 default_session=$(echo "$PROJECT" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"-company"
 current_session="$default_session"
-[ -f "$CONFIG" ] && current_session=$(python3 -c "import json; print(json.load(open('$CONFIG')).get('session_name','$default_session'))" 2>/dev/null)
+[ -f "$CONFIG" ] && current_session=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('session_name',sys.argv[2]))" "$CONFIG" "$default_session" 2>/dev/null)
 
 printf "  tmux 세션 이름 [%s]: " "$current_session"
 read -r input_session
@@ -32,7 +32,7 @@ SESSION="${input_session:-$current_session}"
 
 # 3. compact 임계치
 current_threshold=50
-[ -f "$CONFIG" ] && current_threshold=$(python3 -c "import json; print(json.load(open('$CONFIG')).get('compact_threshold',50))" 2>/dev/null)
+[ -f "$CONFIG" ] && current_threshold=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('compact_threshold',50))" "$CONFIG" 2>/dev/null)
 
 printf "  auto-compact 임계치 (%%) [%s]: " "$current_threshold"
 read -r input_threshold
