@@ -152,6 +152,7 @@ if [ -f "$COMPANY_DIR/dag-scheduler.sh" ]; then
 fi
 
 # Dashboard 윈도우 (DAG + 1) — supervisor 패턴 (죽으면 자동 재시작)
+DASHBOARD_PORT=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('dashboard_port',7777))" "$CONFIG" 2>/dev/null || echo 7777)
 if [ -f "$COMPANY_DIR/dashboard/server.py" ]; then
   dash_win=$((dag_win + 1))
   tmux new-window -t "$SESSION" -n "Dashboard"
@@ -163,9 +164,23 @@ fi
 tmux send-keys -t "${SESSION}:0" \
   "bash '${COMPANY_DIR}/monitor.sh'" Enter
 
+# 브라우저 자동 오픈 (config의 dashboard_auto_open 활성화 시)
+DASHBOARD_AUTO_OPEN=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('dashboard_auto_open',True))" "$CONFIG" 2>/dev/null || echo True)
+if [ "$DASHBOARD_AUTO_OPEN" = "True" ] && [ -f "$COMPANY_DIR/dashboard/server.py" ]; then
+  # 서버가 뜰 때까지 잠깐 기다림
+  (sleep 3 && {
+    if command -v open >/dev/null 2>&1; then
+      open "http://localhost:${DASHBOARD_PORT}"  # macOS
+    elif command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "http://localhost:${DASHBOARD_PORT}" >/dev/null 2>&1  # Linux
+    fi
+  }) &
+fi
+
 echo "  회사 시작 완료"
 echo ""
-echo "  접속:    tmux attach -t $SESSION"
-echo "  태스크:  bash .claude/company/kickoff.sh '요청'"
-echo "  종료:    bash .claude/company/stop.sh"
+echo "  접속:     tmux attach -t $SESSION"
+echo "  대시보드: http://localhost:${DASHBOARD_PORT}"
+echo "  태스크:   bash .claude/company/kickoff.sh '요청'"
+echo "  종료:     bash .claude/company/stop.sh"
 echo ""

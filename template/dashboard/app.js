@@ -3,6 +3,10 @@ const POLL_INTERVAL = 2000;
 let TOKEN = null;
 let CURRENT_AGENT_FOR_SKILLS = null;
 let CURRENT_WORKFLOW_FILE = null;
+let WORKFLOW_TEMPLATES = [];
+let BUILDER_NODES = [];
+let BUILDER_EDIT_FILE = null;
+let CACHED_AGENTS = [];
 
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json' };
@@ -53,6 +57,7 @@ async function poll() {
 
 // ━━━ Renderers ━━━
 function renderState(state) {
+  CACHED_AGENTS = state.agents;
   document.getElementById('project-name').textContent = state.project + ' Virtual Company';
   document.getElementById('session-name').textContent = state.session_name;
   document.getElementById('total-tokens').textContent = formatTokens(state.total_tokens);
@@ -89,6 +94,7 @@ function renderChannel(channel) {
 function renderWorkflows(data) {
   const active = data.active || [];
   const templates = data.templates || [];
+  WORKFLOW_TEMPLATES = templates; // 빌더에서 복제용
 
   // 활성 워크플로
   const activeEl = document.getElementById('workflows-active');
@@ -104,10 +110,9 @@ function renderWorkflows(data) {
           <span class="workflow-title">${escape(wf.title || wf.workflow_id)}</span>
           <span class="workflow-status ${wf.status}">${wf.status}</span>
         </div>
-        <div class="dag-container" data-wf='${JSON.stringify(wf).replace(/'/g, '&apos;')}'></div>
+        <div class="dag-container"></div>
       `;
       activeEl.appendChild(card);
-      // DAG 렌더
       const container = card.querySelector('.dag-container');
       renderDAG(container, wf);
     }
@@ -122,10 +127,27 @@ function renderWorkflows(data) {
     item.innerHTML = `
       <h4>${escape(t.title || t.id)}</h4>
       <div class="gallery-id">${escape(t.file)}</div>
-      <button class="btn-primary" data-file="${escape(t.file)}">▶ 실행</button>
+      <div class="gallery-item-actions">
+        <button class="btn-primary" data-act="run">▶ 실행</button>
+        <button data-act="edit">✏ 편집</button>
+        <button class="btn-danger" data-act="delete">🗑 삭제</button>
+      </div>
     `;
-    item.querySelector('button').addEventListener('click', () => openRunModal(t.file, t.title));
+    item.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', () => handleWorkflowAction(btn.dataset.act, t.file, t.title));
+    });
     gallery.appendChild(item);
+  }
+}
+
+async function handleWorkflowAction(action, file, title) {
+  if (action === 'run') openRunModal(file, title);
+  else if (action === 'edit') openBuilderModal(file);
+  else if (action === 'delete') {
+    if (!confirm(`워크플로 ${file}을 삭제하시겠습니까?`)) return;
+    const res = await api(`/api/workflows/${file}/delete`, { method: 'POST', body: '{}' });
+    if (res.ok) poll();
+    else alert('삭제 실패: ' + res.result);
   }
 }
 
@@ -187,6 +209,185 @@ function setupModalHandlers() {
 
   document.getElementById('btn-pause').addEventListener('click', () => api('/api/pause', { method: 'POST' }));
   document.getElementById('btn-resume').addEventListener('click', () => api('/api/resume', { method: 'POST' }));
+
+  // Workflow Builder
+  document.getElementById('btn-new-workflow').addEventListener('click', () => openBuilderModal(null));
+  document.getElementById('btn-cancel-builder').addEventListener('click', () => closeModal('modal-builder'));
+  document.getElementById('btn-add-node').addEventListener('click', addBuilderNode);
+  document.getElementById('btn-save-workflow').addEventListener('click', () => saveWorkflow(false));
+  document.getElementById('btn-save-and-run').addEventListener('click', () => saveWorkflow(true));
+  document.getElementById('builder-clone-from').addEventListener('change', cloneFromTemplate);
+}
+
+// ━━━ Workflow Builder ━━━
+async function openBuilderModal(editFile) {
+  BUILDER_EDIT_FILE = editFile;
+  BUILDER_NODES = [];
+  document.getElementById('builder-id').value = '';
+  document.getElementById('builder-title-input').value = '';
+  document.getElementById('builder-id').disabled = false;
+
+  // 갤러리 드롭다운 채우기
+  const select = document.getElementById('builder-clone-from');
+  select.innerHTML = '<option value="">템플릿에서 복제...</option>';
+  for (const t of WORKFLOW_TEMPLATES) {
+    const opt = document.createElement('option');
+    opt.value = t.file;
+    opt.textContent = `${t.title || t.id} (${t.file})`;
+    select.appendChild(opt);
+  }
+
+  if (editFile) {
+    // 편집 모드: 기존 워크플로 로드
+    document.getElementById('builder-title').textContent = `워크플로 편집: ${editFile}`;
+    document.getElementById('builder-id').disabled = true;
+    try {
+      const res = await fetch(`/api/workflows/template/${editFile}`);
+      const wf = await res.json();
+      document.getElementById('builder-id').value = (wf.workflow_id || '').replace(/^wf_/, '');
+      document.getElementById('builder-title-input').value = wf.title || '';
+      BUILDER_NODES = wf.nodes || [];
+    } catch (e) {
+      alert('워크플로 로드 실패');
+      return;
+    }
+  } else {
+    document.getElementById('builder-title').textContent = '새 워크플로';
+    addBuilderNode();
+  }
+
+  renderBuilderNodes();
+  document.getElementById('modal-builder').classList.add('show');
+}
+
+async function cloneFromTemplate(e) {
+  const file = e.target.value;
+  if (!file) return;
+  try {
+    const res = await fetch(`/api/workflows/template/${file}`);
+    const wf = await res.json();
+    BUILDER_NODES = JSON.parse(JSON.stringify(wf.nodes || []));
+    document.getElementById('builder-title-input').value = wf.title || '';
+    renderBuilderNodes();
+  } catch (e) { alert('복제 실패'); }
+  e.target.value = '';
+}
+
+function addBuilderNode() {
+  const num = BUILDER_NODES.length + 1;
+  const prevId = BUILDER_NODES.length > 0 ? BUILDER_NODES[BUILDER_NODES.length - 1].id : null;
+  BUILDER_NODES.push({
+    id: `n${num}`,
+    agent: CACHED_AGENTS[0]?.id || 'pm',
+    input_template: prevId ? `{{${prevId}.output_artifact}}` : '{{user_request}}',
+    depends_on: prevId ? [prevId] : [],
+    on_failure: 'manual',
+    status: 'pending',
+  });
+  renderBuilderNodes();
+}
+
+function deleteBuilderNode(idx) {
+  const removed = BUILDER_NODES[idx];
+  BUILDER_NODES.splice(idx, 1);
+  // 다른 노드들의 depends_on에서 제거
+  for (const n of BUILDER_NODES) {
+    n.depends_on = (n.depends_on || []).filter(d => d !== removed.id);
+  }
+  renderBuilderNodes();
+}
+
+function renderBuilderNodes() {
+  const container = document.getElementById('builder-nodes');
+  container.innerHTML = '';
+  BUILDER_NODES.forEach((node, idx) => {
+    const row = document.createElement('div');
+    row.className = 'builder-node';
+    // depends_on 옵션: 자기 이전 노드들만
+    const otherIds = BUILDER_NODES.filter((_, i) => i < idx).map(n => n.id);
+    const depsValue = (node.depends_on || []).join(',');
+    const agentOptions = CACHED_AGENTS
+      .map(a => `<option value="${escape(a.id)}" ${a.id === node.agent ? 'selected' : ''}>${escape(a.label)}</option>`)
+      .join('');
+    row.innerHTML = `
+      <div class="node-num">${idx + 1}</div>
+      <input type="text" value="${escape(node.id)}" data-idx="${idx}" data-field="id" placeholder="node id">
+      <div class="input-template-wrap">
+        <input type="text" value="${escape(node.input_template)}" data-idx="${idx}" data-field="input_template">
+        ${idx > 0 ? `<button class="insert-var-btn" data-idx="${idx}">📎 이전 결과</button>` : ''}
+      </div>
+      <select data-idx="${idx}" data-field="agent">${agentOptions}</select>
+      <button class="delete-node-btn" data-idx="${idx}" title="삭제">🗑</button>
+    `;
+    container.appendChild(row);
+  });
+
+  // 이벤트 바인딩
+  container.querySelectorAll('input[data-field], select[data-field]').forEach(el => {
+    el.addEventListener('input', (e) => {
+      const i = parseInt(e.target.dataset.idx);
+      const field = e.target.dataset.field;
+      BUILDER_NODES[i][field] = e.target.value;
+      renderBuilderPreview();
+    });
+  });
+  container.querySelectorAll('.delete-node-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteBuilderNode(parseInt(btn.dataset.idx)));
+  });
+  container.querySelectorAll('.insert-var-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = parseInt(btn.dataset.idx);
+      const prev = BUILDER_NODES[i - 1];
+      if (prev) {
+        BUILDER_NODES[i].input_template = `{{${prev.id}.output_artifact}}`;
+        renderBuilderNodes();
+      }
+    });
+  });
+
+  renderBuilderPreview();
+}
+
+function renderBuilderPreview() {
+  const container = document.getElementById('builder-preview');
+  const wfPreview = {
+    workflow_id: 'preview',
+    nodes: BUILDER_NODES.map(n => ({ ...n, status: 'pending' })),
+  };
+  container.innerHTML = '<h5>📊 미리보기</h5><div class="dag-container"></div>';
+  if (BUILDER_NODES.length > 0) {
+    renderDAG(container.querySelector('.dag-container'), wfPreview);
+  }
+}
+
+async function saveWorkflow(thenRun) {
+  const wfId = document.getElementById('builder-id').value.trim();
+  const title = document.getElementById('builder-title-input').value.trim();
+  if (!wfId) { alert('ID 필수'); return; }
+  if (BUILDER_NODES.length === 0) { alert('노드 1개 이상 필요'); return; }
+
+  // depends_on 정규화 (콤마 구분 → array)
+  const nodes = BUILDER_NODES.map(n => ({
+    ...n,
+    depends_on: Array.isArray(n.depends_on)
+      ? n.depends_on.filter(Boolean)
+      : (n.depends_on || '').split(',').map(s => s.trim()).filter(Boolean),
+  }));
+
+  const body = { workflow_id: wfId, title: title || wfId, nodes };
+  const res = await api('/api/workflows/create', { method: 'POST', body: JSON.stringify(body) });
+  if (!res.ok) {
+    alert('저장 실패: ' + (res.result || 'unknown'));
+    return;
+  }
+
+  closeModal('modal-builder');
+
+  if (thenRun) {
+    // 저장 후 즉시 실행 모달 열기
+    setTimeout(() => openRunModal(res.result.file, title), 200);
+  }
+  poll();
 }
 
 async function openNewAgentModal() {

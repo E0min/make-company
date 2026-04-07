@@ -81,6 +81,7 @@ config = {
     "knowledge_inject": True,
     "critic_loop": {},
     "dashboard_port": 7777,
+    "dashboard_auto_open": True,
     "agents": [
         {"id": "orch",     "engine": "claude", "agent_file": "ceo",                "label": "Orch", "protected": True},
         {"id": "pm",       "engine": "claude", "agent_file": "product-manager",    "label": "PM"},

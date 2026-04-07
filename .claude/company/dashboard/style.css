@@ -337,3 +337,113 @@ h3 { margin-bottom: 12px; font-size: 14px; color: var(--fg-dim); }
   width: auto;
   margin: 0;
 }
+
+/* Workflow Builder */
+.gallery-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 24px 0 12px;
+}
+.gallery-header h2 { margin: 0; }
+.gallery-item-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.gallery-item-actions button {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+.modal-large { max-width: 900px; width: 95%; }
+
+.builder-section { margin: 16px 0; }
+.builder-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.builder-header h4 { color: var(--fg-dim); font-size: 13px; }
+.builder-header > div { display: flex; gap: 8px; }
+.builder-header select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.builder-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.builder-node {
+  display: grid;
+  grid-template-columns: 30px 100px 1fr 140px 30px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.builder-node .node-num {
+  text-align: center;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.builder-node input, .builder-node select {
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  margin: 0;
+}
+.builder-node .input-template-wrap {
+  display: flex;
+  gap: 4px;
+}
+.builder-node .input-template-wrap input { flex: 1; }
+.builder-node .insert-var-btn {
+  padding: 4px 8px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.builder-node .delete-node-btn {
+  background: transparent;
+  border: none;
+  color: var(--red);
+  font-size: 16px;
+  padding: 0;
+  cursor: pointer;
+}
+.builder-node .delete-node-btn:hover { color: var(--red); background: transparent; }
+
+.builder-preview {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-height: 80px;
+}
+.builder-preview h5 {
+  color: var(--fg-dim);
+  font-size: 11px;
+  margin-bottom: 8px;
+}

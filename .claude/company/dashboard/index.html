@@ -58,7 +58,10 @@
     <section id="tab-workflows" class="tab-panel">
       <h2>활성 워크플로</h2>
       <div id="workflows-active"></div>
-      <h2>갤러리</h2>
+      <div class="gallery-header">
+        <h2>갤러리</h2>
+        <button id="btn-new-workflow" class="btn-primary">+ 새 워크플로</button>
+      </div>
       <div id="workflows-gallery" class="gallery"></div>
     </section>
 
@@ -116,6 +119,35 @@
       <div class="modal-actions">
         <button id="btn-save-skills" class="btn-primary">저장</button>
         <button id="btn-cancel-skills" class="btn-cancel">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Workflow Builder -->
+  <div id="modal-builder" class="modal">
+    <div class="modal-content modal-large">
+      <h3 id="builder-title">워크플로 빌더</h3>
+      <label>ID (영문/숫자/-/_): <input type="text" id="builder-id" placeholder="feature-mobile"></label>
+      <label>제목: <input type="text" id="builder-title-input" placeholder="모바일 기능 추가"></label>
+
+      <div class="builder-section">
+        <div class="builder-header">
+          <h4>노드 (실행 순서)</h4>
+          <div>
+            <select id="builder-clone-from">
+              <option value="">템플릿에서 복제...</option>
+            </select>
+            <button id="btn-add-node" class="btn-primary">+ 노드 추가</button>
+          </div>
+        </div>
+        <div id="builder-nodes" class="builder-nodes"></div>
+        <div id="builder-preview" class="builder-preview"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="btn-save-workflow" class="btn-primary">💾 저장</button>
+        <button id="btn-save-and-run" class="btn-ok">💾 저장 후 실행</button>
+        <button id="btn-cancel-builder" class="btn-cancel">취소</button>
       </div>
     </div>
   </div>

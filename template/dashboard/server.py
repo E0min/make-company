@@ -333,6 +333,85 @@ def run_workflow(wf_file, user_request):
     except Exception as e:
         return False, str(e)
 
+def create_workflow(body):
+    """워크플로 빌더가 생성한 JSON을 workflows/에 저장
+    body: {workflow_id, title, nodes: [{id, agent, input_template, depends_on, on_failure}]}"""
+    wf_id = body.get('workflow_id', '').strip()
+    if not wf_id or not all(c.isalnum() or c in '-_' for c in wf_id):
+        return False, "invalid workflow_id"
+    title = body.get('title', wf_id)
+    nodes = body.get('nodes', [])
+    if not nodes:
+        return False, "no nodes"
+
+    # 노드 검증
+    node_ids = set()
+    for n in nodes:
+        nid = n.get('id', '').strip()
+        if not nid or nid in node_ids:
+            return False, f"invalid or duplicate node id: {nid}"
+        node_ids.add(nid)
+        if not n.get('agent'):
+            return False, f"node {nid}: agent required"
+
+    # depends_on 검증 (존재하는 노드만 참조 가능)
+    for n in nodes:
+        for dep in n.get('depends_on', []):
+            if dep not in node_ids:
+                return False, f"node {n['id']}: invalid depends_on '{dep}'"
+
+    # 기본값 채우기
+    for n in nodes:
+        n.setdefault('status', 'pending')
+        n.setdefault('output_artifact', None)
+        n.setdefault('retry_count', 0)
+        n.setdefault('on_failure', 'manual')
+        n.setdefault('depends_on', [])
+        n.setdefault('input_template', '{{user_request}}')
+
+    wf = {
+        "workflow_id": f"wf_{wf_id}",
+        "title": title,
+        "status": "pending",
+        "nodes": nodes,
+    }
+
+    out_path = os.path.join(COMPANY_DIR, 'workflows', f"{wf_id}.json")
+    if not acquire_lock(out_path):
+        return False, "lock timeout"
+    try:
+        tmp = out_path + ".tmp"
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(wf, f, ensure_ascii=False, indent=2)
+        os.rename(tmp, out_path)
+    finally:
+        release_lock(out_path)
+
+    return True, {"file": f"{wf_id}.json", "id": wf['workflow_id']}
+
+def delete_workflow(wf_file):
+    """workflows/{wf_file} 삭제"""
+    if '..' in wf_file or '/' in wf_file:
+        return False, "invalid filename"
+    path = os.path.join(COMPANY_DIR, 'workflows', wf_file)
+    if not os.path.exists(path):
+        return False, "not found"
+    try:
+        os.remove(path)
+        return True, {"deleted": wf_file}
+    except Exception as e:
+        return False, str(e)
+
+def get_workflow_template(wf_file):
+    """워크플로 템플릿 단일 조회 (편집용)"""
+    path = os.path.join(COMPANY_DIR, 'workflows', wf_file)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except: return None
+
 def control_action(action, body=None):
     """pause/resume/inject"""
     if action in ('pause', 'resume'):
@@ -414,6 +493,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(read_knowledge())
         elif path == '/api/skills':
             self._send_json(read_skills())
+        elif path.startswith('/api/workflows/template/'):
+            wf_file = path.split('/')[-1]
+            wf = get_workflow_template(wf_file)
+            if wf:
+                self._send_json(wf)
+            else:
+                self.send_error(404)
         else:
             self.send_error(404)
 
@@ -442,6 +528,13 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith('/api/workflows/') and path.endswith('/run'):
             wf_file = path.split('/')[3]
             ok, result = run_workflow(wf_file, body.get('user_request', ''))
+            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
+        elif path == '/api/workflows/create':
+            ok, result = create_workflow(body)
+            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
+        elif path.startswith('/api/workflows/') and path.endswith('/delete'):
+            wf_file = path.split('/')[3]
+            ok, result = delete_workflow(wf_file)
             self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
         elif path == '/api/pause':
             ok, result = control_action('pause')
