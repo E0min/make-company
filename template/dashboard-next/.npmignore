@@ -1,0 +1,11 @@
+# Override the local .gitignore so the prebuilt out/ ships to npm.
+# (npm prefers .npmignore over .gitignore when both exist.)
+
+node_modules/
+.next/
+.turbo/
+*.tsbuildinfo
+.env*
+.DS_Store
+AGENTS.md
+CLAUDE.md

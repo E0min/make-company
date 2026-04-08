@@ -1,0 +1,52 @@
+{
+  "name": "make-company",
+  "version": "0.1.0",
+  "description": "Spin up an entire AI company in your terminal — multi-agent orchestration on tmux + Claude Code + Gemini, with a Next.js + shadcn dashboard.",
+  "keywords": [
+    "tmux",
+    "claude-code",
+    "claude",
+    "anthropic",
+    "gemini",
+    "multi-agent",
+    "agent-orchestration",
+    "ai-agents",
+    "nextjs",
+    "shadcn-ui",
+    "developer-tools",
+    "cli"
+  ],
+  "homepage": "https://github.com/E0min/make-company#readme",
+  "bugs": {
+    "url": "https://github.com/E0min/make-company/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/E0min/make-company.git"
+  },
+  "license": "MIT",
+  "author": "E0min",
+  "type": "module",
+  "bin": {
+    "make-company": "./bin/cli.js",
+    "vc": "./bin/cli.js"
+  },
+  "files": [
+    "bin",
+    "template",
+    "install.sh",
+    "vc-launch.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "scripts": {
+    "test": "bash bin/cli.js --version"
+  }
+}
