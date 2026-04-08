@@ -714,16 +714,83 @@ input::placeholder, textarea::placeholder { color: var(--fg-disabled); }
 .agent-mode-panel.active { display: block; }
 
 .library-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: var(--space-2);
-  max-height: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-height: 480px;
   overflow-y: auto;
   padding: var(--space-3);
   background: var(--bg-base);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   margin-top: var(--space-3);
+}
+.library-section { display: flex; flex-direction: column; gap: var(--space-2); }
+.library-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-1);
+}
+.library-section-count {
+  font-size: 9px;
+  color: var(--fg-subtle);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-subtle);
+  padding: 1px 5px;
+  border-radius: 8px;
+}
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-2);
+}
+.library-card.is-active {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.library-card.is-active:hover {
+  border-color: var(--border-subtle);
+  background: var(--bg-elevated);
+}
+.lib-badge-active {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: var(--success);
+  background: rgba(76, 183, 130, 0.1);
+  border: 1px solid rgba(76, 183, 130, 0.3);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+.lib-skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: var(--space-2);
+}
+.lib-chip {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-subtle);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+.lib-chip-more { color: var(--fg-subtle); font-style: italic; }
+.empty-state-small {
+  text-align: center;
+  padding: var(--space-6);
+  color: var(--fg-subtle);
+  font-size: 12px;
 }
 .library-card {
   padding: var(--space-3);

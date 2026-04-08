@@ -946,38 +946,67 @@ async function saveCurrentAsPreset() {
   }
 }
 
+function parseDefaultSkills(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  const s = String(raw).trim();
+  // Try JSON array first
+  try { const v = JSON.parse(s); if (Array.isArray(v)) return v; } catch {}
+  // Fallback: strip [] and split
+  return s.replace(/^\[|\]$/g, '').split(',').map(x => x.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+}
+
 function renderLibraryList(categoryFilter) {
   const container = document.getElementById('library-list');
   container.innerHTML = '';
   SELECTED_LIBRARY_PATH = null;
-  const items = (LIBRARY_DATA?.library || []).filter(it =>
+  const all = (LIBRARY_DATA?.library || []).filter(it =>
     !categoryFilter || it.category === categoryFilter
   );
   const activeFiles = new Set(CACHED_AGENTS.map(a => a.agent_file));
-  for (const it of items) {
-    const isActive = activeFiles.has(it.library_path.split('/').pop());
-    const card = document.createElement('div');
-    card.className = 'library-card';
-    if (isActive) {
-      card.style.opacity = '0.4';
-      card.style.cursor = 'not-allowed';
+
+  // Group by category
+  const groups = {};
+  for (const it of all) {
+    (groups[it.category] = groups[it.category] || []).push(it);
+  }
+
+  if (all.length === 0) {
+    container.innerHTML = '<div class="empty-state-small">No agents in this category</div>';
+    return;
+  }
+
+  for (const cat of Object.keys(groups).sort()) {
+    const section = document.createElement('div');
+    section.className = 'library-section';
+    section.innerHTML = `<div class="library-section-title">${escape(cat)} <span class="library-section-count">${groups[cat].length}</span></div>`;
+    const grid = document.createElement('div');
+    grid.className = 'library-grid';
+
+    for (const it of groups[cat]) {
+      const isActive = activeFiles.has(it.library_path.split('/').pop());
+      const skills = parseDefaultSkills(it.default_skills);
+      const card = document.createElement('div');
+      card.className = 'library-card' + (isActive ? ' is-active' : '');
+      card.innerHTML = `
+        <div class="library-card-header">
+          <span class="lib-name">${escape(it.name)}</span>
+          ${isActive ? '<span class="lib-badge-active">active</span>' : ''}
+        </div>
+        <div class="lib-desc">${escape(it.description || '—')}</div>
+        ${skills.length ? `<div class="lib-skills">${skills.slice(0, 4).map(s => `<span class="lib-chip">${escape(s)}</span>`).join('')}${skills.length > 4 ? `<span class="lib-chip lib-chip-more">+${skills.length - 4}</span>` : ''}</div>` : ''}
+      `;
+      if (!isActive) {
+        card.onclick = () => {
+          document.querySelectorAll('.library-card').forEach(c => c.classList.remove('selected'));
+          card.classList.add('selected');
+          SELECTED_LIBRARY_PATH = it.library_path;
+        };
+      }
+      grid.appendChild(card);
     }
-    card.innerHTML = `
-      <div class="library-card-header">
-        <span class="lib-name">${escape(it.name)}</span>
-        <span class="lib-category">${escape(it.category)}</span>
-      </div>
-      <div class="lib-desc">${escape(it.description)}</div>
-      ${isActive ? '<div style="margin-top:4px;font-size:10px;color:var(--success);">already active</div>' : ''}
-    `;
-    if (!isActive) {
-      card.onclick = () => {
-        document.querySelectorAll('.library-card').forEach(c => c.classList.remove('selected'));
-        card.classList.add('selected');
-        SELECTED_LIBRARY_PATH = it.library_path;
-      };
-    }
-    container.appendChild(card);
+    section.appendChild(grid);
+    container.appendChild(section);
   }
 }
 
