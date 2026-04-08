@@ -23,8 +23,8 @@ async function getToken(): Promise<string> {
   try {
     const res = await fetch(`${BASE}/api/token`, { cache: "no-store" });
     if (!res.ok) return "";
-    const txt = await res.text();
-    cachedToken = txt.trim();
+    const data = (await res.json()) as { token?: string };
+    cachedToken = data.token ?? "";
     return cachedToken;
   } catch {
     return "";

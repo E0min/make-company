@@ -81,7 +81,7 @@ cp "$TEMPLATE_DIR/test/integration/"*.sh "$TARGET_DIR/test/integration/" 2>/dev/
 cp "$TEMPLATE_DIR/test/run_all.sh" "$TARGET_DIR/test/" 2>/dev/null || true
 chmod +x "$TARGET_DIR/test/run_all.sh" "$TARGET_DIR/test/integration/"*.sh 2>/dev/null
 
-# dashboard/ 복사
+# dashboard/ 복사 (legacy vanilla — 폴백)
 mkdir -p "$TARGET_DIR/dashboard"
 cp "$TEMPLATE_DIR/dashboard/server.py"     "$TARGET_DIR/dashboard/" 2>/dev/null || true
 cp "$TEMPLATE_DIR/dashboard/index.html"    "$TARGET_DIR/dashboard/" 2>/dev/null || true
@@ -89,6 +89,14 @@ cp "$TEMPLATE_DIR/dashboard/style.css"     "$TARGET_DIR/dashboard/" 2>/dev/null 
 cp "$TEMPLATE_DIR/dashboard/app.js"        "$TARGET_DIR/dashboard/" 2>/dev/null || true
 cp "$TEMPLATE_DIR/dashboard/dag-render.js" "$TARGET_DIR/dashboard/" 2>/dev/null || true
 chmod +x "$TARGET_DIR/dashboard/server.py" 2>/dev/null
+
+# dashboard-next/out 복사 (15차 — Next.js + shadcn 정적 산출물)
+# server.py가 이게 있으면 우선해서 서빙. 없으면 legacy로 폴백.
+if [ -d "$TEMPLATE_DIR/dashboard-next/out" ]; then
+  mkdir -p "$TARGET_DIR/dashboard-next/out"
+  cp -R "$TEMPLATE_DIR/dashboard-next/out/." "$TARGET_DIR/dashboard-next/out/" 2>/dev/null || \
+    rsync -a "$TEMPLATE_DIR/dashboard-next/out/" "$TARGET_DIR/dashboard-next/out/" 2>/dev/null || true
+fi
 
 # config.json 기본값 항상 복사 (참조용)
 cp "$TEMPLATE_DIR/config.json" "$TARGET_DIR/config.json.default"

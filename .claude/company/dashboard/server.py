@@ -15,6 +15,8 @@ CONFIG_LOCK = threading.Lock()
 
 COMPANY_DIR = os.path.dirname(os.path.abspath(__file__)).rsplit('/dashboard', 1)[0]
 DASHBOARD_DIR = os.path.join(COMPANY_DIR, 'dashboard')
+NEXT_OUT_DIR = os.path.join(COMPANY_DIR, 'dashboard-next', 'out')
+USE_NEXT = os.path.isfile(os.path.join(NEXT_OUT_DIR, 'index.html'))
 CONFIG_PATH = os.path.join(COMPANY_DIR, 'config.json')
 STATE_DIR = os.path.join(COMPANY_DIR, 'state')
 INBOX_DIR = os.path.join(COMPANY_DIR, 'inbox')
@@ -89,6 +91,25 @@ def get_or_create_token():
     return token
 
 DASHBOARD_TOKEN = get_or_create_token()
+
+MIME_TYPES = {
+    '.html': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.mjs': 'application/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+    '.txt': 'text/plain; charset=utf-8',
+    '.map': 'application/json',
+}
 
 # ━━━ Data readers ━━━
 def read_state():
@@ -733,6 +754,29 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self.send_error(404)
 
+    def _serve_next_static(self, url_path):
+        """Serve files from dashboard-next/out/. Returns True if handled."""
+        # Normalize and prevent path traversal.
+        clean = url_path.lstrip('/')
+        if clean.startswith('..') or '/..' in clean:
+            self.send_error(403)
+            return True
+        # Map URL → filesystem path. trailingSlash export uses /foo/ → foo/index.html.
+        candidates = []
+        if clean == '' or clean.endswith('/'):
+            candidates.append(os.path.join(NEXT_OUT_DIR, clean, 'index.html'))
+        else:
+            candidates.append(os.path.join(NEXT_OUT_DIR, clean))
+            # Also try foo → foo/index.html and foo.html
+            candidates.append(os.path.join(NEXT_OUT_DIR, clean, 'index.html'))
+            candidates.append(os.path.join(NEXT_OUT_DIR, clean + '.html'))
+        for fp in candidates:
+            if os.path.isfile(fp):
+                ctype = MIME_TYPES.get(os.path.splitext(fp)[1].lower(), 'application/octet-stream')
+                self._send_file(fp, ctype)
+                return True
+        return False
+
     def _check_token(self):
         token = self.headers.get('X-Token', '')
         if token != DASHBOARD_TOKEN:
@@ -742,6 +786,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        # Next.js static export takes precedence when present.
+        if USE_NEXT and not path.startswith('/api/'):
+            if self._serve_next_static(path):
+                return
+            # Fall through to legacy / 404
         if path == '/':
             self._send_file(os.path.join(DASHBOARD_DIR, 'index.html'), 'text/html; charset=utf-8')
         elif path == '/style.css':

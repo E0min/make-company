@@ -11,3 +11,4 @@
 .claude/company/.kickoff_*
 .claude/company/skill-index.json
 .claude/company/config.json.default
+__pycache__/
