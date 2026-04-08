@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src=".github/assets/banner.svg" alt="make-company banner" width="100%"/>
+
 # 🏢 make-company
 
 **Spin up an entire AI company in your terminal — multi-agent orchestration on tmux + Claude Code + Gemini, with a Next.js dashboard.**

@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'template/**'
+      - 'install.sh'
+      - 'vc-launch.sh'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  bash-lint:
+    name: Bash syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify bash syntax for all .sh
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r f; do
+            if ! bash -n "$f"; then
+              echo "::error file=$f::syntax error"
+              fail=1
+            fi
+          done < <(find . -type f -name '*.sh' -not -path './node_modules/*' -not -path './template/dashboard-next/node_modules/*')
+          exit $fail
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck (warnings only, non-blocking)
+        uses: ludeeus/action-shellcheck@master
+        continue-on-error: true
+        with:
+          severity: warning
+          ignore_paths: >-
+            node_modules
+            template/dashboard-next/node_modules
+
+  install-smoke:
+    name: install.sh smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run install.sh into a temp dir
+        run: |
+          set -e
+          # Auto-pick preset 1 (Default), default name/session/threshold
+          printf '1\n\n\n\n' | bash install.sh /tmp/test-company
+          test -f /tmp/test-company/config.json
+          test -f /tmp/test-company/run.sh
+          test -f /tmp/test-company/dashboard/server.py
+          echo "✓ install.sh produced required files"
+
+  dashboard-build:
+    name: Next.js dashboard build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: template/dashboard-next
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: template/dashboard-next/pnpm-lock.yaml
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+      - name: Type check
+        run: pnpm exec tsc --noEmit
+      - name: Build (static export)
+        run: pnpm run build
+      - name: Verify out/
+        run: |
+          test -f out/index.html
+          test -d out/_next/static
+          echo "✓ static export OK"

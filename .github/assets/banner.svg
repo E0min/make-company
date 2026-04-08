@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 320" width="1280" height="320" role="img" aria-label="make-company">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a0a0c"/>
+      <stop offset="100%" stop-color="#13131a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5e6ad2"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#1f1f28" stroke-width="0.5"/>
+    </pattern>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- bg -->
+  <rect width="1280" height="320" fill="url(#bg)"/>
+  <rect width="1280" height="320" fill="url(#grid)"/>
+
+  <!-- left: brand block -->
+  <g transform="translate(72, 90)">
+    <rect x="0" y="0" width="56" height="56" rx="12" fill="#5e6ad2" fill-opacity="0.15" stroke="#5e6ad2" stroke-opacity="0.5" stroke-width="1"/>
+    <text x="28" y="38" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" font-weight="700" fill="#a5b4fc">VC</text>
+
+    <text x="80" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Geist', system-ui, sans-serif" font-size="42" font-weight="700" fill="#f5f5f7">make-company</text>
+    <text x="80" y="62" font-family="-apple-system, BlinkMacSystemFont, 'Geist', system-ui, sans-serif" font-size="14" font-weight="500" fill="#9ca3af" letter-spacing="0.06em">MULTI-AGENT · TMUX · CLAUDE CODE · NEXT.JS</text>
+
+    <text x="0" y="120" font-family="-apple-system, BlinkMacSystemFont, 'Geist', system-ui, sans-serif" font-size="22" font-weight="500" fill="#d4d4d8">
+      Spin up an entire AI company
+    </text>
+    <text x="0" y="148" font-family="-apple-system, BlinkMacSystemFont, 'Geist', system-ui, sans-serif" font-size="22" font-weight="500" fill="#d4d4d8">
+      <tspan fill="#9ca3af">in your</tspan> <tspan fill="url(#accent)" filter="url(#glow)">terminal.</tspan>
+    </text>
+  </g>
+
+  <!-- right: agent grid mock -->
+  <g transform="translate(760, 60)">
+    <!-- 3x3 agent tiles -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="#a1a1aa">
+      <!-- row 1 -->
+      <g transform="translate(0,0)">
+        <rect x="0" y="0" width="140" height="56" rx="8" fill="#13131a" stroke="#27272a" stroke-width="1"/>
+        <rect x="0" y="0" width="3" height="56" rx="1" fill="#5e6ad2"/>
+        <text x="12" y="20" font-size="11" fill="#f5f5f7" font-weight="600">CEO</text>
+        <text x="12" y="36" fill="#71717a">orch · working</text>
+        <circle cx="128" cy="14" r="3" fill="#5e6ad2"/>
+      </g>
+      <g transform="translate(155,0)">
+        <rect x="0" y="0" width="140" height="56" rx="8" fill="#13131a" stroke="#27272a" stroke-width="1"/>
+        <rect x="0" y="0" width="3" height="56" rx="1" fill="#5e6ad2"/>
+        <text x="12" y="20" font-size="11" fill="#f5f5f7" font-weight="600">PM</text>
+        <text x="12" y="36" fill="#71717a">pm · working</text>
+        <circle cx="128" cy="14" r="3" fill="#5e6ad2"/>
+      </g>
+      <g transform="translate(310,0)">
+        <rect x="0" y="0" width="140" height="56" rx="8" fill="#13131a" stroke="#27272a" stroke-width="1"/>
+        <rect x="0" y="0" width="3" height="56" rx="1" fill="#52525b"/>
+        <text x="12" y="20" font-size="11" fill="#f5f5f7" font-weight="600">Designer</text>
+        <text x="12" y="36" fill="#71717a">design · idle</text>
+      </g>
+      <!-- row 2 -->
+      <g transform="translate(0,68)">
+        <rect x="0" y="0" width="140" height="56" rx="8" fill="#13131a" stroke="#27272a" stroke-width="1"/>
+        <rect x="0" y="0" width="3" height="56" rx="1" fill="#5e6ad2"/>
+        <text x="12" y="20" font-size="11" fill="#f5f5f7" font-weight="600">Frontend</text>
+        <text x="12" y="36" fill="#71717a">fe · working</text>
+        <circle cx="128" cy="14" r="3" fill="#5e6ad2"/>
+      </g>
+      <g transform="translate(155,68)">
+        <rect x="0" y="0" width="140" height="56" rx="8" fill="#13131a" stroke="#27272a" stroke-width="1"/>
+        <rect x="0" y="0" width="3" height="56" rx="1" fill="#52525b"/>
+        <text x="12" y="20" font-size="11" fill="#f5f5f7" font-weight="600">Backend</text>
+        <text x="12" y="36" fill="#71717a">be · idle</text>
+      </g>
+      <g transform="translate(310,68)">
+        <rect x="0" y="0" width="140" height="56" rx="8" fill="#13131a" stroke="#27272a" stroke-width="1"/>
+        <rect x="0" y="0" width="3" height="56" rx="1" fill="#f59e0b"/>
+        <text x="12" y="20" font-size="11" fill="#f5f5f7" font-weight="600">DevOps</text>
+        <text x="12" y="36" fill="#fbbf24">ops · compacting</text>
+      </g>
+      <!-- row 3 -->
+      <g transform="translate(0,136)">
+        <rect x="0" y="0" width="140" height="56" rx="8" fill="#13131a" stroke="#27272a" stroke-width="1"/>
+        <rect x="0" y="0" width="3" height="56" rx="1" fill="#52525b"/>
+        <text x="12" y="20" font-size="11" fill="#f5f5f7" font-weight="600">QA</text>
+        <text x="12" y="36" fill="#71717a">qa · idle</text>
+      </g>
+      <g transform="translate(155,136)">
+        <rect x="0" y="0" width="140" height="56" rx="8" fill="#13131a" stroke="#27272a" stroke-width="1"/>
+        <rect x="0" y="0" width="3" height="56" rx="1" fill="#10b981"/>
+        <text x="12" y="20" font-size="11" fill="#f5f5f7" font-weight="600">Marketing</text>
+        <text x="12" y="36" fill="#34d399">growth · done</text>
+      </g>
+      <g transform="translate(310,136)">
+        <rect x="0" y="0" width="140" height="56" rx="8" fill="#13131a" stroke="#27272a" stroke-width="1"/>
+        <rect x="0" y="0" width="3" height="56" rx="1" fill="#52525b"/>
+        <text x="12" y="20" font-size="11" fill="#f5f5f7" font-weight="600">Gemini</text>
+        <text x="12" y="36" fill="#71717a">ext · idle</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- bottom status bar mock -->
+  <g transform="translate(72, 270)">
+    <circle cx="6" cy="6" r="3" fill="#10b981">
+      <animate attributeName="opacity" values="1;0.3;1" dur="2s" repeatCount="indefinite"/>
+    </circle>
+    <text x="18" y="11" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#71717a">
+      Live · 9 agents · 4 working · 2 workflows · ⌘K palette
+    </text>
+  </g>
+</svg>
