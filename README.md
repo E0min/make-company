@@ -1,289 +1,403 @@
-# Virtual Company — Multi-Agent Orchestration System
+<div align="center">
 
-Claude Code + Gemini CLI 기반의 멀티 에이전트 협업 시스템.
-tmux 세션에서 9명의 에이전트가 **독립된 대화형 세션**으로 실행되며, **파일 기반 메시지 버스**로 통신합니다.
+# 🏢 make-company
+
+**Spin up an entire AI company in your terminal — multi-agent orchestration on tmux + Claude Code + Gemini, with a Next.js dashboard.**
+
+**터미널 안에서 AI 회사 한 채를 통째로 띄우세요 — tmux 위에서 Claude Code와 Gemini가 협업하고, Next.js 대시보드로 한눈에 관리합니다.**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Bash](https://img.shields.io/badge/Bash-3.x%2B-1f425f?logo=gnu-bash)](https://www.gnu.org/software/bash/)
+[![Python](https://img.shields.io/badge/Python-3.x-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org/)
+[![shadcn/ui](https://img.shields.io/badge/shadcn%2Fui-radix-000)](https://ui.shadcn.com/)
+
+</div>
 
 ---
 
-## 빠른 시작
+## 🇺🇸 English
 
-### 새 프로젝트에 설치
+### What is this?
+
+`make-company` turns a single project folder into a small AI company. Each role — CEO, PM, Designer, Frontend, Backend, QA, Marketing, DevOps, Growth — runs as **its own interactive Claude Code (or Gemini) session inside a tmux window**. The agents talk to each other through a tiny **file-based message bus** (`inbox/` ⇄ `outbox/`), coordinated by a router daemon. A **Next.js + shadcn dashboard** sits on top so you can watch the whole thing breathe in real time.
+
+You install once, pick a company preset (Web Design Agency, IT Startup, Data Team…), and from then on every project gets its own dedicated team that you can talk to with `@회사: build me a Stripe checkout page`.
+
+### Why it exists
+
+Most "agent frameworks" are libraries you wire up in code. This one is the opposite: **the agents are real CLI sessions you can attach to, watch, and interrupt**, the bus is plain markdown files you can `cat`, and the dashboard is a static export served by 250 lines of stdlib Python. Zero hidden state. Zero cloud lock-in. You can rip the whole thing out with `rm -rf .claude/company`.
+
+### Highlights
+
+- 🪟 **One tmux session, many agents** — every role is its own window, fully attachable
+- 📨 **File-based message bus** — `outbox/{agent}.md` → router parses `@mentions` → `inbox/{recipient}.md`
+- 🎨 **Next.js 16 + shadcn dashboard** — Overview / Workflows / Agents / Knowledge / Channel, with ⌘K command palette and keyboard shortcuts
+- 🏭 **Industry presets** — Default, Web Design Agency, IT Startup, Content Marketing, Data Team, Solo Developer, or build your own
+- 🧠 **Skill recommender** — agents auto-receive only the top-3 most relevant skills per task (~98% token savings vs loading everything)
+- 🔁 **Workflow templates** — DAG-based, save & reuse common pipelines
+- 🛟 **Self-healing** — heartbeat watchdog, auto-compact, restart, pause/resume
+- 💸 **Token-aware** — per-agent + global token budget with warn/danger thresholds
+- 🌑 **Dark, Linear-leaning, single accent** — see [DESIGN.md](DESIGN.md)
+
+### Requirements
+
+- macOS or Linux
+- `tmux`
+- `python3` (stdlib only — no pip dependencies)
+- [`claude` CLI](https://docs.claude.com/en/docs/claude-code) (Anthropic Claude Code)
+- [`gemini` CLI](https://github.com/google-gemini/gemini-cli) (optional, for Gemini agents)
+- Node 20+ **only if you want to rebuild the dashboard** (the prebuilt static export is shipped in the repo)
+
+### Quick start
 
 ```bash
-# 1. virtual-company 저장소를 한 번 클론 (어디든)
-git clone https://github.com/<your>/virtual-company.git ~/virtual-company
+# 1) Clone once, anywhere
+git clone https://github.com/E0min/make-company.git ~/make-company
 
-# 2. 적용할 프로젝트 디렉토리로 이동
-cd ~/내프로젝트
+# 2) Optional: drop the tmux launcher into your shell
+echo 'export VC_TEMPLATE="$HOME/make-company"' >> ~/.zshrc
+echo 'claude() {
+  if [[ "$1" == "-company" || "$1" == "--company" ]]; then
+    shift
+    bash "$VC_TEMPLATE/vc-launch.sh" "$@"
+  else
+    command claude "$@"
+  fi
+}' >> ~/.zshrc
+source ~/.zshrc
 
-# 3. install.sh 실행 (대화형 setup 자동 진입)
-bash ~/virtual-company/install.sh
+# 3) Go to any project and launch
+cd ~/projects/my-saas
+claude -company
 ```
 
-`install.sh`가 자동으로:
-- `.claude/company/` — 모든 스크립트, 디렉토리 생성
-- `.claude/agents/` — 8개 에이전트 정의 파일 복사 (기존 파일 보존)
-- 대화형 setup으로 회사명, 세션명, compact 임계치 설정
+That's it. On first run you'll see an interactive preset menu, then a tmux session opens with one window per agent plus a `claude` window for you. Your browser auto-opens the dashboard at `http://localhost:7777`.
 
-### 시작 → 사용 → 종료
+### Talking to the company
+
+From inside the `claude` window:
+
+```
+@회사: Stripe 결제 통합한 구독 페이지 만들어줘
+```
+
+A `UserPromptSubmit` hook detects `@회사:` and forwards the task to the Orchestrator (CEO), who delegates to PM/Designer/Engineers via the bus. You watch it happen in the dashboard.
+
+You can also kick off tasks directly:
 
 ```bash
-# 회사 시작
-bash .claude/company/run.sh
-
-# 태스크 전달 (Orchestrator가 받아서 적절한 팀원에게 위임)
-bash .claude/company/kickoff.sh '@pm 태그 자동 추천 기능 PRD 작성'
-
-# 또는 --watch 모드 (kickoff 후 자동으로 모니터 진입)
-bash .claude/company/kickoff.sh --watch '@design 다크모드 UI 개선'
-
-# 실시간 모니터링
-tmux attach -t {세션명}
-# Ctrl+B → 숫자로 윈도우 전환 (0=Monitor, 1=Orch, 2=PM ...)
-
-# 개별 에이전트 재시작 (zombie watcher 방지)
-bash .claude/company/restart-agent.sh pm
-
-# 종료
-bash .claude/company/stop.sh
+bash .claude/company/kickoff.sh 'Stripe checkout 페이지 만들기'
 ```
 
-### Claude Code 대화 중 사용
+### Dashboard
+
+Open `http://localhost:7777` after `run.sh`.
+
+| Tab | What you see |
+|---|---|
+| **Overview** | 4 KPI cards (Active / Working / Tokens / Workflows), agent grid colored by state, recent tasks, channel preview |
+| **Workflows** | Active DAGs, template gallery, visual builder dialog |
+| **Agents** | Add from category-grouped library with skill chips, custom mode, skills assignment, save current as preset |
+| **Knowledge** | Markdown-rendered shared notes |
+| **Channel** | Full message log with parsed `[from→to]` sender colors |
+
+**Keyboard:**
+
+| Keys | Action |
+|---|---|
+| `⌘K` / `Ctrl+K` | Command palette |
+| `g o` / `g w` / `g a` / `g k` / `g c` | Jump to Overview / Workflows / Agents / Knowledge / Channel |
+| `n` / `N` | New Workflow / Add Agent |
+| `?` | Show shortcuts |
+| `Esc` | Close modal |
+
+### Architecture (the 30-second version)
 
 ```
-# 슬래시 커맨드
-/kickoff 디자인 개선해줘
-
-# @회사 접두사 (훅이 자동 전달)
-@회사 그래프 성능 최적화해줘
+kickoff.sh "task"
+        │
+        ▼
+inbox/orch.md  ──▶  Orchestrator agent processes
+                              │
+                              ▼
+                  outbox/orch.md  ──▶  router.sh polls every 1s
+                                          │
+                          parses @mentions, fans out
+                                          ▼
+                  inbox/{pm, designer, frontend, ...}.md
+                                          │
+                                          ▼
+                            recipients process → outbox → ...
+                                          │
+                                          ▼
+                            channel/general.md  (single source of truth)
 ```
+
+- **`run.sh`** — boots tmux session, one window per agent
+- **`router.sh`** — message bus daemon (1s poll)
+- **`run-agent.sh`** — wraps `claude` CLI, polls inbox every 2s, sends via tmux send-keys, captures responses from scrollback, auto-compacts at threshold
+- **`run-gemini.sh`** — same idea for `gemini --yolo`
+- **`monitor.sh`** — terminal dashboard (3s refresh)
+- **`dashboard/server.py`** — 250-LOC stdlib HTTP server, serves the Next.js static export + JSON API
+- **`dashboard-next/`** — Next.js 16 + TS + Tailwind v4 + shadcn/ui (Radix), exported to static `out/`
+
+See [CLAUDE.md](CLAUDE.md) and [DESIGN.md](DESIGN.md) for the full picture.
+
+### Company presets
+
+Pick one during install, or build your own.
+
+| # | Preset | Team | Best for |
+|---|---|---|---|
+| 1 | **Default** | 9-person general | First-time users |
+| 2 | 🎨 **Web Design Agency** | Director + UX + UI + Frontend + FE-QA + Marketing | Client websites |
+| 3 | 🚀 **IT Startup** | CEO + PM + Fullstack + DevOps + Growth + Designer | SaaS / MVPs |
+| 4 | 📝 **Content Marketing** | Strategist + Writer + SEO + Social + Brand | Content teams |
+| 5 | 📊 **Data Team** | CTO + Data Eng + Analyst + Scientist + ML + PM | Analytics / ML |
+| 6 | 👤 **Solo Developer** | CEO + Fullstack + Designer + Gemini | Side projects |
+| 7 | ✏️ **Custom** | Pick from the agent library yourself | Power users |
+
+You can save any running configuration back as a preset from the dashboard's Agents tab → "Save as Preset".
+
+### Common commands
+
+```bash
+bash install.sh [target_dir]                         # install into a project
+bash .claude/company/run.sh                          # start the tmux session
+bash .claude/company/kickoff.sh '태스크 설명'         # send a task to the Orchestrator
+bash .claude/company/stop.sh                         # stop the session
+tmux attach -t <session_name>                        # attach manually
+```
+
+### Repository layout
+
+```
+make-company/
+├── install.sh                    # Install template into a target dir
+├── vc-launch.sh                  # `claude -company` launcher
+├── template/                     # The thing that gets copied
+│   ├── run.sh, router.sh, kickoff.sh, ...
+│   ├── agents-library/           # 25+ reusable agent definitions
+│   ├── presets/                  # Industry preset JSONs
+│   ├── dashboard/                # Legacy vanilla dashboard (fallback)
+│   ├── dashboard-next/           # Next.js + shadcn dashboard (source + prebuilt out/)
+│   └── workflows/                # Example workflow templates
+├── examples/                     # Usage storyboards
+├── DESIGN.md                     # Visual design system
+└── CLAUDE.md                     # Repo guide for Claude Code
+```
+
+### Contributing
+
+PRs welcome. Please read [DESIGN.md](DESIGN.md) before any UI changes — the dashboard follows a strict "Linear-leaning, dark-first, single purple accent" system.
+
+For new agents:
+1. Drop a `.md` in `template/agents-library/{category}/` with frontmatter (`name`, `category`, `description`, `default_label`, `default_skills`)
+2. Test with `bash install.sh /tmp/test-co` → pick Custom → verify it appears in the library
+
+For new presets:
+1. Add `template/presets/{id}.json`
+2. Add the menu line in `install.sh`
+
+### License
+
+MIT — see [LICENSE](LICENSE).
 
 ---
 
-## 아키텍처
+## 🇰🇷 한국어
 
-```
-사용자 (CEO)
-  ↓ kickoff.sh / @회사 / /kickoff
-┌──────────────────────────────────────────────────┐
-│ tmux: {프로젝트}-company                          │
-│                                                  │
-│ [0] Monitor   — 실시간 대시보드 (상태/태스크/채널) │
-│ [1] Orch      — 오케스트레이터 (CEO, 위임)        │
-│ [2] PM        — 기획 (PRD, 유저스토리)            │
-│ [3] Design    — UI/UX 설계                       │
-│ [4] Frontend  — 프론트엔드 개발                   │
-│ [5] FE-QA     — 프론트엔드 품질 검증              │
-│ [6] Backend   — 백엔드 개발                       │
-│ [7] BE-QA     — 백엔드 품질 검증                  │
-│ [8] Marketing — 마케팅 전략                       │
-│ [9] Gemini    — 외부 자문 / 코드 리뷰 / 토론      │
-│ [10] Router   — 메시지 라우팅 데몬                │
-└──────────────────────────────────────────────────┘
-```
+### 무엇인가요?
 
-### 통신 흐름
+`make-company`는 프로젝트 폴더 하나를 작은 AI 회사로 바꿔줍니다. CEO, PM, 디자이너, 프론트엔드, 백엔드, QA, 마케팅, DevOps, Growth 등 각 역할이 **tmux 윈도우 안에서 독립된 Claude Code (또는 Gemini) 세션**으로 실행되고, 작은 **파일 기반 메시지 버스**(`inbox/` ⇄ `outbox/`)로 서로 대화합니다. 위에는 **Next.js + shadcn 대시보드**가 얹혀 있어 회사가 숨 쉬는 모습을 실시간으로 봅니다.
 
-```
-kickoff.sh "기능 추가"
-  → state/tasks/{task_id}.json 생성 (status: created)
-  → state/current_task.txt에 ID 기록
-  → inbox/orch.md에 [TEAM-TASK] 메시지 추가
-  ↓
-Orch 에이전트의 watcher가 inbox 감지
-  → 메시지를 tmux send-keys로 Claude에 전달
-  → status: working
-  → Orch가 분석 → "@pm PRD 작성, @design UI 설계"
-  → watcher가 응답을 outbox/orch.md에 캡처
-  → status: done
-  ↓
-router.sh가 outbox 감지
-  → @mention 파싱 (자기 멘션 차단)
-  → inbox/pm.md, inbox/design.md에 [TEAM-MSG] 추가
-  → status: routed
-  ↓
-PM, Design 각각 동일 사이클 반복
-  ↓
-모든 흐름이 channel/general.md에 실시간 기록
-```
+설치는 한 번. 회사 종류만 고르면 (웹 디자인 에이전시, IT 스타트업, 데이터 팀…) 그 다음부턴 어떤 프로젝트를 열든 전용 팀이 따라붙습니다. 그 팀과 대화하는 방법: `@회사: Stripe 결제 페이지 만들어줘`.
 
-### 메시지 버스
+### 왜 만들었나요?
 
-| 디렉토리/파일 | 용도 |
-|----------|------|
-| `inbox/{agent}.md` | 에이전트 수신함 (라우터/kickoff가 기록) |
-| `outbox/{agent}.md` | 에이전트 발신함 (워처가 캡처) |
-| `channel/general.md` | 전체 공용 채널 (모니터에 표시) |
-| `state/{agent}.state` | 상태 + 타임스탬프 |
-| `state/{agent}.heartbeat` | 30초+ 무갱신 시 죽음 감지 |
-| `state/tasks/{task_id}.json` | 태스크 라이프사이클 추적 |
-| `state/current_task.txt` | 현재 태스크 ID (status 갱신용) |
-| `.archive/` | 1MB 초과 시 자동 회전된 로그 |
+대부분의 "에이전트 프레임워크"는 코드로 wiring하는 라이브러리입니다. 이건 정반대입니다. **에이전트가 진짜 CLI 세션이라 attach해서 직접 보고 가로챌 수 있고**, 메시지 버스는 그냥 `cat`으로 읽히는 마크다운 파일이고, 대시보드는 250줄짜리 stdlib Python 서버가 정적 파일로 서빙합니다. 숨겨진 상태 0개. 클라우드 종속 0개. `rm -rf .claude/company` 한 줄로 통째로 뽑아낼 수 있습니다.
 
----
+### 핵심 기능
 
-## config.json — 프로젝트별 설정
+- 🪟 **tmux 세션 1개에 에이전트 N개** — 각 역할이 윈도우 하나, 언제든 attach
+- 📨 **파일 기반 메시지 버스** — `outbox/{agent}.md` → router가 `@멘션` 파싱 → `inbox/{recipient}.md`
+- 🎨 **Next.js 16 + shadcn 대시보드** — Overview / Workflows / Agents / Knowledge / Channel, ⌘K 명령 팔레트, vim식 단축키
+- 🏭 **산업별 프리셋** — Default, Web Design Agency, IT Startup, Content Marketing, Data Team, Solo Developer, Custom
+- 🧠 **스킬 추천기** — 매 태스크마다 가장 관련 있는 top-3 스킬만 자동 주입 (전체 로딩 대비 ~98% 토큰 절감)
+- 🔁 **워크플로 템플릿** — DAG 기반, 자주 쓰는 파이프라인 저장/재사용
+- 🛟 **자가 회복** — heartbeat watchdog, 자동 compact, 재시작, 일시정지/재개
+- 💸 **토큰 관리** — 에이전트별 + 전역 토큰 예산, warn/danger 임계값
+- 🌑 **다크 우선, 보라 단일 액센트** — [DESIGN.md](DESIGN.md) 참고
 
-```json
-{
-  "project": "MyProject",
-  "session_name": "myproject-company",
-  "compact_threshold": 50,
-  "agents": [
-    { "id": "orch",     "engine": "claude", "agent_file": "ceo",                "label": "Orch" },
-    { "id": "pm",       "engine": "claude", "agent_file": "product-manager",    "label": "PM" },
-    { "id": "design",   "engine": "claude", "agent_file": "ui-ux-designer",     "label": "Design" },
-    { "id": "frontend", "engine": "claude", "agent_file": "frontend-engineer",  "label": "Frontend" },
-    { "id": "fe-qa",    "engine": "claude", "agent_file": "fe-qa",              "label": "FE-QA" },
-    { "id": "backend",  "engine": "claude", "agent_file": "backend-engineer",   "label": "Backend" },
-    { "id": "be-qa",    "engine": "claude", "agent_file": "be-qa",              "label": "BE-QA" },
-    { "id": "marketing","engine": "claude", "agent_file": "marketing-strategist","label": "Marketing" },
-    { "id": "gemini",   "engine": "gemini", "agent_file": "",                   "label": "Gemini" }
-  ]
-}
+### 요구사항
+
+- macOS 또는 Linux
+- `tmux`
+- `python3` (stdlib만 — pip 의존성 0)
+- [`claude` CLI](https://docs.claude.com/en/docs/claude-code)
+- [`gemini` CLI](https://github.com/google-gemini/gemini-cli) (선택, Gemini 에이전트용)
+- Node 20+ **대시보드를 직접 빌드할 때만** (리포에 prebuilt 정적 산출물 포함)
+
+### 빠른 시작
+
+```bash
+# 1) 한 번만 클론 (어디든)
+git clone https://github.com/E0min/make-company.git ~/make-company
+
+# 2) (선택) tmux 런처를 zsh에 등록
+echo 'export VC_TEMPLATE="$HOME/make-company"' >> ~/.zshrc
+echo 'claude() {
+  if [[ "$1" == "-company" || "$1" == "--company" ]]; then
+    shift
+    bash "$VC_TEMPLATE/vc-launch.sh" "$@"
+  else
+    command claude "$@"
+  fi
+}' >> ~/.zshrc
+source ~/.zshrc
+
+# 3) 아무 프로젝트로 가서 한 줄
+cd ~/projects/my-saas
+claude -company
 ```
 
-`agent_file`은 `.claude/agents/{agent_file}.md`를 가리킵니다 (Claude `--agent` 모드 로드).
+끝. 첫 실행 때 회사 종류 선택 메뉴가 뜨고, 그 다음 tmux 세션이 열립니다. 윈도우 0번은 `claude`, 나머지는 각 에이전트. 브라우저가 자동으로 `http://localhost:7777` 대시보드를 엽니다.
 
----
+### 회사에 일 시키기
 
-## 에이전트 정의 파일 (`.claude/agents/`)
-
-`install.sh`가 8개 기본 에이전트 정의를 자동 복사합니다:
-
-| 파일 | 역할 |
-|------|------|
-| `ceo.md` | Orchestrator — 태스크 분석 + 위임 |
-| `product-manager.md` | PRD, 유저스토리, 우선순위 |
-| `ui-ux-designer.md` | 와이어프레임, 디자인 시스템 |
-| `frontend-engineer.md` | UI 컴포넌트 구현 |
-| `backend-engineer.md` | API, DB, 비즈니스 로직 |
-| `fe-qa.md` / `be-qa.md` | 품질 검증, 버그 리포트 |
-| `marketing-strategist.md` | 마케팅, 콘텐츠 |
-
-각 파일은 "당신은 지금 tmux 세션 안에서 실행 중인 ... 에이전트입니다"로 시작하여 시스템 자각을 명시하고, 응답에 `@에이전트ID`를 쓰면 자동 라우팅됨을 알려줍니다.
-
-기존 파일이 있으면 보존됩니다 — 사용자 커스텀 우선.
-
----
-
-## 자동 Compact
-
-각 Claude 에이전트는 **대화형 세션**으로 실행되어 컨텍스트가 누적됩니다.
-워처가 `ctx:XX%`를 모니터링하여 `compact_threshold` 초과 시 자동 `/compact` 실행.
-`is_ready()` 폴링으로 compact 완료를 확인 (sleep 하드코딩 제거).
-
----
-
-## 응답 추출 — 화이트리스트 필터
-
-watcher는 tmux scrollback에서 Claude 응답을 추출할 때 **⏺ 마커 + 들여쓰기 텍스트**만 보존합니다.
-도구 호출(`Bash(...)`, `Read(...)` 등 13종), thinking 인디케이터(`✻ Cogitated`), 권한 프롬프트, 박스 문자(`├└│⎿`)는 자동 제거.
-
-서브에이전트 실행이 완료될 때까지 안정화 대기:
-- `is_ready()` 연속 3회 + scrollback 줄 수 변화 없음 = 진짜 완료
-- 권한 프롬프트 자동 승인 (5회 상한, 초과 시 error)
-- 최대 300초 대기 후 timeout 상태 전환
-
----
-
-## 에이전트 상태 목록
-
-| 상태 | 의미 |
-|------|------|
-| `idle` | ○ 대기 중 |
-| `working` | ● 메시지 처리 중 |
-| `compacting` | ♻ /compact 실행 중 |
-| `booting` | ⏳ 초기화 중 |
-| `error` | ✗ 오류 (승인 5회 초과 등) |
-| `timeout` | ⏱ 300초 응답 대기 초과 |
-| `dead` | 💀 heartbeat 30초+ 무갱신 |
-| `rate-limited` | ⏳ 토큰/API 리밋 |
-| `done` | ✓ [TASK COMPLETE] 수신 |
-| `stopped` | ■ 세션 종료됨 |
-
----
-
-## 태스크 추적
-
-`kickoff.sh`로 보낸 모든 태스크는 `state/tasks/{task_id}.json`에 기록됩니다:
-
-```json
-{
-  "id": "task_1775501283_22276",
-  "status": "done",
-  "created_at": "2026-04-07 03:48:03",
-  "task": "@pm 6차 업그레이드 완료 확인..."
-}
-```
-
-라이프사이클: `created → working → routed → done`
-
-모니터 상단에 현재 태스크 상태가 표시됩니다.
-
----
-
-## 파일 구조
+`claude` 윈도우에서:
 
 ```
-.claude/company/
-├── config.json              ← 프로젝트별 설정 (자동 생성)
-├── config.json.default      ← 기본값 (참조용)
-├── run.sh                   ← 회사 시작 (config.json 기반 동적 생성)
-├── stop.sh                  ← 회사 종료
-├── kickoff.sh               ← Orchestrator에 태스크 전달 (--watch 옵션)
-├── restart-agent.sh         ← 개별 에이전트 재시작 (zombie 방지)
-├── router.sh                ← @mention 기반 메시지 라우팅 데몬
-├── monitor.sh               ← 실시간 대시보드
-├── setup.sh                 ← 대화형 설정
-├── agents/
-│   ├── run-agent.sh         ← Claude 대화형 에이전트 러너
-│   └── run-gemini.sh        ← Gemini 대화형 에이전트 러너
-├── scripts/
-│   ├── build-skill-index.sh ← 스킬 디렉토리 스캔
-│   └── suggest-skills.sh    ← 메시지 기반 스킬 추천
-├── inbox/                   ← 런타임: 에이전트 수신함
-├── outbox/                  ← 런타임: 에이전트 발신함
-├── channel/                 ← 런타임: 전체 채널
-├── state/                   ← 런타임: 에이전트 상태 + heartbeat + 태스크
-│   ├── tasks/               ← 태스크 라이프사이클 JSON
-│   └── current_task.txt     ← 현재 태스크 ID
-├── logs/                    ← 런타임: router.log
-└── .archive/                ← 자동 회전된 로그 (1MB+)
-
-.claude/agents/              ← 에이전트 정의 파일 (install.sh가 자동 복사)
-├── ceo.md                   ← Orchestrator 정의
-├── product-manager.md
-├── ui-ux-designer.md
-├── frontend-engineer.md
-├── backend-engineer.md
-├── fe-qa.md
-├── be-qa.md
-└── marketing-strategist.md
+@회사: Stripe 결제 통합한 구독 페이지 만들어줘
 ```
 
+`UserPromptSubmit` 훅이 `@회사:`를 감지해 Orchestrator(CEO)에게 전달하고, CEO가 PM/디자이너/엔지니어에게 분배합니다. 진행 과정은 대시보드에서 실시간으로 보입니다.
+
+직접 던지는 것도 가능:
+
+```bash
+bash .claude/company/kickoff.sh 'Stripe 결제 페이지 만들기'
+```
+
+### 대시보드
+
+`run.sh` 후 `http://localhost:7777`.
+
+| 탭 | 보이는 것 |
+|---|---|
+| **Overview** | 4개 KPI 카드 (Active / Working / Tokens / Workflows), 상태 색상별 에이전트 그리드, 최근 태스크, 채널 미리보기 |
+| **Workflows** | 활성 DAG, 템플릿 갤러리, 시각적 빌더 다이얼로그 |
+| **Agents** | 카테고리 그룹 + 스킬 칩 라이브러리에서 추가, 커스텀 모드, 스킬 할당, 현재 구성을 프리셋으로 저장 |
+| **Knowledge** | 공유 노트 마크다운 렌더링 |
+| **Channel** | `[from→to]` sender 색상 파싱된 전체 메시지 로그 |
+
+**키보드:**
+
+| 키 | 동작 |
+|---|---|
+| `⌘K` / `Ctrl+K` | 명령 팔레트 |
+| `g o` / `g w` / `g a` / `g k` / `g c` | Overview / Workflows / Agents / Knowledge / Channel 점프 |
+| `n` / `N` | 새 워크플로 / 에이전트 추가 |
+| `?` | 단축키 도움말 |
+| `Esc` | 모달 닫기 |
+
+### 아키텍처 (30초 버전)
+
+```
+kickoff.sh "태스크"
+        │
+        ▼
+inbox/orch.md  ──▶  Orchestrator가 처리
+                              │
+                              ▼
+                  outbox/orch.md  ──▶  router.sh가 1초마다 폴링
+                                          │
+                              @멘션 파싱, 분배
+                                          ▼
+                  inbox/{pm, designer, frontend, ...}.md
+                                          │
+                                          ▼
+                            수신자가 처리 → outbox → ...
+                                          │
+                                          ▼
+                            channel/general.md  (단일 진실 공급원)
+```
+
+- **`run.sh`** — tmux 세션 부팅, 에이전트당 윈도우 1개
+- **`router.sh`** — 메시지 버스 데몬 (1초 폴링)
+- **`run-agent.sh`** — `claude` CLI를 감싸고, inbox 2초마다 폴링, tmux send-keys로 전송, 스크롤백에서 응답 캡처, 임계값에서 자동 compact
+- **`run-gemini.sh`** — `gemini --yolo` 버전
+- **`monitor.sh`** — 터미널 대시보드 (3초 갱신)
+- **`dashboard/server.py`** — 250줄 stdlib HTTP 서버, Next.js 정적 산출물과 JSON API 동시 서빙
+- **`dashboard-next/`** — Next.js 16 + TS + Tailwind v4 + shadcn/ui (Radix), 정적 `out/`으로 export
+
+자세한 것은 [CLAUDE.md](CLAUDE.md) 와 [DESIGN.md](DESIGN.md).
+
+### 회사 프리셋
+
+설치 시 선택하거나, 직접 만드세요.
+
+| # | 프리셋 | 팀 구성 | 추천 대상 |
+|---|---|---|---|
+| 1 | **Default** | 9인 일반 회사 | 처음 써보는 사용자 |
+| 2 | 🎨 **Web Design Agency** | Director + UX + UI + Frontend + FE-QA + Marketing | 클라이언트 웹사이트 |
+| 3 | 🚀 **IT Startup** | CEO + PM + Fullstack + DevOps + Growth + Designer | SaaS / MVP |
+| 4 | 📝 **Content Marketing** | Strategist + Writer + SEO + Social + Brand | 콘텐츠 팀 |
+| 5 | 📊 **Data Team** | CTO + Data Eng + Analyst + Scientist + ML + PM | 분석 / ML |
+| 6 | 👤 **Solo Developer** | CEO + Fullstack + Designer + Gemini | 사이드 프로젝트 |
+| 7 | ✏️ **Custom** | 라이브러리에서 직접 고르기 | 파워 유저 |
+
+가동 중인 구성을 대시보드 → Agents 탭 → "Save as Preset"으로 프리셋화 가능.
+
+### 자주 쓰는 명령
+
+```bash
+bash install.sh [target_dir]                         # 프로젝트에 설치
+bash .claude/company/run.sh                          # tmux 세션 시작
+bash .claude/company/kickoff.sh '태스크 설명'         # Orchestrator에게 태스크 전달
+bash .claude/company/stop.sh                         # 세션 종료
+tmux attach -t <session_name>                        # 수동 attach
+```
+
+### 디렉토리 구조
+
+```
+make-company/
+├── install.sh                    # 타깃 디렉토리에 템플릿 설치
+├── vc-launch.sh                  # `claude -company` 런처
+├── template/                     # 복사되는 본체
+│   ├── run.sh, router.sh, kickoff.sh, ...
+│   ├── agents-library/           # 25+ 재사용 가능한 에이전트 정의
+│   ├── presets/                  # 산업별 프리셋 JSON
+│   ├── dashboard/                # Legacy vanilla 대시보드 (폴백)
+│   ├── dashboard-next/           # Next.js + shadcn 대시보드 (소스 + prebuilt out/)
+│   └── workflows/                # 워크플로 템플릿 예시
+├── examples/                     # 사용 스토리보드
+├── DESIGN.md                     # 시각 디자인 시스템
+└── CLAUDE.md                     # Claude Code용 리포 가이드
+```
+
+### 기여 환영
+
+PR 환영합니다. UI 변경 전엔 [DESIGN.md](DESIGN.md)를 꼭 읽어주세요. 대시보드는 "Linear 스타일, 다크 우선, 단일 보라 액센트" 시스템을 엄격하게 따릅니다.
+
+새 에이전트 추가:
+1. `template/agents-library/{category}/`에 frontmatter (`name`, `category`, `description`, `default_label`, `default_skills`)를 가진 `.md` 파일 추가
+2. `bash install.sh /tmp/test-co` → Custom 선택 → 라이브러리에 나타나는지 확인
+
+새 프리셋 추가:
+1. `template/presets/{id}.json` 추가
+2. `install.sh`에 메뉴 라인 추가
+
+### 라이선스
+
+MIT — [LICENSE](LICENSE) 참고.
+
 ---
 
-## 요구사항
+<div align="center">
 
-- **macOS / Linux** (tmux 의존)
-- **tmux** — `brew install tmux` / `apt install tmux`
-- **python3** — 설정 파싱 (대부분 시스템 기본)
-- **Claude Code CLI** (`claude`) — 8명의 Claude 에이전트
-- **Gemini CLI** (`gemini`) — Gemini 에이전트 (선택, 없으면 9번째만 booting 유지)
+**Made with ☕ and a lot of `tmux send-keys`.**
 
----
-
-## 안정성 기능
-
-| 기능 | 설명 |
-|------|------|
-| Atomic mv 패턴 | inbox/outbox 읽기 시 TOCTOU race 방지 |
-| Signal trap | 종료 시 watcher + temp 파일 자동 정리 |
-| Heartbeat | 30초+ 무갱신 시 모니터에 💀 표시 |
-| 자기 멘션 차단 | router가 sender == recipient 시 무한 루프 방지 |
-| 권한 자동 승인 | 5회 상한 + 초과 시 error 전환 |
-| 로그 회전 | 1MB 초과 시 `.archive/`로 이동 |
-| 타임아웃 | 300초 응답 없으면 timeout 상태 |
-| Config 검증 | 필수 키, 에이전트 배열 시작 시 검사 |
-| 한글 정렬 | UTF-8 표시폭 기반 truncate |
+</div>
