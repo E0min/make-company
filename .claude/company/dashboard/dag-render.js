@@ -2,7 +2,7 @@
 function renderDAG(container, wf) {
   const nodes = wf.nodes || [];
   if (nodes.length === 0) {
-    container.innerHTML = '<p style="color: var(--fg-dim);">노드 없음</p>';
+    container.innerHTML = '<p style="color: var(--fg-subtle); font-size: 12px; padding: 12px;">노드 없음</p>';
     return;
   }
 
@@ -38,20 +38,25 @@ function renderDAG(container, wf) {
     });
   }
 
+  // DESIGN.md tokens
   const colors = {
-    pending: '#30363d',
-    running: '#3fb950',
-    done: '#56d4dd',
-    failed: '#f85149',
-    waiting: '#d29922',
+    pending: '#2e2e36',  // border-strong
+    running: '#5e6ad2',  // accent (Linear purple)
+    done:    '#4cb782',  // success
+    failed:  '#eb5757',  // danger
+    waiting: '#f2c94c',  // warning
   };
+  const edgeColor = '#2e2e36';
+  const nodeBg    = '#0d0d10';
+  const fgColor   = '#ededed';
+  const fgMuted   = '#9ca3af';
 
   let svg = `<svg class="dag-svg" viewBox="0 0 ${svgWidth} ${svgHeight}" xmlns="http://www.w3.org/2000/svg">`;
   // 마커 정의 (화살표)
   svg += `<defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
             markerWidth="6" markerHeight="6" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/>
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="${fgMuted}"/>
     </marker>
   </defs>`;
 
@@ -69,7 +74,7 @@ function renderDAG(container, wf) {
       // 곡선
       const mx = (x1 + x2) / 2;
       svg += `<path d="M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"
-              stroke="#8b949e" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>`;
+              stroke="${fgMuted}" stroke-width="1.25" fill="none" marker-end="url(#arrow)" opacity="0.6"/>`;
     }
   }
 
@@ -77,17 +82,18 @@ function renderDAG(container, wf) {
   for (const n of nodes) {
     const p = positions[n.id];
     if (!p) continue;
-    const color = colors[n.status] || '#30363d';
+    const color = colors[n.status] || colors.pending;
     const statusIcon = {
-      done: '✓', running: '⚡', failed: '✗', pending: '○', waiting: '⏳'
+      done: '✓', running: '●', failed: '✗', pending: '○', waiting: '◔'
     }[n.status] || '?';
     svg += `<g transform="translate(${p.x}, ${p.y})">
-      <rect width="${nodeWidth}" height="${nodeHeight}" rx="6"
-            fill="#161b22" stroke="${color}" stroke-width="2"/>
-      <text x="10" y="22" fill="#c9d1d9" font-size="13" font-weight="600">
-        ${statusIcon} ${escapeXml(n.id)}
+      <rect width="${nodeWidth}" height="${nodeHeight}" rx="8"
+            fill="${nodeBg}" stroke="${color}" stroke-width="1"/>
+      <rect x="0" y="0" width="3" height="${nodeHeight}" rx="1.5" fill="${color}"/>
+      <text x="14" y="24" fill="${fgColor}" font-size="13" font-weight="600" font-family="Geist, system-ui, sans-serif" letter-spacing="-0.005em">
+        ${statusIcon}  ${escapeXml(n.id)}
       </text>
-      <text x="10" y="42" fill="#8b949e" font-size="11">
+      <text x="14" y="44" fill="${fgMuted}" font-size="11" font-family="Geist Mono, ui-monospace, monospace">
         ${escapeXml(n.agent)}
       </text>
     </g>`;

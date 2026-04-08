@@ -70,6 +70,10 @@ Agents use tmux scrollback line counting — record line count before sending, w
 
 Agent files reference `.claude/agents/` definitions. The `id` field maps to inbox/outbox/state filenames.
 
+## Design System
+
+Always read `DESIGN.md` before any visual/UI work on `template/dashboard/`. Tokens (color, type, spacing, motion, components) are defined there. Do not deviate without explicit user approval. Direction: **Linear-leaning Cyber Refined** — dark-first, single purple accent (#5e6ad2), Geist font, border > shadow, 8px grid, tabular numbers.
+
 ## Language & Platform
 
 - All scripts are Bash (3.x compatible — uses `case` instead of associative arrays for macOS compatibility)
