@@ -39,9 +39,11 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
 fi
 
 # ━━━ 4. "claude" 윈도우를 추가하고 claude code 실행 ━━━
+# 이미 같은 이름의 윈도우가 있는지 확인
 if ! tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx 'claude'; then
-  tmux new-window -t "$SESSION:0" -n claude -c "$PROJECT_DIR"
-  tmux send-keys -t "$SESSION:claude" 'claude' Enter
+  # 인덱스 강제 X. 자동 슬롯에 생성 (-d: detach 모드라 활성 window 안 바뀜)
+  tmux new-window -d -t "$SESSION:" -n claude -c "$PROJECT_DIR"
+  tmux send-keys -t "$SESSION:claude" 'command claude' Enter
 fi
 
 # ━━━ 5. claude 윈도우로 점프 후 attach ━━━
