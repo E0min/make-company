@@ -289,7 +289,7 @@ if $INSIDE_TMUX; then
   for agent in $AGENTS; do
     LABEL=$(agent_label "$agent")
     W_IDX=$(tmux list-windows -t "$CURRENT_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null | grep "${LABEL}$" | tail -1 | awk '{print $1}')
-    [ -n "$W_IDX" ] && tmux send-keys -t "$CURRENT_SESSION:$W_IDX" "tail -f '$OUTPUT_DIR/${agent}.log'" Enter
+    [ -n "$W_IDX" ] && tmux send-keys -t "$CURRENT_SESSION:$W_IDX" "command claude --agent $agent" Enter
   done
 
   # claude 윈도우로 돌아감
@@ -314,12 +314,15 @@ else
   sleep 1
 
   # 3단계: 각 윈도우에 명령 전송 (인덱스 기반)
+  # 윈도우 0: 메인 claude (CEO 모드 — /company run 사용)
   tmux send-keys -t "$SESSION:0" 'command claude' Enter
+  # 윈도우 1: activity.log 모니터
   tmux send-keys -t "$SESSION:1" "tail -f '$ACTIVITY_LOG'" Enter
+  # 윈도우 2~N: 각 에이전트 독립 claude 세션
   idx=1
   for agent in $AGENTS; do
     idx=$((idx + 1))
-    tmux send-keys -t "$SESSION:$idx" "tail -f '$OUTPUT_DIR/${agent}.log'" Enter
+    tmux send-keys -t "$SESSION:$idx" "command claude --agent $agent" Enter
   done
 
   SESSION_FOR_LIST="$SESSION"
