@@ -1,0 +1,59 @@
+name: 신규 기능 개발
+description: CEO 기획 → PM PRD → (Designer ∥ Backend) → Frontend → (FE-QA ∥ BE-QA)
+
+steps:
+  - id: planning
+    agent: ceo
+    prompt: |
+      다음 요청을 분석하고 실행 계획을 수립해주세요:
+      {{input}}
+    output: plan
+
+  - id: prd
+    agent: product-manager
+    prompt: |
+      CEO 계획 기반으로 PRD를 작성해주세요:
+      {{steps.planning.output}}
+    depends_on: [planning]
+    output: prd
+
+  - id: design
+    agent: ui-ux-designer
+    prompt: |
+      다음 PRD 기반으로 디자인 스펙을 작성해주세요:
+      {{steps.prd.output}}
+    depends_on: [prd]
+    output: design_spec
+
+  - id: backend
+    agent: backend-engineer
+    prompt: |
+      다음 PRD 기반으로 API/DB 설계 및 구현을 해주세요:
+      {{steps.prd.output}}
+    depends_on: [prd]
+    output: api_implementation
+
+  - id: frontend
+    agent: frontend-engineer
+    prompt: |
+      디자인 스펙과 API 설계를 기반으로 프론트엔드를 구현해주세요:
+      디자인: {{steps.design.output}}
+      API: {{steps.backend.output}}
+    depends_on: [design, backend]
+    output: frontend_implementation
+
+  - id: fe-qa
+    agent: fe-qa
+    prompt: |
+      프론트엔드 구현물을 검증해주세요:
+      {{steps.frontend.output}}
+    depends_on: [frontend]
+    output: fe_qa_report
+
+  - id: be-qa
+    agent: be-qa
+    prompt: |
+      백엔드 API를 검증해주세요:
+      {{steps.backend.output}}
+    depends_on: [frontend]
+    output: be_qa_report

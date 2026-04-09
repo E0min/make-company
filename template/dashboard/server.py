@@ -1,922 +1,711 @@
 #!/usr/bin/env python3
 """
-Virtual Company Dashboard Server (의존성 0)
-- Python 표준 라이브러리만 사용
-- localhost:7777 (기본)
-- CSRF: dashboard_token.txt + X-Token 헤더
-- Atomic mkdir lock (Bash와 호환)
+Virtual Company v2 Dashboard Server (의존성 0)
+- activity.log + agent-output/*.log 기반
+- SSE(Server-Sent Events)로 실시간 스트리밍
+- localhost:7777
 """
-import os, sys, json, time, uuid, subprocess, signal, threading
+import os, sys, json, time, re, threading, subprocess, shlex, secrets, signal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
-
-# 작업 큐 직렬화: 모든 config.json 쓰기는 이 락으로 직렬화
-CONFIG_LOCK = threading.Lock()
+from urllib.parse import urlparse
 
 COMPANY_DIR = os.path.dirname(os.path.abspath(__file__)).rsplit('/dashboard', 1)[0]
 DASHBOARD_DIR = os.path.join(COMPANY_DIR, 'dashboard')
-NEXT_OUT_DIR = os.path.join(COMPANY_DIR, 'dashboard-next', 'out')
-USE_NEXT = os.path.isfile(os.path.join(NEXT_OUT_DIR, 'index.html'))
 CONFIG_PATH = os.path.join(COMPANY_DIR, 'config.json')
-STATE_DIR = os.path.join(COMPANY_DIR, 'state')
-INBOX_DIR = os.path.join(COMPANY_DIR, 'inbox')
-OUTBOX_DIR = os.path.join(COMPANY_DIR, 'outbox')
-CHANNEL = os.path.join(COMPANY_DIR, 'channel/general.md')
-TOKEN_PATH = os.path.join(STATE_DIR, 'dashboard_token.txt')
+ACTIVITY_LOG = os.path.join(COMPANY_DIR, 'activity.log')
+AGENT_OUTPUT_DIR = os.path.join(COMPANY_DIR, 'agent-output')
+AGENT_MEMORY_DIR = os.path.join(COMPANY_DIR, 'agent-memory')
+WORKFLOWS_DIR = os.path.join(os.path.dirname(COMPANY_DIR), 'workflows')  # .claude/workflows/
+AGENTS_DIR = os.path.join(os.path.dirname(COMPANY_DIR), 'agents')  # .claude/agents/
+GLOBAL_AGENTS_DIR = os.path.expanduser('~/.claude/agents')  # 글로벌 에이전트
+PROJECT_DIR = os.path.dirname(os.path.dirname(COMPANY_DIR))  # project root
 
-# ━━━ Atomic Lock (Bash와 호환) ━━━
-def acquire_lock(path, timeout=5.0):
-    lockdir = path + ".lock.d"
-    waited = 0.0
-    while waited < timeout:
-        try:
-            os.mkdir(lockdir)
-            return True
-        except FileExistsError:
-            time.sleep(0.1)
-            waited += 0.1
-    return False
+# 실행 중인 프로세스 추적
+RUNNING_PROC = {"pid": None, "task": None, "mode": None, "started": None}
+PROC_LOCK = threading.Lock()
 
-def release_lock(path):
-    try:
-        os.rmdir(path + ".lock.d")
-    except OSError:
-        pass
+# config.json read-modify-write 동기화
+CONFIG_LOCK = threading.Lock()
 
-def atomic_write_json(path, data):
-    """tmp → mv 패턴으로 atomic write"""
-    if not acquire_lock(path):
-        return False
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.rename(tmp, path)
-        return True
-    finally:
-        release_lock(path)
-
-def get_config_etag():
-    """config.json의 mtime을 ETag로 사용 (정수 초)"""
-    if not os.path.exists(CONFIG_PATH):
-        return "0"
-    return str(int(os.path.getmtime(CONFIG_PATH)))
-
-def signal_reload():
-    """router.sh와 dag-scheduler.sh에 SIGHUP 전송 → 즉시 config 재로드"""
-    try:
-        # pgrep 패턴으로 프로세스 찾기
-        for script in ['router.sh', 'dag-scheduler.sh']:
-            r = subprocess.run(['pgrep', '-f', f'{COMPANY_DIR}/{script}'],
-                               capture_output=True, text=True)
-            for pid in r.stdout.strip().split('\n'):
-                if pid:
-                    try:
-                        os.kill(int(pid), signal.SIGHUP)
-                    except (ProcessLookupError, ValueError):
-                        pass
-    except Exception:
-        pass
-
-# ━━━ Token (CSRF) ━━━
-def get_or_create_token():
-    if os.path.exists(TOKEN_PATH):
-        with open(TOKEN_PATH) as f:
-            return f.read().strip()
-    token = uuid.uuid4().hex
-    os.makedirs(STATE_DIR, exist_ok=True)
-    with open(TOKEN_PATH, 'w') as f:
-        f.write(token)
-    os.chmod(TOKEN_PATH, 0o600)
-    return token
-
-DASHBOARD_TOKEN = get_or_create_token()
+# 인증 토큰 (서버 시작 시 생성)
+AUTH_TOKEN = secrets.token_hex(16)
 
 MIME_TYPES = {
     '.html': 'text/html; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.js': 'application/javascript; charset=utf-8',
-    '.mjs': 'application/javascript; charset=utf-8',
     '.json': 'application/json; charset=utf-8',
     '.svg': 'image/svg+xml',
     '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
     '.ico': 'image/x-icon',
-    '.woff': 'font/woff',
-    '.woff2': 'font/woff2',
-    '.ttf': 'font/ttf',
-    '.txt': 'text/plain; charset=utf-8',
-    '.map': 'application/json',
 }
 
 # ━━━ Data readers ━━━
-def read_state():
-    """모든 에이전트 상태 + heartbeat + cost"""
+
+def read_config():
     if not os.path.exists(CONFIG_PATH):
-        return {"error": "config.json not found"}
+        return {}
     with open(CONFIG_PATH) as f:
-        config = json.load(f)
-    agents = []
-    now = int(time.time())
-    cost_data = {}
-    cost_path = os.path.join(STATE_DIR, 'cost.json')
-    if os.path.exists(cost_path):
-        try:
-            with open(cost_path) as f:
-                cost_data = json.load(f)
-        except: pass
-    for a in config.get('agents', []):
-        aid = a['id']
-        state_file = os.path.join(STATE_DIR, f"{aid}.state")
-        hb_file = os.path.join(STATE_DIR, f"{aid}.heartbeat")
-        state, ts = "unknown", 0
-        if os.path.exists(state_file):
-            try:
-                parts = open(state_file).read().strip().split()
-                state = parts[0] if parts else "unknown"
-                ts = int(parts[1]) if len(parts) > 1 else 0
-            except: pass
-        hb, hb_age = None, None
-        if os.path.exists(hb_file):
-            try:
-                hb = int(open(hb_file).read().strip())
-                hb_age = now - hb
-                if hb_age > 30 and state not in ('stopped', 'paused', 'permanently-failed'):
-                    state = "dead"
-            except: pass
-        # inbox 크기
-        inbox_size = 0
-        ibf = os.path.join(INBOX_DIR, f"{aid}.md")
-        if os.path.exists(ibf):
-            inbox_size = os.path.getsize(ibf)
-        # 비용
-        agent_cost = cost_data.get(aid, {})
-        agents.append({
-            "id": aid,
-            "label": a.get('label', aid),
-            "engine": a.get('engine', 'claude'),
-            "agent_file": a.get('agent_file', aid),
-            "protected": a.get('protected', False),
-            "assigned_skills": a.get('assigned_skills', []),
-            "state": state,
-            "state_ts": ts,
-            "elapsed": now - ts if ts else 0,
-            "heartbeat_age": hb_age,
-            "inbox_size": inbox_size,
-            "tokens": agent_cost.get('tokens', 0),
-            "messages": agent_cost.get('messages', 0),
-        })
-    return {
-        "project": config.get('project', 'Company'),
-        "session_name": config.get('session_name', ''),
-        "now": now,
-        "agents": agents,
-        "cost_limit": config.get('cost_limit_tokens', 200000),
-        "total_tokens": sum(a['tokens'] for a in agents),
-    }
+        return json.load(f)
 
-def read_channel(lines=30):
-    if not os.path.exists(CHANNEL):
-        return {"lines": []}
-    try:
-        with open(CHANNEL) as f:
-            all_lines = f.readlines()
-        return {"lines": [l.rstrip() for l in all_lines[-lines:]]}
-    except: return {"lines": []}
-
-def read_workflows():
-    """state/workflows/ 활성 + workflows/ 템플릿"""
-    active, templates = [], []
-    wf_state_dir = os.path.join(STATE_DIR, 'workflows')
-    wf_template_dir = os.path.join(COMPANY_DIR, 'workflows')
-    if os.path.isdir(wf_state_dir):
-        for f in sorted(os.listdir(wf_state_dir)):
-            if f.endswith('.json'):
-                try:
-                    with open(os.path.join(wf_state_dir, f)) as fh:
-                        active.append(json.load(fh))
-                except: pass
-    if os.path.isdir(wf_template_dir):
-        for f in sorted(os.listdir(wf_template_dir)):
-            if f.endswith('.json'):
-                try:
-                    with open(os.path.join(wf_template_dir, f)) as fh:
-                        wf = json.load(fh)
-                        templates.append({"file": f, "id": wf.get('workflow_id'), "title": wf.get('title')})
-                except: pass
-    return {"active": active, "templates": templates}
-
-def read_tasks(limit=10):
-    tasks_dir = os.path.join(STATE_DIR, 'tasks')
-    if not os.path.isdir(tasks_dir):
-        return {"tasks": []}
-    files = sorted(
-        [os.path.join(tasks_dir, f) for f in os.listdir(tasks_dir) if f.endswith('.json')],
-        key=os.path.getmtime, reverse=True
-    )[:limit]
-    tasks = []
-    for f in files:
-        try:
-            with open(f) as fh:
-                tasks.append(json.load(fh))
-        except: pass
-    return {"tasks": tasks}
-
-def read_knowledge():
-    idx = os.path.join(COMPANY_DIR, 'knowledge/INDEX.md')
-    if not os.path.exists(idx):
-        return {"index": ""}
-    return {"index": open(idx).read()}
-
-def read_skills():
-    """skill-index.json에서 사용 가능한 스킬 목록"""
-    si = os.path.join(COMPANY_DIR, 'skill-index.json')
-    if not os.path.exists(si):
-        return {"skills": []}
-    try:
-        with open(si) as f:
-            data = json.load(f)
-        return {"skills": [{"name": s.get('name'), "desc": s.get('desc', '')[:60]} for s in data]}
-    except: return {"skills": []}
-
-def parse_md_frontmatter(text):
-    """간단한 frontmatter 파서"""
-    if not text.startswith('---'):
-        return {}
-    end = text.find('---', 3)
-    if end == -1:
-        return {}
-    fm_text = text[3:end].strip()
-    meta = {}
-    for line in fm_text.split('\n'):
-        if ':' in line and not line.startswith(' '):
-            k, _, v = line.partition(':')
-            meta[k.strip()] = v.strip()
-    return meta
-
-def read_library():
-    """agents-library/ 에이전트 카탈로그"""
-    lib_dir = os.path.join(COMPANY_DIR, 'agents-library')
-    if not os.path.isdir(lib_dir):
-        return {"library": [], "categories": []}
-    items = []
-    cats = set()
-    for category in sorted(os.listdir(lib_dir)):
-        catdir = os.path.join(lib_dir, category)
-        if not os.path.isdir(catdir):
+def read_activity(lines=50):
+    """activity.log에서 최근 N줄 + 파싱"""
+    if not os.path.exists(ACTIVITY_LOG):
+        return []
+    with open(ACTIVITY_LOG) as f:
+        all_lines = f.readlines()
+    entries = []
+    # 패턴: [2026-04-09 16:26:58] [agent-id] 🟢 시작 | 설명
+    pattern = re.compile(r'\[([^\]]+)\]\s*(?:\[([^\]]+)\])?\s*(.*)')
+    for line in all_lines[-lines:]:
+        line = line.strip()
+        if not line:
             continue
-        cats.add(category)
-        for fname in sorted(os.listdir(catdir)):
-            if not fname.endswith('.md'):
-                continue
-            path = os.path.join(catdir, fname)
-            try:
-                with open(path) as f:
-                    text = f.read()
-                meta = parse_md_frontmatter(text)
-                items.append({
-                    "library_path": f"{category}/{fname[:-3]}",
-                    "category": category,
-                    "name": meta.get('name', fname[:-3]),
-                    "default_label": meta.get('default_label', ''),
-                    "description": meta.get('description', ''),
-                    "default_skills": meta.get('default_skills', '[]'),
-                })
-            except: pass
-    return {"library": items, "categories": sorted(cats)}
-
-def read_presets():
-    """presets/*.json 목록"""
-    pdir = os.path.join(COMPANY_DIR, 'presets')
-    if not os.path.isdir(pdir):
-        return {"presets": []}
-    items = []
-    for fname in sorted(os.listdir(pdir)):
-        if not fname.endswith('.json'):
-            continue
-        try:
-            with open(os.path.join(pdir, fname)) as f:
-                p = json.load(f)
-            items.append({
-                "id": p.get('id'),
-                "name": p.get('name'),
-                "icon": p.get('icon', '🏢'),
-                "description": p.get('description', ''),
-                "agent_count": len(p.get('agents', [])),
+        m = pattern.match(line)
+        if m:
+            entries.append({
+                "timestamp": m.group(1),
+                "agent": m.group(2) or "",
+                "message": m.group(3),
+                "raw": line,
             })
-        except: pass
-    return {"presets": items}
+        else:
+            entries.append({"timestamp": "", "agent": "", "message": line, "raw": line})
+    return entries
 
-def add_agent_from_library(library_path, custom_id=None, custom_label=None, if_match=None):
-    """라이브러리에서 에이전트를 가져와 활성화"""
-    lib_file = os.path.join(COMPANY_DIR, 'agents-library', f"{library_path}.md")
-    if not os.path.exists(lib_file):
-        return False, f"library not found: {library_path}"
+def read_agent_states():
+    """activity.log에서 에이전트별 최신 상태 추출"""
+    config = read_config()
+    agents = config.get('agents', [])
+    states = {}
+    for aid in agents:
+        if aid == 'ceo':
+            continue
+        states[aid] = {"id": aid, "state": "idle", "last_message": "", "timestamp": ""}
 
-    with open(lib_file) as f:
-        md_text = f.read()
-    meta = parse_md_frontmatter(md_text)
+    if os.path.exists(ACTIVITY_LOG):
+        with open(ACTIVITY_LOG) as f:
+            for line in f:
+                line = line.strip()
+                for aid in states:
+                    if f'[{aid}]' in line:
+                        if '🟢' in line:
+                            states[aid]["state"] = "working"
+                        elif '✅' in line:
+                            states[aid]["state"] = "done"
+                        elif '❌' in line:
+                            states[aid]["state"] = "error"
+                        # 타임스탬프 추출
+                        ts_match = re.match(r'\[([^\]]+)\]', line)
+                        if ts_match:
+                            states[aid]["timestamp"] = ts_match.group(1)
+                        states[aid]["last_message"] = line
+    return list(states.values())
 
-    aid = (custom_id or library_path.split('/')[-1]).strip().lower()
-    label = custom_label or meta.get('default_label') or aid
-    engine = 'gemini' if library_path == 'external/gemini' else 'claude'
+def read_agent_output(agent_id, lines=30):
+    """agent-output/{id}.log에서 최근 내용"""
+    path = os.path.join(AGENT_OUTPUT_DIR, f"{agent_id}.log")
+    if not os.path.exists(path):
+        return ""
+    with open(path) as f:
+        all_lines = f.readlines()
+    return "".join(all_lines[-lines:])
 
-    # default_skills 파싱
-    import re
-    skills_str = meta.get('default_skills', '[]').strip()
-    skills = []
-    m = re.match(r'^\[(.*)\]$', skills_str)
-    if m:
-        skills = [s.strip() for s in m.group(1).split(',') if s.strip()]
+def read_agent_memory(agent_id):
+    """agent-memory/{id}.md"""
+    path = os.path.join(AGENT_MEMORY_DIR, f"{agent_id}.md")
+    if not os.path.exists(path):
+        return ""
+    with open(path) as f:
+        return f.read()
 
-    # create_agent 호출 (재사용)
-    body = {
-        "id": aid,
-        "label": label,
-        "engine": engine,
-        "agent_file": aid,
-        "description": meta.get('description', ''),
-        "role_body": "",
-        "skills": skills,
-    }
-    # role body는 라이브러리 .md를 그대로 사용
-    ok, result = create_agent(body, if_match)
-    if not ok:
-        return ok, result
+# ━━━ SSE watchers ━━━
 
-    # 라이브러리 .md를 .claude/agents/{aid}.md로 덮어쓰기 (frontmatter 제외, 본문만)
-    claude_dir = os.path.dirname(COMPANY_DIR)
-    md_path = os.path.join(claude_dir, 'agents', f"{aid}.md")
-    try:
-        with open(md_path, 'w', encoding='utf-8') as f:
-            f.write(md_text)
-    except: pass
-
-    return True, result
-
-def export_current_as_preset(preset_id, name, description, icon='🏢'):
-    """현재 config의 에이전트를 프리셋 JSON으로 export"""
-    if not os.path.exists(CONFIG_PATH):
-        return False, "config not found"
-    with open(CONFIG_PATH) as f:
-        config = json.load(f)
-
-    # 라이브러리에서 역매핑 (agent_file 기반)
-    lib_dir = os.path.join(COMPANY_DIR, 'agents-library')
-    file_to_path = {}
-    if os.path.isdir(lib_dir):
-        for cat in os.listdir(lib_dir):
-            catdir = os.path.join(lib_dir, cat)
-            if not os.path.isdir(catdir): continue
-            for f in os.listdir(catdir):
-                if f.endswith('.md'):
-                    file_to_path[f[:-3]] = f"{cat}/{f[:-3]}"
-
+def read_agents_full():
+    """프로젝트 에이전트 .md 파일 목록 (frontmatter + 본문)"""
     agents = []
-    for a in config.get('agents', []):
-        af = a.get('agent_file', a['id'])
-        # 라이브러리에서 매칭, 없으면 leadership/ceo로 fallback
-        lib_path = file_to_path.get(af, file_to_path.get(a['id'], 'leadership/ceo'))
-        agents.append({
-            "library_path": lib_path,
-            "id": a['id'],
-            "label": a.get('label', a['id']),
-            "protected": a.get('protected', False),
-            **({"engine": "gemini"} if a.get('engine') == 'gemini' else {}),
-        })
-
-    preset = {
-        "id": preset_id,
-        "name": name,
-        "description": description,
-        "icon": icon,
-        "agents": agents,
-    }
-
-    out_path = os.path.join(COMPANY_DIR, 'presets', f"{preset_id}.json")
-    if not acquire_lock(out_path):
-        return False, "lock timeout"
-    try:
-        tmp = out_path + ".tmp"
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(preset, f, ensure_ascii=False, indent=2)
-        os.rename(tmp, out_path)
-    finally:
-        release_lock(out_path)
-
-    return True, {"file": f"{preset_id}.json", "preset": preset}
-
-# ━━━ Mutations (POST) ━━━
-RESERVED_AGENT_IDS = {'human', 'system', 'router', 'monitor', 'dashboard', 'admin', 'orch'}
-
-def create_agent(body, if_match=None):
-    """body: {id, label, engine, agent_file, description, role_body, skills}"""
-    aid = body.get('id', '').strip().lower()
-    if not aid or not aid.replace('-', '').replace('_', '').isalnum():
-        return False, "invalid id (영문/숫자/-/_ 만 허용)"
-    if aid in RESERVED_AGENT_IDS:
-        return False, f"reserved id: {aid}"
-    if len(aid) < 2 or len(aid) > 30:
-        return False, "id length must be 2-30"
-    label = body.get('label', aid)
-    engine = body.get('engine', 'claude')
-    if engine not in ('claude', 'gemini'):
-        return False, "engine must be claude or gemini"
-    agent_file = body.get('agent_file', aid)
-    description = body.get('description', f'{label} 에이전트')
-    role_body = body.get('role_body', f'당신은 {label} 에이전트입니다.')
-    skills = body.get('skills', [])
-
-    # 1. config.json에 추가 (작업 큐 직렬화 + 파일 락 + ETag 검증)
-    with CONFIG_LOCK:
-        # ETag 검증 (Lost Update 방지)
-        if if_match is not None and if_match != get_config_etag():
-            return False, "conflict_409"
-        if not acquire_lock(CONFIG_PATH):
-            return False, "config lock timeout"
+    if not os.path.isdir(AGENTS_DIR):
+        return agents
+    for f in sorted(os.listdir(AGENTS_DIR)):
+        if not f.endswith('.md'):
+            continue
+        aid = os.path.splitext(f)[0]
+        path = os.path.join(AGENTS_DIR, f)
         try:
-            with open(CONFIG_PATH) as f:
-                config = json.load(f)
-            if any(a['id'] == aid for a in config.get('agents', [])):
-                return False, "agent id already exists"
-            new_agent = {
-                "id": aid, "engine": engine, "agent_file": agent_file,
-                "label": label, "assigned_skills": skills, "protected": False
-            }
-            config.setdefault('agents', []).append(new_agent)
-            tmp = CONFIG_PATH + ".tmp"
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
-            os.rename(tmp, CONFIG_PATH)
-        finally:
-            release_lock(CONFIG_PATH)
+            with open(path) as fh:
+                content = fh.read()
+            # frontmatter 파싱
+            meta = {}
+            body = content
+            if content.startswith('---'):
+                end = content.find('---', 3)
+                if end != -1:
+                    fm = content[3:end].strip()
+                    body = content[end+3:].strip()
+                    for line in fm.split('\n'):
+                        if ':' in line and not line.startswith(' '):
+                            k, _, v = line.partition(':')
+                            meta[k.strip()] = v.strip()
+            agents.append({
+                "id": aid,
+                "name": meta.get('name', aid),
+                "description": meta.get('description', ''),
+                "category": meta.get('category', ''),
+                "color": meta.get('color', ''),
+                "content": content,
+                "is_global": os.path.exists(os.path.join(GLOBAL_AGENTS_DIR, f)),
+            })
+        except Exception: pass
+    return agents
 
-    # 2. .claude/agents/{agent_file}.md 생성 (Claude Code 에이전트 정의)
-    # COMPANY_DIR = .../.claude/company → 부모가 .claude
-    claude_dir = os.path.dirname(COMPANY_DIR)
-    agents_md_dir = os.path.join(claude_dir, 'agents')
-    os.makedirs(agents_md_dir, exist_ok=True)
-    md_path = os.path.join(agents_md_dir, f"{agent_file}.md")
-    skills_str = ', '.join(skills) if skills else ''
-    md_content = f"""---
-name: {label}
-description: {description}
-recommended-skills: [{skills_str}]
+def read_global_agents():
+    """글로벌 에이전트 목록 (프로젝트에 없는 것만)"""
+    if not os.path.isdir(GLOBAL_AGENTS_DIR):
+        return []
+    project_ids = set()
+    if os.path.isdir(AGENTS_DIR):
+        project_ids = {os.path.splitext(f)[0] for f in os.listdir(AGENTS_DIR) if f.endswith('.md')}
+    agents = []
+    for f in sorted(os.listdir(GLOBAL_AGENTS_DIR)):
+        if not f.endswith('.md'):
+            continue
+        aid = os.path.splitext(f)[0]
+        if aid in project_ids:
+            continue
+        path = os.path.join(GLOBAL_AGENTS_DIR, f)
+        try:
+            with open(path) as fh:
+                first_lines = fh.read(500)
+            meta = {}
+            if first_lines.startswith('---'):
+                end = first_lines.find('---', 3)
+                if end != -1:
+                    for line in first_lines[3:end].split('\n'):
+                        if ':' in line and not line.startswith(' '):
+                            k, _, v = line.partition(':')
+                            meta[k.strip()] = v.strip()
+            agents.append({
+                "id": aid,
+                "name": meta.get('name', aid),
+                "description": meta.get('description', ''),
+                "category": meta.get('category', ''),
+            })
+        except Exception: pass
+    return agents
+
+def save_agent(agent_id, content, scope='local', color=None):
+    """에이전트 .md 파일 저장 (local=프로젝트, global=글로벌)"""
+    # 색상이 있으면 frontmatter에 주입
+    if color and '---' in content:
+        end = content.find('---', 3)
+        if end != -1:
+            fm = content[3:end].strip()
+            # 기존 color 제거
+            fm_lines = [l for l in fm.split('\n') if not l.startswith('color:')]
+            fm_lines.append(f'color: {color}')
+            content = '---\n' + '\n'.join(fm_lines) + '\n---' + content[end+3:]
+
+    # 저장 경로 결정
+    if scope == 'global':
+        os.makedirs(GLOBAL_AGENTS_DIR, exist_ok=True)
+        path = os.path.join(GLOBAL_AGENTS_DIR, f"{agent_id}.md")
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+    # 로컬에도 항상 저장 (global이면 둘 다)
+    os.makedirs(AGENTS_DIR, exist_ok=True)
+    path = os.path.join(AGENTS_DIR, f"{agent_id}.md")
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+    # config.json에 에이전트 추가 (race condition 방지)
+    with CONFIG_LOCK:
+        config = read_config()
+        agents = config.get('agents', [])
+        if agent_id not in agents:
+            agents.append(agent_id)
+            config['agents'] = agents
+            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+    # 메모리 + 출력 파일 생성
+    os.makedirs(AGENT_MEMORY_DIR, exist_ok=True)
+    os.makedirs(AGENT_OUTPUT_DIR, exist_ok=True)
+    for d, ext in [(AGENT_MEMORY_DIR, '.md'), (AGENT_OUTPUT_DIR, '.log')]:
+        p = os.path.join(d, f"{agent_id}{ext}")
+        if not os.path.exists(p):
+            open(p, 'w').close()
+    return True
+
+def generate_agent_with_ai(role_desc, agent_id):
+    """Claude CLI로 에이전트 .md 생성"""
+    prompt = f"""다음 역할의 Virtual Company 에이전트 .md 파일을 생성해주세요.
+
+역할: {role_desc}
+ID: {agent_id}
+
+반드시 아래 형식을 따르세요:
+
+---
+name: (영문 이름)
+description: (한국어 한줄 설명)
+category: (leadership/engineering/design/qa/marketing 중 택1)
 ---
 
-당신은 지금 tmux 세션 안에서 실행 중인 {label} 에이전트입니다.
-당신에게 오는 메시지는 라우터를 통해 자동 전달된 것입니다.
-응답에 @에이전트ID를 쓰면 해당 팀원에게 자동 전달됩니다.
+# Role: (역할명)
 
-## 역할
+당신은 Virtual Company의 **(역할명)** 에이전트입니다. 워크플로우 시스템을 통해 호출되며, 작업 결과를 직접 반환합니다.
 
-{role_body}
+## 프로젝트 컨텍스트
+{{{{project_context}}}}
+
+## 누적 기억
+{{{{agent_memory}}}}
+
+---
+
+## 핵심 원칙
+(3~5개 구체적 원칙)
 
 ## 행동 규칙
+(구체적 do/don't)
 
-- 응답은 간결하게 작성합니다
-- 다른 팀원과 협업이 필요하면 @멘션을 사용합니다
-"""
-    with open(md_path, 'w', encoding='utf-8') as f:
-        f.write(md_content)
+## Tone & Manner
+(톤 가이드)
 
-    # 3. tmux 새 윈도우 + 에이전트 시작 (선택 — 회사가 가동 중일 때만)
-    session_name = config.get('session_name', '')
-    if session_name:
-        try:
-            # tmux 세션 존재 확인
-            r = subprocess.run(['tmux', 'has-session', '-t', session_name],
-                               capture_output=True)
-            if r.returncode == 0:
-                subprocess.run(['tmux', 'new-window', '-t', session_name, '-n', label],
-                               capture_output=True)
-                runner = 'run-gemini.sh' if engine == 'gemini' else 'run-agent.sh'
-                cmd = f"bash '{COMPANY_DIR}/agents/{runner}' '{aid}'"
-                subprocess.run(['tmux', 'send-keys', '-t', f"{session_name}:{label}",
-                                cmd, 'Enter'], capture_output=True)
-        except: pass
+.md 파일 내용만 출력하세요. 다른 설명 없이."""
 
-    # 4. router/scheduler에 SIGHUP → 즉시 재로드 (30초 폴링 대기 없음)
-    signal_reload()
-
-    return True, {"id": aid, "agent_file": agent_file, "etag": get_config_etag()}
-
-def delete_agent(aid, if_match=None):
-    target = None
-    config = None
-    with CONFIG_LOCK:
-        if if_match is not None and if_match != get_config_etag():
-            return False, "conflict_409"
-        if not acquire_lock(CONFIG_PATH):
-            return False, "config lock timeout"
-        try:
-            with open(CONFIG_PATH) as f:
-                config = json.load(f)
-            target = next((a for a in config.get('agents', []) if a['id'] == aid), None)
-            if not target:
-                return False, "not found"
-            if target.get('protected'):
-                return False, "protected agent — 삭제 불가"
-            config['agents'] = [a for a in config['agents'] if a['id'] != aid]
-            tmp = CONFIG_PATH + ".tmp"
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
-            os.rename(tmp, CONFIG_PATH)
-        finally:
-            release_lock(CONFIG_PATH)
-
-    # tmux 윈도우 종료
-    session_name = config.get('session_name', '')
-    if session_name and target:
-        try:
-            subprocess.run(['tmux', 'kill-window', '-t', f"{session_name}:{target.get('label', aid)}"],
-                           capture_output=True)
-        except: pass
-
-    signal_reload()
-    return True, {"deleted": aid, "etag": get_config_etag()}
-
-def assign_skills(aid, skills, if_match=None):
-    if not isinstance(skills, list):
-        return False, "skills must be array"
-    with CONFIG_LOCK:
-        if if_match is not None and if_match != get_config_etag():
-            return False, "conflict_409"
-        if not acquire_lock(CONFIG_PATH):
-            return False, "config lock timeout"
-        try:
-            with open(CONFIG_PATH) as f:
-                config = json.load(f)
-            target = next((a for a in config.get('agents', []) if a['id'] == aid), None)
-            if not target:
-                return False, "not found"
-            target['assigned_skills'] = skills
-            tmp = CONFIG_PATH + ".tmp"
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
-            os.rename(tmp, CONFIG_PATH)
-        finally:
-            release_lock(CONFIG_PATH)
-    signal_reload()
-    return True, {"skills": skills, "etag": get_config_etag()}
-
-def run_workflow(wf_file, user_request):
-    """workflows/{wf_file} → kickoff.sh --dag 호출"""
-    wf_path = os.path.join(COMPANY_DIR, 'workflows', wf_file)
-    if not os.path.exists(wf_path):
-        return False, "workflow not found"
     try:
-        subprocess.Popen(['bash', os.path.join(COMPANY_DIR, 'kickoff.sh'),
-                          '--dag', wf_path, user_request])
-        return True, {"started": wf_file}
+        result = subprocess.run(
+            ['claude', '-p', prompt, '--no-input'],
+            capture_output=True, text=True, timeout=60,
+            cwd=PROJECT_DIR,
+        )
+        output = result.stdout.strip()
+        # --- 로 시작하는 부분 찾기
+        idx = output.find('---')
+        if idx >= 0:
+            return output[idx:]
+        return output
+    except subprocess.TimeoutExpired:
+        return {"error": "AI 생성 시간 초과 (60초)"}
+    except FileNotFoundError:
+        return {"error": "claude CLI를 찾을 수 없습니다"}
     except Exception as e:
-        return False, str(e)
+        return {"error": f"AI 생성 실패: {str(e)}"}
 
-def create_workflow(body):
-    """워크플로 빌더가 생성한 JSON을 workflows/에 저장
-    body: {workflow_id, title, nodes: [{id, agent, input_template, depends_on, on_failure}]}"""
-    import re
-    wf_id = body.get('workflow_id', '').strip()
-    if not wf_id or not all(c.isalnum() or c in '-_' for c in wf_id):
-        return False, "invalid workflow_id (영문/숫자/-/_ 만)"
-    if len(wf_id) < 2 or len(wf_id) > 50:
-        return False, "workflow_id 길이는 2-50자"
-    title = body.get('title', wf_id)
-    nodes = body.get('nodes', [])
-    if not nodes:
-        return False, "노드 1개 이상 필요"
-    if len(nodes) > 50:
-        return False, "노드는 최대 50개"
-
-    # config에서 유효한 에이전트 ID 목록 로드
-    valid_agents = set()
-    try:
-        with open(CONFIG_PATH) as f:
-            valid_agents = {a['id'] for a in json.load(f).get('agents', [])}
-    except: pass
-
-    # 노드 검증
-    node_ids = set()
-    for n in nodes:
-        nid = (n.get('id') or '').strip()
-        if not nid:
-            return False, "노드 id 필수"
-        if nid in node_ids:
-            return False, f"중복된 노드 id: {nid}"
-        if not all(c.isalnum() or c in '-_' for c in nid):
-            return False, f"노드 id에 잘못된 문자: {nid}"
-        node_ids.add(nid)
-        agent = n.get('agent', '')
-        if not agent:
-            return False, f"노드 {nid}: agent 필수"
-        if valid_agents and agent not in valid_agents:
-            return False, f"노드 {nid}: 알 수 없는 에이전트 '{agent}'"
-
-    # depends_on 검증 (존재하는 노드만 참조 가능 + 자기 참조 차단 + 순환 차단)
-    for n in nodes:
-        for dep in n.get('depends_on', []):
-            if dep not in node_ids:
-                return False, f"노드 {n['id']}: 잘못된 depends_on '{dep}'"
-            if dep == n['id']:
-                return False, f"노드 {n['id']}: 자기 자신 참조 불가"
-
-    # 순환 의존성 감지 (단순 BFS)
-    def has_cycle():
-        graph = {n['id']: set(n.get('depends_on', [])) for n in nodes}
-        for start in graph:
-            visited, stack = set(), [start]
-            while stack:
-                cur = stack.pop()
-                if cur in visited:
-                    continue
-                visited.add(cur)
-                for dep in graph.get(cur, []):
-                    if dep == start:
-                        return True
-                    stack.append(dep)
-        return False
-    if has_cycle():
-        return False, "순환 의존성 감지됨"
-
-    # input_template의 {{node_id.output_artifact}} 변수가 실제 노드 참조인지 검증
-    var_pattern = re.compile(r'\{\{(\w+)\.output_artifact\}\}')
-    for n in nodes:
-        tmpl = n.get('input_template', '')
-        for ref in var_pattern.findall(tmpl):
-            if ref not in node_ids:
-                return False, f"노드 {n['id']}: input_template이 존재하지 않는 노드 '{ref}' 참조"
-            if ref == n['id']:
-                return False, f"노드 {n['id']}: input_template에서 자기 참조 불가"
-
-    # 기본값 채우기
-    for n in nodes:
-        n.setdefault('status', 'pending')
-        n.setdefault('output_artifact', None)
-        n.setdefault('retry_count', 0)
-        n.setdefault('on_failure', 'manual')
-        n.setdefault('depends_on', [])
-        n.setdefault('input_template', '{{user_request}}')
-
-    wf = {
-        "workflow_id": f"wf_{wf_id}",
-        "title": title,
-        "status": "pending",
-        "nodes": nodes,
-    }
-
-    out_path = os.path.join(COMPANY_DIR, 'workflows', f"{wf_id}.json")
-    if not acquire_lock(out_path):
-        return False, "lock timeout"
-    try:
-        tmp = out_path + ".tmp"
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(wf, f, ensure_ascii=False, indent=2)
-        os.rename(tmp, out_path)
-    finally:
-        release_lock(out_path)
-
-    return True, {"file": f"{wf_id}.json", "id": wf['workflow_id']}
-
-def delete_workflow(wf_file):
-    """workflows/{wf_file} 삭제"""
-    if '..' in wf_file or '/' in wf_file:
-        return False, "invalid filename"
-    path = os.path.join(COMPANY_DIR, 'workflows', wf_file)
-    if not os.path.exists(path):
-        return False, "not found"
-    try:
+def delete_agent(agent_id):
+    """에이전트 삭제"""
+    path = os.path.join(AGENTS_DIR, f"{agent_id}.md")
+    if os.path.exists(path):
         os.remove(path)
-        return True, {"deleted": wf_file}
-    except Exception as e:
-        return False, str(e)
+    # config.json에서 제거 (race condition 방지)
+    with CONFIG_LOCK:
+        config = read_config()
+        agents = config.get('agents', [])
+        if agent_id in agents:
+            agents.remove(agent_id)
+            config['agents'] = agents
+            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+    return True
 
-def get_workflow_template(wf_file):
-    """워크플로 템플릿 단일 조회 (편집용)"""
-    path = os.path.join(COMPANY_DIR, 'workflows', wf_file)
-    if not os.path.exists(path):
-        return None
+def import_global_agent(agent_id):
+    """글로벌 에이전트를 프로젝트로 복사"""
+    src = os.path.join(GLOBAL_AGENTS_DIR, f"{agent_id}.md")
+    if not os.path.exists(src):
+        return False
+    with open(src) as f:
+        content = f.read()
+    return save_agent(agent_id, content)
+
+def read_workflows():
+    """워크플로우 YAML 목록"""
+    if not os.path.isdir(WORKFLOWS_DIR):
+        return []
+    workflows = []
+    for f in sorted(os.listdir(WORKFLOWS_DIR)):
+        if f.endswith('.yml') or f.endswith('.yaml'):
+            path = os.path.join(WORKFLOWS_DIR, f)
+            name = os.path.splitext(f)[0]
+            # YAML 파싱 (간단히 name/description 추출)
+            title, desc = name, ''
+            try:
+                with open(path) as fh:
+                    for line in fh:
+                        if line.startswith('name:'):
+                            title = line.split(':', 1)[1].strip()
+                        elif line.startswith('description:'):
+                            desc = line.split(':', 1)[1].strip()
+                            break
+            except Exception: pass
+            workflows.append({"file": f, "name": name, "title": title, "description": desc})
+    return workflows
+
+def run_company_task(task, mode='run'):
+    """claude CLI로 /company run 또는 /company workflow 실행"""
+    global RUNNING_PROC
+    with PROC_LOCK:
+        if RUNNING_PROC["pid"]:
+            return {"ok": False, "error": "이미 실행 중인 태스크가 있습니다"}
+
+    if mode == 'run':
+        prompt = f'/company run {task}'
+    else:
+        prompt = f'/company workflow {task}'
+
+    # activity.log에 기록
+    ts = time.strftime('%Y-%m-%d %H:%M:%S')
+    with open(ACTIVITY_LOG, 'a') as f:
+        f.write(f"[{ts}] 🌐 대시보드에서 실행 | {prompt}\n")
+
+    # claude CLI 백그라운드 실행
+    cmd = ['claude', '--yes', '-p', prompt]
     try:
-        with open(path) as f:
-            return json.load(f)
-    except: return None
+        proc = subprocess.Popen(
+            cmd,
+            cwd=PROJECT_DIR,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        with PROC_LOCK:
+            RUNNING_PROC = {
+                "pid": proc.pid,
+                "task": task,
+                "mode": mode,
+                "started": ts,
+            }
+        # 백그라운드 스레드로 완료 대기
+        def wait_and_log():
+            global RUNNING_PROC
+            stdout, _ = proc.communicate()
+            ts2 = time.strftime('%Y-%m-%d %H:%M:%S')
+            status = '✅ 완료' if proc.returncode == 0 else f'❌ 실패 (code={proc.returncode})'
+            with open(ACTIVITY_LOG, 'a') as f:
+                f.write(f"[{ts2}] 🌐 대시보드 태스크 {status}\n")
+            # 출력을 ceo output에 기록
+            ceo_log = os.path.join(AGENT_OUTPUT_DIR, 'ceo.log')
+            if stdout:
+                with open(ceo_log, 'a') as f:
+                    f.write(f"\n━━━ {ts2} 대시보드 실행 결과 ━━━\n{stdout[:3000]}\n")
+            with PROC_LOCK:
+                RUNNING_PROC = {"pid": None, "task": None, "mode": None, "started": None}
 
-def control_action(action, body=None):
-    """pause/resume/inject"""
-    if action in ('pause', 'resume'):
-        script = os.path.join(COMPANY_DIR, f'{action}.sh')
-        if not os.path.exists(script):
-            return False, "script not found"
-        try:
-            subprocess.run(['bash', script], capture_output=True)
-            return True, {"action": action}
-        except Exception as e:
-            return False, str(e)
-    elif action == 'inject':
-        agent = body.get('agent', '')
-        msg = body.get('message', '')
-        if not agent or not msg:
-            return False, "agent + message required"
-        script = os.path.join(COMPANY_DIR, 'inject.sh')
-        try:
-            subprocess.run(['bash', script, agent, msg], capture_output=True)
-            return True, {"injected": agent}
-        except Exception as e:
-            return False, str(e)
-    return False, "unknown action"
+        threading.Thread(target=wait_and_log, daemon=True).start()
+        return {"ok": True, "pid": proc.pid, "task": task}
+    except FileNotFoundError:
+        return {"ok": False, "error": "claude CLI를 찾을 수 없습니다"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
-# ━━━ HTTP Handler ━━━
-class Handler(BaseHTTPRequestHandler):
+class FileWatcher:
+    """파일 변경을 감지하여 SSE 이벤트 생성"""
+    def __init__(self, path):
+        self.path = path
+        self.last_size = os.path.getsize(path) if os.path.exists(path) else 0
+
+    def get_new_content(self):
+        if not os.path.exists(self.path):
+            return None
+        size = os.path.getsize(self.path)
+        if size <= self.last_size:
+            if size < self.last_size:
+                self.last_size = 0  # 파일이 truncate된 경우
+            else:
+                return None
+        with open(self.path) as f:
+            f.seek(self.last_size)
+            content = f.read()
+        self.last_size = size
+        return content if content else None
+
+# ━━━ Handler ━━━
+
+class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass  # 조용하게
+        pass  # 조용히
 
-    def _send_json(self, data, status=200, etag=None):
-        body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+    def send_json(self, data, status=200):
+        body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Access-Control-Allow-Origin', 'http://localhost:7777')
-        if etag:
-            self.send_header('ETag', etag)
+        self.send_header('Content-Length', len(body))
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_file(self, path, ctype):
-        try:
-            with open(path, 'rb') as f:
-                body = f.read()
-            self.send_response(200)
-            self.send_header('Content-Type', ctype)
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except FileNotFoundError:
-            self.send_error(404)
-
-    def _serve_next_static(self, url_path):
-        """Serve files from dashboard-next/out/. Returns True if handled."""
-        # Normalize and prevent path traversal.
-        clean = url_path.lstrip('/')
-        if clean.startswith('..') or '/..' in clean:
-            self.send_error(403)
-            return True
-        # Map URL → filesystem path. trailingSlash export uses /foo/ → foo/index.html.
-        candidates = []
-        if clean == '' or clean.endswith('/'):
-            candidates.append(os.path.join(NEXT_OUT_DIR, clean, 'index.html'))
-        else:
-            candidates.append(os.path.join(NEXT_OUT_DIR, clean))
-            # Also try foo → foo/index.html and foo.html
-            candidates.append(os.path.join(NEXT_OUT_DIR, clean, 'index.html'))
-            candidates.append(os.path.join(NEXT_OUT_DIR, clean + '.html'))
-        for fp in candidates:
-            if os.path.isfile(fp):
-                ctype = MIME_TYPES.get(os.path.splitext(fp)[1].lower(), 'application/octet-stream')
-                self._send_file(fp, ctype)
-                return True
-        return False
-
-    def _check_token(self):
+    def check_auth(self):
+        """POST 요청에 대해 X-Token 헤더 검증. 실패 시 401 응답 후 False 반환."""
         token = self.headers.get('X-Token', '')
-        if token != DASHBOARD_TOKEN:
-            self._send_json({"error": "invalid token"}, 403)
+        if token != AUTH_TOKEN:
+            self.send_json({"error": "unauthorized"}, 401)
             return False
         return True
 
     def do_GET(self):
-        path = urlparse(self.path).path
-        # Next.js static export takes precedence when present.
-        if USE_NEXT and not path.startswith('/api/'):
-            if self._serve_next_static(path):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # API 라우팅
+        if path == '/api/state':
+            config = read_config()
+            agents = read_agent_states()
+            self.send_json({
+                "project": config.get("project", "Company"),
+                "tech_stack": config.get("tech_stack", ""),
+                "agents": agents,
+                "now": int(time.time()),
+            })
+        elif path == '/api/activity':
+            self.send_json({"entries": read_activity()})
+        elif path.startswith('/api/agent/') and path.endswith('/output'):
+            agent_id = path.split('/')[3]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"error": "invalid agent id"}, 400)
                 return
-            # Fall through to legacy / 404
-        if path == '/':
-            self._send_file(os.path.join(DASHBOARD_DIR, 'index.html'), 'text/html; charset=utf-8')
-        elif path == '/style.css':
-            self._send_file(os.path.join(DASHBOARD_DIR, 'style.css'), 'text/css')
-        elif path == '/app.js':
-            self._send_file(os.path.join(DASHBOARD_DIR, 'app.js'), 'application/javascript')
-        elif path == '/dag-render.js':
-            self._send_file(os.path.join(DASHBOARD_DIR, 'dag-render.js'), 'application/javascript')
-        elif path == '/api/token':
-            self._send_json({"token": DASHBOARD_TOKEN})
-        elif path == '/api/state':
-            self._send_json(read_state(), etag=get_config_etag())
-        elif path == '/api/channel':
-            self._send_json(read_channel())
+            self.send_json({"output": read_agent_output(agent_id)})
+        elif path.startswith('/api/agent/') and path.endswith('/memory'):
+            agent_id = path.split('/')[3]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"error": "invalid agent id"}, 400)
+                return
+            self.send_json({"memory": read_agent_memory(agent_id)})
+        elif path == '/api/agents':
+            self.send_json({"agents": read_agents_full()})
+        elif path == '/api/agents/global':
+            self.send_json({"agents": read_global_agents()})
+        elif path.startswith('/api/agent/') and path.endswith('/content'):
+            agent_id = path.split('/')[3]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"error": "invalid agent id"}, 400)
+                return
+            agents = read_agents_full()
+            agent = next((a for a in agents if a['id'] == agent_id), None)
+            self.send_json(agent or {"error": "not found"})
         elif path == '/api/workflows':
-            self._send_json(read_workflows())
-        elif path == '/api/tasks':
-            self._send_json(read_tasks())
-        elif path == '/api/knowledge':
-            self._send_json(read_knowledge())
-        elif path == '/api/skills':
-            self._send_json(read_skills())
-        elif path == '/api/library':
-            self._send_json(read_library())
-        elif path == '/api/presets':
-            self._send_json(read_presets())
-        elif path.startswith('/api/workflows/template/'):
-            wf_file = path.split('/')[-1]
-            wf = get_workflow_template(wf_file)
-            if wf:
-                self._send_json(wf)
-            else:
-                self.send_error(404)
+            self.send_json({"workflows": read_workflows()})
+        elif path == '/api/token':
+            self.send_json({"token": AUTH_TOKEN})
+        elif path == '/api/running':
+            with PROC_LOCK:
+                data = dict(RUNNING_PROC)
+            self.send_json(data)
+        elif path == '/api/sse':
+            self.handle_sse()
+        elif path == '/' or path == '/index.html':
+            self.serve_file('index.html')
         else:
+            self.serve_file(path.lstrip('/'))
+
+    def handle_sse(self):
+        """Server-Sent Events — activity.log 변경을 실시간 스트리밍"""
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection', 'keep-alive')
+        self.end_headers()
+
+        # 파일 워처 생성
+        activity_watcher = FileWatcher(ACTIVITY_LOG)
+        agent_watchers = {}
+        config = read_config()
+        for aid in config.get('agents', []):
+            path = os.path.join(AGENT_OUTPUT_DIR, f"{aid}.log")
+            agent_watchers[aid] = FileWatcher(path)
+
+        last_config_check = time.time()
+        try:
+            while True:
+                # 10초마다 config 재확인 → 새 에이전트 감지
+                if time.time() - last_config_check > 10:
+                    last_config_check = time.time()
+                    config = read_config()
+                    for aid in config.get('agents', []):
+                        if aid not in agent_watchers:
+                            p = os.path.join(AGENT_OUTPUT_DIR, f"{aid}.log")
+                            agent_watchers[aid] = FileWatcher(p)
+
+                # activity.log 변경 감지
+                new_activity = activity_watcher.get_new_content()
+                if new_activity:
+                    for line in new_activity.strip().split('\n'):
+                        if line.strip():
+                            event = json.dumps({"type": "activity", "data": line.strip()}, ensure_ascii=False)
+                            self.wfile.write(f"data: {event}\n\n".encode())
+                            self.wfile.flush()
+
+                # agent-output 변경 감지
+                for aid, watcher in list(agent_watchers.items()):
+                    new_content = watcher.get_new_content()
+                    if new_content:
+                        event = json.dumps({"type": "agent_output", "agent": aid, "data": new_content.strip()}, ensure_ascii=False)
+                        self.wfile.write(f"data: {event}\n\n".encode())
+                        self.wfile.flush()
+
+                time.sleep(0.5)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def serve_file(self, filename):
+        filepath = os.path.realpath(os.path.join(DASHBOARD_DIR, filename))
+        if not filepath.startswith(os.path.realpath(DASHBOARD_DIR)):
+            self.send_error(403)
+            return
+        if not os.path.isfile(filepath):
             self.send_error(404)
+            return
+        ext = os.path.splitext(filename)[1]
+        mime = MIME_TYPES.get(ext, 'application/octet-stream')
+        with open(filepath, 'rb') as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', len(body))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
-        if not self._check_token():
+        if not self.check_auth():
             return
-        path = urlparse(self.path).path
-        length = int(self.headers.get('Content-Length', 0))
-        body = {}
-        if length > 0:
-            try:
-                body = json.loads(self.rfile.read(length).decode('utf-8'))
-            except: body = {}
-        if_match = self.headers.get('X-If-Match')
+        parsed = urlparse(self.path)
+        path = parsed.path
+        content_len = int(self.headers.get('Content-Length', 0))
+        try:
+            body = json.loads(self.rfile.read(content_len)) if content_len else {}
+        except (json.JSONDecodeError, ValueError):
+            self.send_json({"error": "invalid JSON body"}, 400)
+            return
 
-        # Lost Update 응답 헬퍼
-        def conflict_response(result):
-            if result == "conflict_409":
-                self._send_json({"ok": False, "result": "다른 곳에서 수정되었습니다. 새로고침 후 다시 시도해주세요.", "code": 409}, 409)
-                return True
-            return False
+        if path == '/api/run':
+            # 멀티에이전트 실행: {"task": "..."}
+            task = body.get('task', '').strip()
+            if not task:
+                self.send_json({"ok": False, "error": "태스크를 입력하세요"}, 400)
+                return
+            result = run_company_task(task, mode='run')
+            self.send_json(result)
 
-        if path == '/api/agents/create':
-            ok, result = create_agent(body, if_match)
-            if not ok and conflict_response(result): return
-            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
-        elif path == '/api/agents/from-library':
-            ok, result = add_agent_from_library(
-                body.get('library_path', ''),
-                body.get('id'),
-                body.get('label'),
-                if_match
-            )
-            if not ok and conflict_response(result): return
-            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
-        elif path == '/api/presets/export':
-            ok, result = export_current_as_preset(
-                body.get('id', 'my-preset'),
-                body.get('name', 'My Preset'),
-                body.get('description', ''),
-                body.get('icon', '🏢'),
-            )
-            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
-        elif path.startswith('/api/agents/') and path.endswith('/delete'):
-            aid = path.split('/')[3]
-            ok, result = delete_agent(aid, if_match)
-            if not ok and conflict_response(result): return
-            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
-        elif path.startswith('/api/agents/') and path.endswith('/skills'):
-            aid = path.split('/')[3]
-            ok, result = assign_skills(aid, body.get('skills', []), if_match)
-            if not ok and conflict_response(result): return
-            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
-        elif path.startswith('/api/workflows/') and path.endswith('/run'):
-            wf_file = path.split('/')[3]
-            ok, result = run_workflow(wf_file, body.get('user_request', ''))
-            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
-        elif path == '/api/workflows/create':
-            ok, result = create_workflow(body)
-            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
-        elif path.startswith('/api/workflows/') and path.endswith('/delete'):
-            wf_file = path.split('/')[3]
-            ok, result = delete_workflow(wf_file)
-            self._send_json({"ok": ok, "result": result}, 200 if ok else 400)
-        elif path == '/api/pause':
-            ok, result = control_action('pause')
-            self._send_json({"ok": ok, "result": result})
-        elif path == '/api/resume':
-            ok, result = control_action('resume')
-            self._send_json({"ok": ok, "result": result})
-        elif path == '/api/inject':
-            ok, result = control_action('inject', body)
-            self._send_json({"ok": ok, "result": result})
+        elif path == '/api/workflow':
+            # 워크플로우 실행: {"name": "new-feature", "input": "..."}
+            name = body.get('name', '').strip()
+            input_text = body.get('input', '').strip()
+            if not name:
+                self.send_json({"ok": False, "error": "워크플로우를 선택하세요"}, 400)
+                return
+            task = f"{name} {input_text}".strip()
+            result = run_company_task(task, mode='workflow')
+            self.send_json(result)
+
+        elif path == '/api/agents/save':
+            # 에이전트 저장: {"id", "content", "scope": "local"|"global"|"both", "color"}
+            aid = body.get('id', '').strip()
+            content = body.get('content', '').strip()
+            scope = body.get('scope', 'local')
+            color = body.get('color', '').strip() or None
+            if not aid or not content:
+                self.send_json({"ok": False, "error": "ID와 내용을 입력하세요"}, 400)
+                return
+            if not re.match(r'^[a-z][a-z0-9-]*$', aid):
+                self.send_json({"ok": False, "error": "ID는 영문 소문자, 숫자, 하이픈만 허용"}, 400)
+                return
+            if scope == 'both':
+                save_agent(aid, content, 'global', color)
+            else:
+                save_agent(aid, content, scope, color)
+            self.send_json({"ok": True, "id": aid})
+
+        elif path == '/api/agents/generate':
+            # AI로 에이전트 생성: {"role": "...", "id": "..."}
+            role = body.get('role', '').strip()
+            aid = body.get('id', '').strip()
+            if not role:
+                self.send_json({"ok": False, "error": "역할 설명을 입력하세요"}, 400)
+                return
+            if not aid:
+                # role에서 ID 자동 생성
+                aid = re.sub(r'[^a-z0-9]+', '-', role.lower().strip())[:30].strip('-')
+            content = generate_agent_with_ai(role, aid)
+            if content and isinstance(content, str):
+                self.send_json({"ok": True, "id": aid, "content": content})
+            elif content and isinstance(content, dict) and "error" in content:
+                self.send_json({"ok": False, "error": content["error"]})
+            else:
+                self.send_json({"ok": False, "error": "AI 생성 실패"})
+
+        elif path == '/api/agents/delete':
+            # 에이전트 삭제: {"id": "..."}
+            aid = body.get('id', '').strip()
+            if not aid:
+                self.send_json({"ok": False, "error": "ID 필요"}, 400)
+                return
+            if not re.match(r'^[a-z][a-z0-9-]*$', aid):
+                self.send_json({"ok": False, "error": "잘못된 ID 형식"}, 400)
+                return
+            if aid == 'ceo':
+                self.send_json({"ok": False, "error": "CEO는 삭제할 수 없습니다"}, 400)
+                return
+            delete_agent(aid)
+            self.send_json({"ok": True})
+
+        elif path == '/api/agents/import':
+            # 글로벌 에이전트 가져오기: {"id": "..."}
+            aid = body.get('id', '').strip()
+            if not aid:
+                self.send_json({"ok": False, "error": "ID 필요"}, 400)
+                return
+            if not re.match(r'^[a-z][a-z0-9-]*$', aid):
+                self.send_json({"ok": False, "error": "잘못된 ID 형식"}, 400)
+                return
+            if import_global_agent(aid):
+                self.send_json({"ok": True, "id": aid})
+            else:
+                self.send_json({"ok": False, "error": "글로벌 에이전트를 찾을 수 없습니다"})
+
+        elif path == '/api/stop':
+            # 실행 중인 태스크 중지 (SIGTERM → 3초 후 SIGKILL fallback)
+            with PROC_LOCK:
+                pid = RUNNING_PROC["pid"]
+            if pid:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    # 3초 후에도 살아있으면 SIGKILL
+                    def force_kill():
+                        global RUNNING_PROC
+                        time.sleep(3)
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        with PROC_LOCK:
+                            RUNNING_PROC = {"pid": None, "task": None, "mode": None, "started": None}
+                    threading.Thread(target=force_kill, daemon=True).start()
+                    self.send_json({"ok": True, "message": "중지 요청됨"})
+                except ProcessLookupError:
+                    self.send_json({"ok": False, "error": "프로세스가 이미 종료됨"})
+            else:
+                self.send_json({"ok": False, "error": "실행 중인 태스크 없음"})
         else:
             self.send_error(404)
 
-# ━━━ Main ━━━
-def get_port():
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH) as f:
-                return int(json.load(f).get('dashboard_port', 7777))
-        except: pass
-    return 7777
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Token')
+        self.end_headers()
 
-if __name__ == '__main__':
-    port = get_port()
-    bind = '127.0.0.1'
-    print(f"  Dashboard: http://{bind}:{port}")
-    print(f"  Token: {DASHBOARD_TOKEN}")
-    print(f"  COMPANY_DIR: {COMPANY_DIR}")
-    server = ThreadingHTTPServer((bind, port), Handler)
+# ━━━ Main ━━━
+
+def main():
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 7777
+    server = ThreadingHTTPServer(('127.0.0.1', port), DashboardHandler)
+    print(f"\n  🌐 Virtual Company Dashboard")
+    print(f"  http://localhost:{port}")
+    print(f"  Auth Token: {AUTH_TOKEN}")
+    print(f"  Ctrl+C to stop\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        server.shutdown()
+        print("\n  Dashboard stopped.")
+        server.server_close()
+
+if __name__ == '__main__':
+    main()

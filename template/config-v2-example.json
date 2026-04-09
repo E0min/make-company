@@ -1,0 +1,6 @@
+{
+  "project": "leeyoungmin-home",
+  "tech_stack": "범용 (프로젝트별 자동 감지)",
+  "agents": ["ceo", "product-manager", "ui-ux-designer", "frontend-engineer", "backend-engineer", "fe-qa", "be-qa", "marketing-strategist"],
+  "language": "ko"
+}
