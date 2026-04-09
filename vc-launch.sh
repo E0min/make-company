@@ -19,8 +19,23 @@ GLOBAL_WORKFLOWS_DIR="$HOME/.claude/workflows"
 # ━━━ 색상 ━━━
 _g='\033[32m' _y='\033[33m' _c='\033[36m' _d='\033[2m' _b='\033[1m' _0='\033[0m'
 
-# ━━━ 에이전트 표시 이름 ━━━
+# ━━━ 에이전트 표시 이름 (tmux 윈도우 이름 호환 — 슬래시/특수문자 없음) ━━━
 agent_label() {
+  case "$1" in
+    ceo)                  echo "CEO" ;;
+    product-manager)      echo "PM" ;;
+    ui-ux-designer)       echo "Designer" ;;
+    frontend-engineer)    echo "Frontend" ;;
+    backend-engineer)     echo "Backend" ;;
+    fe-qa)                echo "FE-QA" ;;
+    be-qa)                echo "BE-QA" ;;
+    marketing-strategist) echo "Marketing" ;;
+    *)                    echo "$1" ;;
+  esac
+}
+
+# ━━━ 에이전트 전체 이름 (표시용) ━━━
+agent_fullname() {
   case "$1" in
     ceo)                  echo "CEO / Orchestrator" ;;
     product-manager)      echo "Product Manager" ;;
@@ -68,7 +83,7 @@ import json
 agents = json.load(open('$CONFIG')).get('agents', [])
 print(' '.join(a for a in agents if a != 'ceo'))
 " 2>/dev/null || echo "")
-  echo -e "  에이전트: ${_c}CEO${_0} $(for a in $AGENTS; do echo -n "${_c}$(agent_label $a)${_0} "; done)"
+  echo -e "  에이전트: ${_c}CEO${_0} $(for a in $AGENTS; do echo -n "${_c}$(agent_fullname $a)${_0} "; done)"
   echo ""
   echo -e "  ${_b}1)${_0} 이 구성으로 시작"
   echo -e "  ${_b}2)${_0} 에이전트 다시 선택"
@@ -121,7 +136,7 @@ else
     _idx=$((_idx + 1))
     _id=$(basename "$f" .md)
     _ids+=("$_id")
-    _label=$(agent_label "$_id")
+    _label=$(agent_fullname "$_id")
     _desc=$(agent_desc "$f")
     if [ "$_id" = "ceo" ]; then
       echo -e "    ${_d}${_idx}.${_0} ${_g}${_label}${_0} ${_d}(필수)${_0}"
@@ -161,7 +176,7 @@ else
   echo ""
   echo -e "  ${_b}선택된 팀:${_0}"
   for sid in "${SELECTED_IDS[@]}"; do
-    echo -e "    ${_g}✓${_0} $(agent_label "$sid")"
+    echo -e "    ${_g}✓${_0} $(agent_fullname "$sid")"
   done
   echo ""
 
@@ -279,8 +294,12 @@ else
   for agent in $AGENTS; do
     idx=$((idx + 1))
     LABEL=$(agent_label "$agent")
-    tmux new-window -d -t "$SESSION:" -n "$LABEL" 2>/dev/null || true
-    tmux send-keys -t "$SESSION:$idx" "clear; printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'" Enter 2>/dev/null || true
+    echo "  [debug] creating window $idx: $LABEL ($agent)" >> /tmp/vc-launch-debug.log
+    tmux new-window -d -t "$SESSION:" -n "$LABEL" >> /tmp/vc-launch-debug.log 2>&1
+    RET1=$?
+    tmux send-keys -t "$SESSION:$idx" "clear; printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'" Enter >> /tmp/vc-launch-debug.log 2>&1
+    RET2=$?
+    echo "  [debug] window $idx: new-window=$RET1 send-keys=$RET2" >> /tmp/vc-launch-debug.log
   done
 
   SESSION_FOR_LIST="$SESSION"
