@@ -1,18 +1,10 @@
 #!/usr/bin/env bash
 # vc-launch.sh — Virtual Company v2 통합 런처
-# 사용: claude -company (zsh 함수가 호출)
-#       또는 직접: bash vc-launch.sh
+# 사용: claude -company
 #
-# 하는 일:
-#   1. .claude/company 없으면 /company setup 안내
-#   2. tmux 세션 생성 (vc-{프로젝트명})
-#   3. 윈도우 0: claude CLI (여기서 /company run 사용)
-#   4. 윈도우 1: Monitor (activity.log)
-#   5. 윈도우 2~N: 에이전트별 output 모니터링
-#   6. 웹 대시보드 서버 백그라운드 시작 (포트 7777)
-#   7. claude 윈도우로 점프 후 attach
-
-# set -e 제거 — 개별 윈도우 생성 실패 시에도 나머지 계속 진행
+# 흐름:
+#   1. 기존 회사 있으면 → 바로 attach
+#   2. 없으면 → 인터랙티브 셋업 (에이전트 선택 → 구조 생성 → tmux 시작)
 
 PROJECT_DIR="$(pwd)"
 COMPANY_DIR="$PROJECT_DIR/.claude/company"
@@ -21,53 +13,209 @@ ACTIVITY_LOG="$COMPANY_DIR/activity.log"
 OUTPUT_DIR="$COMPANY_DIR/agent-output"
 DASHBOARD_SERVER="$COMPANY_DIR/dashboard/server.py"
 DASHBOARD_PORT="${VC_DASHBOARD_PORT:-7777}"
+GLOBAL_AGENTS_DIR="$HOME/.claude/agents"
+GLOBAL_WORKFLOWS_DIR="$HOME/.claude/workflows"
 
 # ━━━ 색상 ━━━
-_g='\033[32m' _y='\033[33m' _r='\033[31m' _d='\033[2m' _0='\033[0m'
+_g='\033[32m' _y='\033[33m' _c='\033[36m' _d='\033[2m' _b='\033[1m' _0='\033[0m'
 
-# ━━━ 1. 회사 설치 확인 ━━━
-if [ ! -f "$CONFIG" ]; then
-  echo -e "${_y}▸${_0} Virtual Company가 설정되어 있지 않습니다."
-  echo -e "  Claude Code에서 ${_g}/company setup${_0} 을 먼저 실행하세요."
-  echo ""
-  echo -e "  ${_d}또는 수동 설치:${_0}"
-  echo "    mkdir -p .claude/agents .claude/company/agent-memory .claude/company/agent-output"
-  echo "    cp ~/.claude/agents/*.md .claude/agents/"
-  echo "    cp ~/.claude/workflows/*.yml .claude/workflows/ 2>/dev/null"
-  echo ""
-  echo -e "  그래도 Claude Code를 실행할까요? (y/n) "
-  read -r ans
-  if [[ "$ans" != "y" && "$ans" != "Y" ]]; then
+# ━━━ 에이전트 표시 이름 ━━━
+agent_label() {
+  case "$1" in
+    ceo)                  echo "CEO / Orchestrator" ;;
+    product-manager)      echo "Product Manager" ;;
+    ui-ux-designer)       echo "UI/UX Designer" ;;
+    frontend-engineer)    echo "Frontend Engineer" ;;
+    backend-engineer)     echo "Backend Engineer" ;;
+    fe-qa)                echo "Frontend QA" ;;
+    be-qa)                echo "Backend QA" ;;
+    marketing-strategist) echo "Marketing Strategist" ;;
+    *)                    echo "$1" ;;
+  esac
+}
+
+# ━━━ 에이전트 설명 추출 ━━━
+agent_desc() {
+  local file="$1"
+  grep '^description:' "$file" 2>/dev/null | head -1 | sed 's/description: *//'
+}
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1. 기존 회사가 있으면 바로 실행
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if [ -f "$CONFIG" ]; then
+  PROJECT_NAME=$(python3 -c "import json; print(json.load(open('$CONFIG')).get('project','company'))" 2>/dev/null || basename "$PROJECT_DIR")
+  SESSION="vc-$(echo "$PROJECT_NAME" | tr -cd 'a-zA-Z0-9_-')"
+
+  # 기존 tmux 세션 있으면 attach
+  if tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo -e "${_g}▸${_0} 기존 회사 발견: ${_b}$PROJECT_NAME${_0} — attach"
+    if ! tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx 'claude'; then
+      tmux new-window -t "$SESSION:" -n claude -c "$PROJECT_DIR" 2>/dev/null || true
+      sleep 0.3
+      tmux send-keys -t "$SESSION:0" 'command claude' Enter 2>/dev/null || true
+    fi
+    tmux select-window -t "$SESSION:claude" 2>/dev/null || true
+    if [ -n "$TMUX" ]; then tmux switch-client -t "$SESSION"; else tmux attach -t "$SESSION"; fi
     exit 0
   fi
-  # 최소 구조 생성 — 글로벌 에이전트 전부 포함
-  mkdir -p "$COMPANY_DIR/agent-memory" "$COMPANY_DIR/agent-output" "$PROJECT_DIR/.claude/agents" "$PROJECT_DIR/.claude/workflows"
-  touch "$ACTIVITY_LOG"
-  # 글로벌 에이전트 복사
-  if [ -d "$HOME/.claude/agents" ]; then
-    for f in "$HOME/.claude/agents"/*.md; do
-      [ -f "$f" ] && cp -n "$f" "$PROJECT_DIR/.claude/agents/" 2>/dev/null
+
+  # 세션 없으면 다시 시작할지 물어봄
+  echo -e "${_g}▸${_0} 기존 회사 발견: ${_b}$PROJECT_NAME${_0}"
+  AGENTS=$(python3 -c "
+import json
+agents = json.load(open('$CONFIG')).get('agents', [])
+print(' '.join(a for a in agents if a != 'ceo'))
+" 2>/dev/null || echo "")
+  echo -e "  에이전트: ${_c}CEO${_0} $(for a in $AGENTS; do echo -n "${_c}$(agent_label $a)${_0} "; done)"
+  echo ""
+  echo -e "  ${_b}1)${_0} 이 구성으로 시작"
+  echo -e "  ${_b}2)${_0} 에이전트 다시 선택"
+  echo -e "  ${_b}3)${_0} 처음부터 새로 만들기"
+  echo -ne "\n  선택 [1]: "
+  read -r choice
+  choice="${choice:-1}"
+
+  case "$choice" in
+    1) ;; # 기존 config 그대로 사용 — 아래 tmux 생성으로 진행
+    2)
+      # 에이전트만 다시 선택
+      rm -f "$CONFIG"
+      exec bash "$0" "$@"
+      ;;
+    3)
+      # 전부 리셋
+      rm -rf "$COMPANY_DIR" "$PROJECT_DIR/.claude/agents" "$PROJECT_DIR/.claude/workflows"
+      exec bash "$0" "$@"
+      ;;
+    *)
+      echo "잘못된 선택"; exit 1 ;;
+  esac
+
+else
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # 2. 새 회사 설정 — 인터랙티브 셋업
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  echo ""
+  echo -e "  ${_b}🏢 Virtual Company v2${_0}"
+  echo -e "  ${_d}프로젝트: $(basename "$PROJECT_DIR")${_0}"
+  echo ""
+
+  # 글로벌 에이전트 목록
+  if [ ! -d "$GLOBAL_AGENTS_DIR" ] || [ -z "$(ls "$GLOBAL_AGENTS_DIR"/*.md 2>/dev/null)" ]; then
+    echo -e "  ${_y}⚠${_0} 글로벌 에이전트가 없습니다."
+    echo "    먼저 에이전트를 설치하세요:"
+    echo "    cp ~/make-company/template/agents-v2/*.md ~/.claude/agents/"
+    exit 1
+  fi
+
+  echo -e "  ${_b}사용 가능한 에이전트:${_0}"
+  echo ""
+
+  # 번호 매기기
+  _idx=0
+  _ids=()
+  for f in "$GLOBAL_AGENTS_DIR"/*.md; do
+    _idx=$((_idx + 1))
+    _id=$(basename "$f" .md)
+    _ids+=("$_id")
+    _label=$(agent_label "$_id")
+    _desc=$(agent_desc "$f")
+    if [ "$_id" = "ceo" ]; then
+      echo -e "    ${_d}${_idx}.${_0} ${_g}${_label}${_0} ${_d}(필수)${_0}"
+    else
+      echo -e "    ${_d}${_idx}.${_0} ${_c}${_label}${_0}"
+    fi
+    [ -n "$_desc" ] && echo -e "       ${_d}${_desc}${_0}"
+  done
+
+  echo ""
+  echo -e "  활성화할 에이전트 번호를 선택하세요"
+  echo -e "  ${_d}예: 1,2,4,5  또는  all  (CEO는 자동 포함)${_0}"
+  echo -ne "\n  선택: "
+  read -r selection
+
+  # 선택 파싱
+  SELECTED_IDS=("ceo")  # CEO 필수
+  if [ "$selection" = "all" ] || [ "$selection" = "ALL" ]; then
+    SELECTED_IDS=("${_ids[@]}")
+  else
+    IFS=',' read -ra nums <<< "$selection"
+    for num in "${nums[@]}"; do
+      num=$(echo "$num" | tr -d ' ')
+      if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le "${#_ids[@]}" ]; then
+        local_id="${_ids[$((num - 1))]}"
+        # 중복 체크
+        already=false
+        for s in "${SELECTED_IDS[@]}"; do
+          [ "$s" = "$local_id" ] && already=true
+        done
+        $already || SELECTED_IDS+=("$local_id")
+      fi
     done
   fi
-  # 글로벌 워크플로우 복사
-  if [ -d "$HOME/.claude/workflows" ]; then
-    for f in "$HOME/.claude/workflows"/*.yml; do
+
+  # 선택 확인
+  echo ""
+  echo -e "  ${_b}선택된 팀:${_0}"
+  for sid in "${SELECTED_IDS[@]}"; do
+    echo -e "    ${_g}✓${_0} $(agent_label "$sid")"
+  done
+  echo ""
+
+  # 디렉토리 구조 생성
+  mkdir -p "$COMPANY_DIR/agent-memory" "$COMPANY_DIR/agent-output" \
+           "$PROJECT_DIR/.claude/agents" "$PROJECT_DIR/.claude/workflows"
+  touch "$ACTIVITY_LOG"
+
+  # 선택된 에이전트만 복사
+  for sid in "${SELECTED_IDS[@]}"; do
+    src="$GLOBAL_AGENTS_DIR/${sid}.md"
+    dst="$PROJECT_DIR/.claude/agents/${sid}.md"
+    [ -f "$src" ] && cp -n "$src" "$dst" 2>/dev/null
+    touch "$OUTPUT_DIR/${sid}.log" 2>/dev/null
+    touch "$COMPANY_DIR/agent-memory/${sid}.md" 2>/dev/null
+  done
+
+  # 워크플로우 복사
+  if [ -d "$GLOBAL_WORKFLOWS_DIR" ]; then
+    for f in "$GLOBAL_WORKFLOWS_DIR"/*.yml; do
       [ -f "$f" ] && cp -n "$f" "$PROJECT_DIR/.claude/workflows/" 2>/dev/null
     done
   fi
-  # 에이전트 목록 자동 감지
-  _AGENTS=$(ls "$PROJECT_DIR/.claude/agents/"*.md 2>/dev/null | xargs -I{} basename {} .md | python3 -c "import sys; print(','.join(['\"'+l.strip()+'\"' for l in sys.stdin if l.strip()]))" 2>/dev/null || echo '"ceo"')
-  echo '{"project":"'"$(basename "$PROJECT_DIR")"'","tech_stack":"auto","agents":['"$_AGENTS"'],"language":"ko"}' > "$CONFIG"
-  echo -e "  ${_g}✅${_0} 자동 설정 완료 ($(echo "$_AGENTS" | tr -cd ',' | wc -c | tr -d ' ' | xargs -I{} expr {} + 1)명)"
+
+  # 대시보드 복사 (있으면)
+  GLOBAL_DASHBOARD="$HOME/.claude/company/dashboard"
+  if [ -d "$GLOBAL_DASHBOARD" ] && [ ! -d "$COMPANY_DIR/dashboard" ]; then
+    cp -R "$GLOBAL_DASHBOARD" "$COMPANY_DIR/dashboard" 2>/dev/null || true
+  fi
+
+  # config.json 생성
+  _AGENTS_JSON=$(printf '%s\n' "${SELECTED_IDS[@]}" | python3 -c "import sys; print(','.join(['\"'+l.strip()+'\"' for l in sys.stdin if l.strip()]))")
+  cat > "$CONFIG" << EOJSON
+{
+  "project": "$(basename "$PROJECT_DIR")",
+  "tech_stack": "auto",
+  "agents": [$_AGENTS_JSON],
+  "language": "ko"
+}
+EOJSON
+
+  echo -e "  ${_g}✅${_0} 회사 설정 완료 — ${#SELECTED_IDS[@]}명"
+
+  PROJECT_NAME=$(basename "$PROJECT_DIR")
 fi
 
-# ━━━ 2. 프로젝트명 + 세션명 ━━━
-PROJECT_NAME=$(python3 -c "import json; print(json.load(open('$CONFIG')).get('project','company'))" 2>/dev/null || basename "$PROJECT_DIR")
-SESSION="vc-${PROJECT_NAME}"
-# tmux 세션명에 부적합 문자 제거
-SESSION=$(echo "$SESSION" | tr -cd 'a-zA-Z0-9_-')
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 3. tmux 세션 생성 + 실행
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# ━━━ 3. 에이전트 목록 ━━━
+PROJECT_NAME="${PROJECT_NAME:-$(python3 -c "import json; print(json.load(open('$CONFIG')).get('project','company'))" 2>/dev/null || basename "$PROJECT_DIR")}"
+SESSION="vc-$(echo "$PROJECT_NAME" | tr -cd 'a-zA-Z0-9_-')"
+
+# 에이전트 목록 (CEO 제외 — CEO는 메인 claude가 담당)
 AGENTS=$(python3 -c "
 import json
 agents = json.load(open('$CONFIG')).get('agents', [])
@@ -77,82 +225,53 @@ print(' '.join(a for a in agents if a != 'ceo'))
 # 출력 파일 초기화
 mkdir -p "$OUTPUT_DIR"
 for agent in $AGENTS; do
-  touch "$OUTPUT_DIR/${agent}.log"
+  touch "$OUTPUT_DIR/${agent}.log" 2>/dev/null
 done
 touch "$ACTIVITY_LOG"
 
-# ━━━ 4. 기존 세션 확인 ━━━
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-  echo -e "${_g}▸${_0} 기존 세션 발견: $SESSION"
-  # claude 윈도우가 있는지 확인
-  if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx 'claude'; then
-    echo -e "  ${_d}claude 윈도우 활성 — attach합니다${_0}"
-  else
-    echo -e "  ${_y}claude 윈도우 없음 — 추가합니다${_0}"
-    tmux new-window -t "$SESSION:" -n claude -c "$PROJECT_DIR"
-    sleep 0.3
-    tmux send-keys -t "$SESSION:claude" 'command claude' Enter
-  fi
-  tmux select-window -t "$SESSION:claude"
-  if [ -n "$TMUX" ]; then
-    tmux switch-client -t "$SESSION"
-  else
-    tmux attach -t "$SESSION"
-  fi
-  exit 0
-fi
-
-# ━━━ 5. 새 tmux 세션 생성 ━━━
-echo -e "${_g}▸${_0} Virtual Company v2 시작: ${_g}$SESSION${_0}"
+echo ""
+echo -e "  ${_g}▸${_0} ${_b}$PROJECT_NAME${_0} 시작"
 echo ""
 
 # 윈도우 0: claude CLI
 tmux new-session -d -s "$SESSION" -n claude -c "$PROJECT_DIR" -x 200 -y 55
-
-# claude CLI 실행 (쉘 초기화 대기)
 sleep 0.5
-tmux send-keys -t "$SESSION:claude" 'command claude' Enter
+tmux send-keys -t "$SESSION:0" 'command claude' Enter
 
-# 윈도우 1: Monitor (activity.log)
-tmux new-window -d -t "$SESSION:" -n Monitor
-tmux send-keys -t "$SESSION:Monitor" "clear; printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'" Enter
+# 윈도우 1: Monitor
+tmux new-window -d -t "$SESSION:" -n Monitor 2>/dev/null || true
+tmux send-keys -t "$SESSION:1" "clear; printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'" Enter 2>/dev/null || true
 
-# 윈도우 2~N: 에이전트별 output (인덱스 기반으로 send-keys — 공백 이름 안전)
-idx=1  # 0=claude, 1=Monitor
+# 윈도우 2~N: 에이전트별 output
+idx=1
 for agent in $AGENTS; do
   idx=$((idx + 1))
-  LABEL=$(python3 -c "print('$agent'.replace('-',' ').title())" 2>/dev/null || echo "$agent")
+  LABEL=$(agent_label "$agent")
   tmux new-window -d -t "$SESSION:" -n "$LABEL" 2>/dev/null || true
   tmux send-keys -t "$SESSION:$idx" "clear; printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'" Enter 2>/dev/null || true
 done
 
-# ━━━ 6. 웹 대시보드 서버 ━━━
+# 웹 대시보드
 if [ -f "$DASHBOARD_SERVER" ]; then
-  # 기존 포트 사용 중이면 스킵
   if ! lsof -ti:$DASHBOARD_PORT >/dev/null 2>&1; then
     python3 "$DASHBOARD_SERVER" "$DASHBOARD_PORT" &>/dev/null &
-    DASH_PID=$!
     echo -e "  ${_g}🌐${_0} 웹 대시보드: ${_g}http://localhost:$DASHBOARD_PORT${_0}"
   else
-    echo -e "  ${_d}🌐 웹 대시보드 이미 실행중 (포트 $DASHBOARD_PORT)${_0}"
+    echo -e "  ${_d}🌐 대시보드 이미 실행중 (포트 $DASHBOARD_PORT)${_0}"
   fi
 fi
 
-# ━━━ 7. 윈도우 목록 표시 ━━━
+# 윈도우 목록
 echo ""
-echo -e "  ${_d}윈도우:${_0}"
 tmux list-windows -t "$SESSION" -F "    #I: #W" 2>/dev/null || true
 echo ""
-echo -e "  ${_d}사용법:${_0}"
-echo -e "    ${_g}/company run <태스크>${_0}  — 멀티에이전트 실행"
-echo -e "    ${_g}/company workflow <name>${_0} — YAML 파이프라인"
-echo -e "    ${_d}Ctrl+B → 번호${_0}          — 윈도우 전환"
-echo -e "    ${_d}Ctrl+B → d${_0}             — detach"
+echo -e "  ${_d}/company run <태스크>  — 멀티에이전트 실행${_0}"
+echo -e "  ${_d}Ctrl+B → 번호        — 윈도우 전환${_0}"
+echo -e "  ${_d}Ctrl+B → d           — detach${_0}"
 echo ""
 
-# ━━━ 8. claude 윈도우로 attach ━━━
-tmux select-window -t "$SESSION:claude"
-
+# claude 윈도우로 attach
+tmux select-window -t "$SESSION:0" 2>/dev/null || true
 if [ -n "$TMUX" ]; then
   tmux switch-client -t "$SESSION"
 else
