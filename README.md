@@ -21,6 +21,37 @@
 
 CEO, PM, 디자이너, 프론트엔드, 백엔드, QA, 마케팅 — 각 역할이 Claude Code의 **네이티브 Agent tool**로 실행되며, 메인 Claude가 CEO로서 자율적으로 팀원을 호출하고 조율합니다.
 
+### Why make-company? (기본 Claude Code와 뭐가 다른가)
+
+Claude Code는 이미 훌륭한 AI 코딩 도구입니다. make-company는 그 위에 **조직**을 얹습니다.
+
+| | 기본 Claude Code | make-company |
+|---|---|---|
+| **역할** | 하나의 범용 AI | CEO, PM, Designer, FE, BE, QA, Marketing **7가지 전문 역할** |
+| **지시 방식** | 사용자가 매번 직접 지시 | "할일 앱 만들어" 한 마디 → **CEO가 알아서 팀 분배** |
+| **기획 → 구현** | 한 맥락에서 전부 처리 | PM이 PRD 작성 → Designer가 스펙 → **FE가 구현 → QA가 검증** |
+| **병렬 처리** | 순차 실행 | Designer + Backend **동시 호출**, 시간 절반 |
+| **품질 검증** | 사용자가 직접 리뷰 | **FE-QA / BE-QA가 자동 검증** 후 이슈 리포트 |
+| **누적 학습** | 대화 끝나면 리셋 | 에이전트별 **메모리가 누적** — 다음 대화에서도 프로젝트 이해 |
+| **워크플로우** | 없음 | YAML로 파이프라인 정의, **반복 실행** 가능 |
+| **모니터링** | 터미널 출력만 | **웹 대시보드** (실시간 SSE) + tmux 대시보드 |
+| **에이전트 커스텀** | 시스템 프롬프트 수정 | 에이전트 .md 편집, **AI 생성**, 색상, 글로벌/로컬 관리 |
+| **자기 보완** | 불가능 | QA 에이전트가 시스템 자체를 검증하고 **엔지니어가 수정** |
+
+요약하면:
+
+> **Claude Code** = 뛰어난 개발자 1명
+> **make-company** = 그 개발자가 이끄는 **8명짜리 전문 팀**
+
+```
+기본 Claude Code:
+  사용자 → Claude → 결과
+
+make-company:
+  사용자 → CEO(Claude) → PM → Designer ─┐
+                         → Backend  ─────┤→ Frontend → QA → 결과
+```
+
 ### v1 → v2 변경점
 
 | | v1 (tmux 기반) | v2 (Agent tool 기반) |
