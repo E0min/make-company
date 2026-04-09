@@ -56,6 +56,18 @@ agent_desc() {
 }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 0. 다른 vc- 세션 정리 (하나만 유지)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_cleanup_old_sessions() {
+  local keep="$1"
+  for sess in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^vc-'); do
+    if [ "$sess" != "$keep" ]; then
+      tmux kill-session -t "$sess" 2>/dev/null
+    fi
+  done
+}
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 1. 기존 회사가 있으면 바로 실행
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -65,6 +77,7 @@ if [ -f "$CONFIG" ]; then
 
   # 기존 tmux 세션 있으면 attach
   if tmux has-session -t "$SESSION" 2>/dev/null; then
+    _cleanup_old_sessions "$SESSION"
     echo -e "${_g}▸${_0} 기존 회사 발견: ${_b}$PROJECT_NAME${_0} — attach"
     if ! tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx 'claude'; then
       tmux new-window -t "$SESSION:" -n claude -c "$PROJECT_DIR" 2>/dev/null || true
@@ -247,6 +260,9 @@ touch "$ACTIVITY_LOG"
 echo ""
 echo -e "  ${_g}▸${_0} ${_b}$PROJECT_NAME${_0} 시작"
 echo ""
+
+# 기존 vc- 세션 전부 정리 (새로 만들 거니까)
+_cleanup_old_sessions ""
 
 # ── tmux 안 vs 밖 분기 ──
 INSIDE_TMUX=false
