@@ -12,24 +12,55 @@
 
 ## 1. `/company setup`
 
-### 1-1. 에이전트 목록 표시
-- Bash로 `ls ~/.claude/agents/*.md` 파일을 모두 찾는다.
-- 각 파일의 frontmatter에서 `name`과 `description`을 읽어 표시:
+### 1-1. 기존 프로젝트 에이전트 감지
+먼저 `.claude/agents/` 디렉토리가 이미 존재하는지 확인한다.
+존재하면 기존 에이전트 .md 파일 목록을 읽고 사용자에게 보여준다:
+
+```
+기존 프로젝트 에이전트 감지됨:
+  - my-custom-agent.md
+  - data-engineer.md
+  - devops.md
+```
+
+각 기존 에이전트 파일을 Read로 읽어 `{{project_context}}`와 `{{agent_memory}}` 플레이스홀더가 있는지 확인한다.
+
+- **플레이스홀더가 있으면**: v2 호환. 그대로 유지.
+- **플레이스홀더가 없으면**: 마이그레이션 제안.
+  사용자에게 "기존 에이전트를 v2 형식으로 업그레이드하시겠습니까? (y/n)" 묻는다.
+  y이면 각 에이전트 .md 파일의 Role 섹션 바로 뒤에 다음 두 블록을 삽입한다:
   ```
-  사용 가능한 에이전트:
+  ## 프로젝트 컨텍스트
+  {{project_context}}
+
+  ## 누적 기억
+  {{agent_memory}}
+  ```
+  기존 내용은 절대 삭제하지 않는다 — 플레이스홀더만 추가.
+
+기존 에이전트는 config.json의 agents 목록에 자동으로 포함된다.
+
+### 1-2. 글로벌 에이전트 목록 표시
+- Bash로 `ls ~/.claude/agents/*.md` 파일을 모두 찾는다.
+- 이미 프로젝트에 있는 에이전트는 "(이미 설치됨)"으로 표시한다.
+- 나머지를 번호와 함께 표시:
+  ```
+  글로벌 에이전트:
   1. ceo — 전체 프로젝트를 총괄하는 시니어 오케스트레이터
-  2. product-manager — Discovery-first PM
+  2. product-manager — Discovery-first PM (이미 설치됨)
+  3. frontend-engineer — 시니어 프론트엔드 개발자
   ...
   ```
-- 사용자에게 "사용할 에이전트 번호를 선택하세요 (예: 1,2,3,5 또는 all)" 라고 묻는다.
-- **CEO는 반드시 포함**되어야 한다. 선택 안 했으면 자동 추가.
+- 사용자에게 "추가할 에이전트 번호를 선택하세요 (예: 1,3,5 또는 all 또는 skip)" 라고 묻는다.
+- **CEO는 반드시 포함**되어야 한다. 프로젝트에도 글로벌에도 없으면 글로벌에서 자동 복사.
 
-### 1-2. 프로젝트 컨텍스트 자동 감지
+### 1-3. 프로젝트 컨텍스트 자동 감지
 현재 프로젝트 루트에서 다음 파일들을 Read로 읽어 기술 스택을 파악:
 - `CLAUDE.md`, `package.json`, `tsconfig.json`, `pyproject.toml`, `go.mod` 등
 
-### 1-3. 에이전트 파일 복사
-선택된 각 에이전트: `~/.claude/agents/<name>.md` → `.claude/agents/<name>.md`로 복사.
+### 1-4. 에이전트 파일 복사
+선택된 글로벌 에이전트만 복사: `~/.claude/agents/<name>.md` → `.claude/agents/<name>.md`.
+이미 프로젝트에 있는 동명 파일은 **덮어쓰지 않는다** (기존 커스텀 보존).
 `{{project_context}}`와 `{{agent_memory}}`는 런타임에 해석되므로 건드리지 않는다.
 
 ### 1-4. 설정 파일 생성
