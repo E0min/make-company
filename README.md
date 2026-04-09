@@ -126,48 +126,106 @@ claude
 
 ## Quick Start
 
-### 1. 클론
+### 1. 클론 + 설치 (한 번만)
 
 ```bash
+# 클론
 git clone https://github.com/E0min/make-company.git ~/make-company
-```
 
-### 2. 에이전트 설치
-
-글로벌 에이전트 정의를 `~/.claude/agents/`에 복사합니다:
-
-```bash
-mkdir -p ~/.claude/agents
+# 에이전트 + 워크플로우 + 스킬 설치
+mkdir -p ~/.claude/agents ~/.claude/workflows ~/.claude/skills/company
 cp ~/make-company/template/agents-v2/*.md ~/.claude/agents/
-```
-
-### 3. 워크플로우 템플릿 설치
-
-```bash
-mkdir -p ~/.claude/workflows
 cp ~/make-company/template/workflows/*.yml ~/.claude/workflows/
-```
-
-### 4. 스킬 설치
-
-```bash
-mkdir -p ~/.claude/skills/company
 cp ~/make-company/template/skill/skill.md ~/.claude/skills/company/
+
+# zsh에 런처 등록
+cat >> ~/.zshrc << 'ZSHRC'
+export VC_TEMPLATE="$HOME/make-company"
+claude() {
+  if [[ "$1" == "-company" || "$1" == "--company" ]]; then
+    shift; bash "$VC_TEMPLATE/vc-launch.sh" "$@"
+  else
+    command claude "$@"
+  fi
+}
+ZSHRC
+source ~/.zshrc
 ```
 
-### 5. 프로젝트에서 사용
+### 2. 회사 시작
 
 ```bash
 cd ~/your-project
-claude   # Claude Code 실행
+claude -company
 ```
 
-Claude Code 안에서:
+처음 실행하면 에이전트 선택 화면이 나타납니다:
 
 ```
-/company setup        # 에이전트 선택 + 프로젝트 설정
-/company run 할일 앱 만들어줘   # CEO가 자율적으로 팀 분배
+🏢 Virtual Company v2
+프로젝트: my-project
+
+사용 가능한 에이전트:
+  1. CEO / Orchestrator (필수)
+  2. Product Manager
+  3. UI/UX Designer
+  4. Frontend Engineer
+  5. Backend Engineer
+  6. Frontend QA
+  7. Backend QA
+  8. Marketing Strategist
+
+활성화할 에이전트 번호를 선택하세요 (예: 1,2,4,5 또는 all):
 ```
+
+선택하면 tmux 세션이 열립니다:
+
+```
+┌─────────────────────────────────────────────────┐
+│ 0: claude              ← 메인 (CEO 모드)         │
+│ 1: Monitor             ← activity.log 실시간     │
+│ 2: PM                  ← claude --agent pm       │
+│ 3: Designer            ← claude --agent designer │
+│ 4: Frontend            ← claude --agent frontend │
+│ 5: Backend             ← claude --agent backend  │
+│ 6: FE-QA               ← claude --agent fe-qa   │
+│ 7: BE-QA               ← claude --agent be-qa   │
+│ 8: Marketing           ← claude --agent marketing│
+└─────────────────────────────────────────────────┘
+```
+
+### 3. 사용법
+
+**방법 A: CEO 모드 (윈도우 0에서)**
+```
+/company run 할일 앱 만들어줘
+```
+CEO가 자동으로 PM → Designer → FE → QA 순서로 팀을 분배합니다.
+
+**방법 B: 에이전트한테 직접 말 걸기**
+```
+Ctrl+B → 4    (Frontend 윈도우로 이동)
+> 이 컴포넌트 반응형으로 바꿔줘
+
+Ctrl+B → 2    (PM 윈도우로 이동)
+> PRD에 비용 분석 섹션 추가해줘
+
+Ctrl+B → 0    (메인으로 돌아감)
+```
+
+**방법 C: YAML 워크플로우 실행**
+```
+/company workflow new-feature "검색 기능 추가"
+```
+
+### 조작법
+
+| 키 | 동작 |
+|---|---|
+| `Ctrl+B → 0~8` | 윈도우 전환 |
+| `Ctrl+B → d` | detach (세션 유지, 터미널 복귀) |
+| `claude -company` | 다시 attach (기존 세션 재연결) |
+| `Ctrl+B → &` | 현재 윈도우 종료 |
 
 ---
 
