@@ -275,15 +275,21 @@ if $INSIDE_TMUX; then
   # claude 윈도우 (현재 pane에서 바로 실행)
   tmux rename-window -t "$CURRENT_SESSION" "claude" 2>/dev/null || true
 
-  # Monitor 윈도우
-  tmux new-window -d -t "$CURRENT_SESSION:" -n Monitor \
-    "printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'; exec bash" 2>/dev/null || true
-
-  # 에이전트별 output 윈도우
+  # 1단계: 윈도우 생성
+  tmux new-window -d -t "$CURRENT_SESSION:" -n Monitor -c "$PROJECT_DIR" 2>/dev/null
   for agent in $AGENTS; do
     LABEL=$(agent_label "$agent")
-    tmux new-window -d -t "$CURRENT_SESSION:" -n "$LABEL" \
-      "printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'; exec bash" 2>/dev/null || true
+    tmux new-window -d -t "$CURRENT_SESSION:" -n "$LABEL" -c "$PROJECT_DIR" 2>/dev/null
+  done
+
+  # 2단계: 대기 + 명령 전송
+  sleep 1
+  MON_IDX=$(tmux list-windows -t "$CURRENT_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null | grep 'Monitor$' | tail -1 | awk '{print $1}')
+  [ -n "$MON_IDX" ] && tmux send-keys -t "$CURRENT_SESSION:$MON_IDX" "tail -f '$ACTIVITY_LOG'" Enter
+  for agent in $AGENTS; do
+    LABEL=$(agent_label "$agent")
+    W_IDX=$(tmux list-windows -t "$CURRENT_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null | grep "${LABEL}$" | tail -1 | awk '{print $1}')
+    [ -n "$W_IDX" ] && tmux send-keys -t "$CURRENT_SESSION:$W_IDX" "tail -f '$OUTPUT_DIR/${agent}.log'" Enter
   done
 
   # claude 윈도우로 돌아감
@@ -294,22 +300,26 @@ if $INSIDE_TMUX; then
 else
   # ━━━ tmux 밖에서 실행: 새 세션 생성 ━━━
 
-  # 윈도우 0: claude CLI
+  # 1단계: 모든 윈도우를 먼저 생성 (빈 쉘)
   tmux new-session -d -s "$SESSION" -n claude -c "$PROJECT_DIR" -x 200 -y 55
-  sleep 0.5
-  tmux send-keys -t "$SESSION:0" 'command claude' Enter
-
-  # 윈도우 1: Monitor — 명령을 직접 new-window에 전달 (send-keys 타이밍 이슈 방지)
-  tmux new-window -d -t "$SESSION:" -n Monitor \
-    "printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'; exec bash" 2>/dev/null || true
-
-  # 윈도우 2~N: 에이전트별 output
+  tmux new-window -d -t "$SESSION:" -n Monitor -c "$PROJECT_DIR" 2>/dev/null
   idx=1
   for agent in $AGENTS; do
     idx=$((idx + 1))
     LABEL=$(agent_label "$agent")
-    tmux new-window -d -t "$SESSION:" -n "$LABEL" \
-      "printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'; exec bash" 2>/dev/null || true
+    tmux new-window -d -t "$SESSION:" -n "$LABEL" -c "$PROJECT_DIR" 2>/dev/null
+  done
+
+  # 2단계: 쉘 초기화 대기
+  sleep 1
+
+  # 3단계: 각 윈도우에 명령 전송 (인덱스 기반)
+  tmux send-keys -t "$SESSION:0" 'command claude' Enter
+  tmux send-keys -t "$SESSION:1" "tail -f '$ACTIVITY_LOG'" Enter
+  idx=1
+  for agent in $AGENTS; do
+    idx=$((idx + 1))
+    tmux send-keys -t "$SESSION:$idx" "tail -f '$OUTPUT_DIR/${agent}.log'" Enter
   done
 
   SESSION_FOR_LIST="$SESSION"
