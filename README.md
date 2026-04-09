@@ -2,9 +2,15 @@
 
 # make-company
 
-**Claude Code의 Agent tool 위에서 돌아가는 멀티에이전트 가상 회사 시스템**
+### One command. Eight AI agents. Ship faster.
 
-**A multi-agent virtual company powered by Claude Code's native Agent tool**
+**한 마디로 기획 → 디자인 → 구현 → QA까지.**
+
+```bash
+claude -company
+> "할일 앱 만들어줘"
+# → PM이 기획 → Designer가 디자인 → Frontend가 구현 → QA가 검증
+```
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-v2.1+-5e6ad2)](https://docs.anthropic.com/en/docs/claude-code)
@@ -15,11 +21,25 @@
 
 ---
 
-## Overview
+## What is this?
 
-`make-company`는 Claude Code 프로젝트에 **가상 회사(Virtual Company)**를 설치합니다.
+`make-company` turns your Claude Code into an **8-person AI team**.
 
-CEO, PM, 디자이너, 프론트엔드, 백엔드, QA, 마케팅 — 각 역할이 Claude Code의 **네이티브 Agent tool**로 실행되며, 메인 Claude가 CEO로서 자율적으로 팀원을 호출하고 조율합니다.
+Claude Code = one brilliant developer.
+make-company = that developer leading a full team of specialists.
+
+```
+You: "Build a todo app"
+
+  CEO     → analyzes, delegates
+  PM      → writes PRD
+  Designer ─┐
+  Backend  ─┤ work in parallel
+  Frontend ← takes both outputs, builds
+  QA      → tests everything
+```
+
+Each agent runs as an independent `claude --agent` session in its own tmux window. Talk to any of them directly, or let the CEO orchestrate everything.
 
 ### Why make-company? (기본 Claude Code와 뭐가 다른가)
 
@@ -541,6 +561,63 @@ cp ~/make-company/template/skill/skill.md ~/.claude/skills/company/
 - Claude Code CLI 로그인 상태 확인: `claude` 실행
 - Anthropic API 키 또는 Claude Pro/Max 구독 확인
 - 네트워크 연결 확인
+
+---
+
+## Examples — Built with make-company
+
+### Example 1: "할일 앱 만들어줘" (15분)
+
+```
+/company run 할일 앱 만들어줘
+```
+
+```
+[00:00] CEO    → 태스크 분석, PM에게 기획 요청
+[01:30] PM     → PRD 작성 (CRUD + 우선순위 + 필터)
+[03:00] Designer + Backend 병렬 시작
+[05:00] Backend → API 설계 완료 (REST 5개 엔드포인트)
+[06:30] Designer → 디자인 스펙 완료 (3개 화면)
+[07:00] Frontend → 구현 시작 (디자인 + API 기반)
+[12:00] Frontend → 컴포넌트 8개 구현 완료
+[13:00] FE-QA  → 검증 (이슈 2건 발견)
+[14:00] Frontend → 이슈 수정
+[15:00] CEO    → 최종 정리, 완료
+```
+
+산출물: PRD, 디자인 스펙, API 설계, 프론트엔드 코드, QA 리포트
+
+### Example 2: 시스템 자기 보완 (20분)
+
+```
+/company run 이 시스템의 코드를 QA 테스트하고 버그를 수정해줘
+```
+
+```
+라운드 1: FE-QA + BE-QA 병렬 → 34건 발견
+          Frontend + Backend 병렬 → 14건 수정 (Critical/High)
+
+라운드 2: 재검증 → 13/14 PASS + 신규 11건 발견
+          수정 → 6건 추가 수정
+
+라운드 3: 최종 검증 → 6/6 PASS + 9건 추가 수정
+
+총 수정: 29건 (보안 7, 기능 9, 성능 5, 안정성 5, UX 3)
+```
+
+### Example 3: 에이전트 직접 대화
+
+```bash
+Ctrl+B → 4   # Frontend 윈도우로 이동
+
+> 이 컴포넌트에 다크모드 지원 추가해줘
+# Frontend 에이전트가 프로젝트 컨텍스트를 알고 있는 상태에서 바로 작업
+
+Ctrl+B → 2   # PM 윈도우로 이동
+
+> PRD에 경쟁사 분석 섹션 추가해줘
+# PM이 독립적으로 작업
+```
 
 ---
 
