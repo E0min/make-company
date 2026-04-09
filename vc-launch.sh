@@ -12,7 +12,7 @@
 #   6. 웹 대시보드 서버 백그라운드 시작 (포트 7777)
 #   7. claude 윈도우로 점프 후 attach
 
-set -e
+# set -e 제거 — 개별 윈도우 생성 실패 시에도 나머지 계속 진행
 
 PROJECT_DIR="$(pwd)"
 COMPANY_DIR="$PROJECT_DIR/.claude/company"
@@ -117,18 +117,20 @@ tmux send-keys -t "$SESSION:claude" 'command claude' Enter
 tmux new-window -d -t "$SESSION:" -n Monitor
 tmux send-keys -t "$SESSION:Monitor" "clear; printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'" Enter
 
-# 윈도우 2~N: 에이전트별 output
+# 윈도우 2~N: 에이전트별 output (인덱스 기반으로 send-keys — 공백 이름 안전)
+idx=1  # 0=claude, 1=Monitor
 for agent in $AGENTS; do
+  idx=$((idx + 1))
   LABEL=$(python3 -c "print('$agent'.replace('-',' ').title())" 2>/dev/null || echo "$agent")
-  tmux new-window -d -t "$SESSION:" -n "$LABEL"
-  tmux send-keys -t "$SESSION:$LABEL" "clear; printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'" Enter
+  tmux new-window -d -t "$SESSION:" -n "$LABEL" 2>/dev/null || true
+  tmux send-keys -t "$SESSION:$idx" "clear; printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'" Enter 2>/dev/null || true
 done
 
 # ━━━ 6. 웹 대시보드 서버 ━━━
 if [ -f "$DASHBOARD_SERVER" ]; then
   # 기존 포트 사용 중이면 스킵
   if ! lsof -ti:$DASHBOARD_PORT >/dev/null 2>&1; then
-    python3 "$DASHBOARD_SERVER" "$DASHBOARD_PORT" &
+    python3 "$DASHBOARD_SERVER" "$DASHBOARD_PORT" &>/dev/null &
     DASH_PID=$!
     echo -e "  ${_g}🌐${_0} 웹 대시보드: ${_g}http://localhost:$DASHBOARD_PORT${_0}"
   else
