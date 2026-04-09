@@ -233,25 +233,60 @@ echo ""
 echo -e "  ${_g}▸${_0} ${_b}$PROJECT_NAME${_0} 시작"
 echo ""
 
-# 윈도우 0: claude CLI
-tmux new-session -d -s "$SESSION" -n claude -c "$PROJECT_DIR" -x 200 -y 55
-sleep 0.5
-tmux send-keys -t "$SESSION:0" 'command claude' Enter
+# ── tmux 안 vs 밖 분기 ──
+INSIDE_TMUX=false
+[ -n "$TMUX" ] && INSIDE_TMUX=true
 
-# 윈도우 1: Monitor
-tmux new-window -d -t "$SESSION:" -n Monitor 2>/dev/null || true
-tmux send-keys -t "$SESSION:1" "clear; printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'" Enter 2>/dev/null || true
+if $INSIDE_TMUX; then
+  # ━━━ tmux 안에서 실행: 현재 세션에 윈도우 추가 ━━━
+  CURRENT_SESSION=$(tmux display-message -p '#{session_name}')
 
-# 윈도우 2~N: 에이전트별 output
-idx=1
-for agent in $AGENTS; do
-  idx=$((idx + 1))
-  LABEL=$(agent_label "$agent")
-  tmux new-window -d -t "$SESSION:" -n "$LABEL" 2>/dev/null || true
-  tmux send-keys -t "$SESSION:$idx" "clear; printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'" Enter 2>/dev/null || true
-done
+  # claude 윈도우 (현재 pane에서 바로 실행)
+  tmux rename-window -t "$CURRENT_SESSION" "claude" 2>/dev/null || true
 
-# 웹 대시보드
+  # Monitor 윈도우
+  tmux new-window -d -t "$CURRENT_SESSION:" -n Monitor 2>/dev/null || true
+  MON_IDX=$(tmux list-windows -t "$CURRENT_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null | grep 'Monitor$' | tail -1 | awk '{print $1}')
+  [ -n "$MON_IDX" ] && tmux send-keys -t "$CURRENT_SESSION:$MON_IDX" "clear; printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'" Enter 2>/dev/null || true
+
+  # 에이전트별 output 윈도우
+  for agent in $AGENTS; do
+    LABEL=$(agent_label "$agent")
+    tmux new-window -d -t "$CURRENT_SESSION:" -n "$LABEL" 2>/dev/null || true
+    W_IDX=$(tmux list-windows -t "$CURRENT_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null | grep "$LABEL$" | tail -1 | awk '{print $1}')
+    [ -n "$W_IDX" ] && tmux send-keys -t "$CURRENT_SESSION:$W_IDX" "clear; printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'" Enter 2>/dev/null || true
+  done
+
+  # claude 윈도우로 돌아감
+  tmux select-window -t "$CURRENT_SESSION:claude" 2>/dev/null || true
+
+  SESSION_FOR_LIST="$CURRENT_SESSION"
+
+else
+  # ━━━ tmux 밖에서 실행: 새 세션 생성 ━━━
+
+  # 윈도우 0: claude CLI
+  tmux new-session -d -s "$SESSION" -n claude -c "$PROJECT_DIR" -x 200 -y 55
+  sleep 0.5
+  tmux send-keys -t "$SESSION:0" 'command claude' Enter
+
+  # 윈도우 1: Monitor
+  tmux new-window -d -t "$SESSION:" -n Monitor 2>/dev/null || true
+  tmux send-keys -t "$SESSION:1" "clear; printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'" Enter 2>/dev/null || true
+
+  # 윈도우 2~N: 에이전트별 output
+  idx=1
+  for agent in $AGENTS; do
+    idx=$((idx + 1))
+    LABEL=$(agent_label "$agent")
+    tmux new-window -d -t "$SESSION:" -n "$LABEL" 2>/dev/null || true
+    tmux send-keys -t "$SESSION:$idx" "clear; printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'" Enter 2>/dev/null || true
+  done
+
+  SESSION_FOR_LIST="$SESSION"
+fi
+
+# ── 웹 대시보드 ──
 if [ -f "$DASHBOARD_SERVER" ]; then
   if ! lsof -ti:$DASHBOARD_PORT >/dev/null 2>&1; then
     python3 "$DASHBOARD_SERVER" "$DASHBOARD_PORT" &>/dev/null &
@@ -261,19 +296,25 @@ if [ -f "$DASHBOARD_SERVER" ]; then
   fi
 fi
 
-# 윈도우 목록
+# ── 윈도우 목록 ──
 echo ""
-tmux list-windows -t "$SESSION" -F "    #I: #W" 2>/dev/null || true
+tmux list-windows -t "$SESSION_FOR_LIST" -F "    #I: #W" 2>/dev/null || true
 echo ""
 echo -e "  ${_d}/company run <태스크>  — 멀티에이전트 실행${_0}"
 echo -e "  ${_d}Ctrl+B → 번호        — 윈도우 전환${_0}"
-echo -e "  ${_d}Ctrl+B → d           — detach${_0}"
+if ! $INSIDE_TMUX; then
+  echo -e "  ${_d}Ctrl+B → d           — detach${_0}"
+fi
 echo ""
 
-# claude 윈도우로 attach
-tmux select-window -t "$SESSION:0" 2>/dev/null || true
-if [ -n "$TMUX" ]; then
-  tmux switch-client -t "$SESSION"
+# ── attach (tmux 밖에서만) ──
+if $INSIDE_TMUX; then
+  # 이미 tmux 안 — claude 윈도우에서 직접 실행
+  echo -e "  ${_g}✅${_0} 윈도우 추가 완료 — ${_d}Ctrl+B → 번호${_0}로 전환하세요"
+  echo ""
+  # claude CLI 실행
+  exec command claude
 else
+  tmux select-window -t "$SESSION:0" 2>/dev/null || true
   tmux attach -t "$SESSION"
 fi
