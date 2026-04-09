@@ -276,16 +276,14 @@ if $INSIDE_TMUX; then
   tmux rename-window -t "$CURRENT_SESSION" "claude" 2>/dev/null || true
 
   # Monitor 윈도우
-  tmux new-window -d -t "$CURRENT_SESSION:" -n Monitor 2>/dev/null || true
-  MON_IDX=$(tmux list-windows -t "$CURRENT_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null | grep 'Monitor$' | tail -1 | awk '{print $1}')
-  [ -n "$MON_IDX" ] && tmux send-keys -t "$CURRENT_SESSION:$MON_IDX" "clear; printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'" Enter 2>/dev/null || true
+  tmux new-window -d -t "$CURRENT_SESSION:" -n Monitor \
+    "printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'; exec bash" 2>/dev/null || true
 
   # 에이전트별 output 윈도우
   for agent in $AGENTS; do
     LABEL=$(agent_label "$agent")
-    tmux new-window -d -t "$CURRENT_SESSION:" -n "$LABEL" 2>/dev/null || true
-    W_IDX=$(tmux list-windows -t "$CURRENT_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null | grep "$LABEL$" | tail -1 | awk '{print $1}')
-    [ -n "$W_IDX" ] && tmux send-keys -t "$CURRENT_SESSION:$W_IDX" "clear; printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'" Enter 2>/dev/null || true
+    tmux new-window -d -t "$CURRENT_SESSION:" -n "$LABEL" \
+      "printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'; exec bash" 2>/dev/null || true
   done
 
   # claude 윈도우로 돌아감
@@ -301,21 +299,17 @@ else
   sleep 0.5
   tmux send-keys -t "$SESSION:0" 'command claude' Enter
 
-  # 윈도우 1: Monitor
-  tmux new-window -d -t "$SESSION:" -n Monitor 2>/dev/null || true
-  tmux send-keys -t "$SESSION:1" "clear; printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'" Enter 2>/dev/null || true
+  # 윈도우 1: Monitor — 명령을 직접 new-window에 전달 (send-keys 타이밍 이슈 방지)
+  tmux new-window -d -t "$SESSION:" -n Monitor \
+    "printf '\\n  📊 Activity Monitor\\n  ──────────────────\\n\\n'; tail -f '$ACTIVITY_LOG'; exec bash" 2>/dev/null || true
 
   # 윈도우 2~N: 에이전트별 output
   idx=1
   for agent in $AGENTS; do
     idx=$((idx + 1))
     LABEL=$(agent_label "$agent")
-    echo "  [debug] creating window $idx: $LABEL ($agent)" >> /tmp/vc-launch-debug.log
-    tmux new-window -d -t "$SESSION:" -n "$LABEL" >> /tmp/vc-launch-debug.log 2>&1
-    RET1=$?
-    tmux send-keys -t "$SESSION:$idx" "clear; printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'" Enter >> /tmp/vc-launch-debug.log 2>&1
-    RET2=$?
-    echo "  [debug] window $idx: new-window=$RET1 send-keys=$RET2" >> /tmp/vc-launch-debug.log
+    tmux new-window -d -t "$SESSION:" -n "$LABEL" \
+      "printf '\\n  🤖 $LABEL\\n  ──────────────\\n\\n'; tail -f '$OUTPUT_DIR/${agent}.log'; exec bash" 2>/dev/null || true
   done
 
   SESSION_FOR_LIST="$SESSION"
