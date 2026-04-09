@@ -40,10 +40,25 @@ if [ ! -f "$CONFIG" ]; then
   if [[ "$ans" != "y" && "$ans" != "Y" ]]; then
     exit 0
   fi
-  # 최소 구조 생성
-  mkdir -p "$COMPANY_DIR/agent-memory" "$COMPANY_DIR/agent-output"
+  # 최소 구조 생성 — 글로벌 에이전트 전부 포함
+  mkdir -p "$COMPANY_DIR/agent-memory" "$COMPANY_DIR/agent-output" "$PROJECT_DIR/.claude/agents" "$PROJECT_DIR/.claude/workflows"
   touch "$ACTIVITY_LOG"
-  echo '{"project":"'"$(basename "$PROJECT_DIR")"'","tech_stack":"auto","agents":["ceo"],"language":"ko"}' > "$CONFIG"
+  # 글로벌 에이전트 복사
+  if [ -d "$HOME/.claude/agents" ]; then
+    for f in "$HOME/.claude/agents"/*.md; do
+      [ -f "$f" ] && cp -n "$f" "$PROJECT_DIR/.claude/agents/" 2>/dev/null
+    done
+  fi
+  # 글로벌 워크플로우 복사
+  if [ -d "$HOME/.claude/workflows" ]; then
+    for f in "$HOME/.claude/workflows"/*.yml; do
+      [ -f "$f" ] && cp -n "$f" "$PROJECT_DIR/.claude/workflows/" 2>/dev/null
+    done
+  fi
+  # 에이전트 목록 자동 감지
+  _AGENTS=$(ls "$PROJECT_DIR/.claude/agents/"*.md 2>/dev/null | xargs -I{} basename {} .md | python3 -c "import sys; print(','.join(['\"'+l.strip()+'\"' for l in sys.stdin if l.strip()]))" 2>/dev/null || echo '"ceo"')
+  echo '{"project":"'"$(basename "$PROJECT_DIR")"'","tech_stack":"auto","agents":['"$_AGENTS"'],"language":"ko"}' > "$CONFIG"
+  echo -e "  ${_g}✅${_0} 자동 설정 완료 ($(echo "$_AGENTS" | tr -cd ',' | wc -c | tr -d ' ' | xargs -I{} expr {} + 1)명)"
 fi
 
 # ━━━ 2. 프로젝트명 + 세션명 ━━━
