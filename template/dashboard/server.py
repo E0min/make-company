@@ -10,13 +10,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 COMPANY_DIR = os.path.dirname(os.path.abspath(__file__)).rsplit('/dashboard', 1)[0]
-DASHBOARD_DIR = os.path.join(COMPANY_DIR, 'dashboard')
+# Next.js static export(out/)가 있으면 우선 서빙, 없으면 기존 vanilla 폴백
+NEXT_OUT_DIR = os.path.join(COMPANY_DIR, 'dashboard-next-v2', 'out')
+VANILLA_DIR = os.path.join(COMPANY_DIR, 'dashboard')
+DASHBOARD_DIR = NEXT_OUT_DIR if os.path.isdir(NEXT_OUT_DIR) else VANILLA_DIR
 CONFIG_PATH = os.path.join(COMPANY_DIR, 'config.json')
 ACTIVITY_LOG = os.path.join(COMPANY_DIR, 'activity.log')
 AGENT_OUTPUT_DIR = os.path.join(COMPANY_DIR, 'agent-output')
 AGENT_MEMORY_DIR = os.path.join(COMPANY_DIR, 'agent-memory')
 WORKFLOWS_DIR = os.path.join(os.path.dirname(COMPANY_DIR), 'workflows')  # .claude/workflows/
 AGENTS_DIR = os.path.join(os.path.dirname(COMPANY_DIR), 'agents')  # .claude/agents/
+RETRO_DIR = os.path.join(COMPANY_DIR, 'retrospectives')  # .claude/company/retrospectives/
 GLOBAL_AGENTS_DIR = os.path.expanduser('~/.claude/agents')  # 글로벌 에이전트
 PROJECT_DIR = os.path.dirname(os.path.dirname(COMPANY_DIR))  # project root
 
@@ -26,6 +30,28 @@ PROC_LOCK = threading.Lock()
 
 # config.json read-modify-write 동기화
 CONFIG_LOCK = threading.Lock()
+
+# ━━━ In-memory cache (TTL-based) ━━━
+_cache = {}
+_cache_lock = threading.Lock()
+
+def cached(key, ttl_sec, reader_fn):
+    """TTL 기반 캐시. 만료 전이면 메모리에서 반환, 만료 시 reader_fn 호출 후 갱신."""
+    now = time.monotonic()
+    with _cache_lock:
+        if key in _cache:
+            data, expire = _cache[key]
+            if now < expire:
+                return data
+    data = reader_fn()
+    with _cache_lock:
+        _cache[key] = (data, now + ttl_sec)
+    return data
+
+def invalidate_cache(key):
+    """특정 캐시 키를 즉시 무효화."""
+    with _cache_lock:
+        _cache.pop(key, None)
 
 # 인증 토큰 (서버 시작 시 생성)
 AUTH_TOKEN = secrets.token_hex(16)
@@ -38,15 +64,22 @@ MIME_TYPES = {
     '.svg': 'image/svg+xml',
     '.png': 'image/png',
     '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+    '.map': 'application/json',
 }
 
 # ━━━ Data readers ━━━
 
-def read_config():
+def _read_config_raw():
     if not os.path.exists(CONFIG_PATH):
         return {}
     with open(CONFIG_PATH) as f:
         return json.load(f)
+
+def read_config():
+    return cached("config", 2, _read_config_raw)
 
 def read_activity(lines=50):
     """activity.log에서 최근 N줄 + 파싱"""
@@ -73,8 +106,8 @@ def read_activity(lines=50):
             entries.append({"timestamp": "", "agent": "", "message": line, "raw": line})
     return entries
 
-def read_agent_states():
-    """activity.log에서 에이전트별 최신 상태 추출"""
+def _read_agent_states_raw():
+    """activity.log에서 에이전트별 최신 상태 추출 (원본)"""
     config = read_config()
     agents = config.get('agents', [])
     states = {}
@@ -102,6 +135,9 @@ def read_agent_states():
                         states[aid]["last_message"] = line
     return list(states.values())
 
+def read_agent_states():
+    return cached("states", 1, _read_agent_states_raw)
+
 def read_agent_output(agent_id, lines=30):
     """agent-output/{id}.log에서 최근 내용"""
     path = os.path.join(AGENT_OUTPUT_DIR, f"{agent_id}.log")
@@ -121,8 +157,8 @@ def read_agent_memory(agent_id):
 
 # ━━━ SSE watchers ━━━
 
-def read_agents_full():
-    """프로젝트 에이전트 .md 파일 목록 (frontmatter + 본문)"""
+def _read_agents_full_raw():
+    """프로젝트 에이전트 .md 파일 목록 (frontmatter + 본문) — 원본"""
     agents = []
     if not os.path.isdir(AGENTS_DIR):
         return agents
@@ -157,6 +193,9 @@ def read_agents_full():
             })
         except Exception: pass
     return agents
+
+def read_agents_full():
+    return cached("agents_full", 5, _read_agents_full_raw)
 
 def read_global_agents():
     """글로벌 에이전트 목록 (프로젝트에 없는 것만)"""
@@ -293,6 +332,46 @@ category: (leadership/engineering/design/qa/marketing 중 택1)
     except Exception as e:
         return {"error": f"AI 생성 실패: {str(e)}"}
 
+def generate_workflow_with_ai(description):
+    """Claude CLI로 워크플로우 YAML 생성"""
+    prompt = f"""다음 설명에 맞는 워크플로우 YAML을 생성하세요.
+
+설명: {description}
+
+사용 가능한 에이전트: ceo, product-manager, ui-ux-designer, frontend-engineer, backend-engineer, fe-qa, be-qa, marketing-strategist
+
+반드시 아래 형식을 따르세요:
+name: (한국어 이름)
+description: (한국어 설명, 흐름을 → 로 표시)
+
+steps:
+  - id: (영문 kebab-case)
+    agent: (위 에이전트 중 하나)
+    prompt: |
+      (구체적 지시, {{{{input}}}}과 {{{{steps.이전스텝.output}}}} 사용)
+    depends_on: [이전 스텝 id들]
+    output: (영문 변수명)
+
+YAML만 출력하세요. 설명이나 코드블록 없이."""
+
+    try:
+        result = subprocess.run(
+            ['claude', '-p', prompt, '--no-input'],
+            capture_output=True, text=True, timeout=60, cwd=PROJECT_DIR
+        )
+        output = result.stdout.strip()
+        # 'name:' 시작 부분 찾기
+        idx = output.find('name:')
+        if idx >= 0:
+            return output[idx:]
+        return output if output else None
+    except subprocess.TimeoutExpired:
+        return {"error": "AI 생성 시간 초과 (60초)"}
+    except FileNotFoundError:
+        return {"error": "claude CLI를 찾을 수 없습니다"}
+    except Exception as e:
+        return {"error": f"생성 실패: {str(e)}"}
+
 def delete_agent(agent_id):
     """에이전트 삭제"""
     path = os.path.join(AGENTS_DIR, f"{agent_id}.md")
@@ -318,8 +397,8 @@ def import_global_agent(agent_id):
         content = f.read()
     return save_agent(agent_id, content)
 
-def read_workflows():
-    """워크플로우 YAML 목록"""
+def _read_workflows_raw():
+    """워크플로우 YAML 목록 (원본)"""
     if not os.path.isdir(WORKFLOWS_DIR):
         return []
     workflows = []
@@ -341,8 +420,33 @@ def read_workflows():
             workflows.append({"file": f, "name": name, "title": title, "description": desc})
     return workflows
 
+def read_workflows():
+    return cached("workflows", 10, _read_workflows_raw)
+
+def read_retrospectives(limit=20):
+    """회고 JSON 파일 목록 (최신순, 최대 limit개)"""
+    if not os.path.isdir(RETRO_DIR):
+        return []
+    files = sorted(
+        [f for f in os.listdir(RETRO_DIR) if f.endswith('.json')],
+        reverse=True
+    )[:limit]
+    retros = []
+    for f in files:
+        try:
+            with open(os.path.join(RETRO_DIR, f)) as fh:
+                retros.append(json.load(fh))
+        except Exception:
+            pass
+    return retros
+
 def run_company_task(task, mode='run'):
     """claude CLI로 /company run 또는 /company workflow 실행"""
+    # 입력 검증
+    if len(task) > 5000:
+        return {"ok": False, "error": "태스크가 너무 깁니다 (최대 5000자)"}
+    task = task.replace('\x00', '')  # null byte 제거
+
     global RUNNING_PROC
     with PROC_LOCK:
         if RUNNING_PROC["pid"]:
@@ -483,8 +587,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(agent or {"error": "not found"})
         elif path == '/api/workflows':
             self.send_json({"workflows": read_workflows()})
+        elif path.startswith('/api/workflow/'):
+            # GET /api/workflow/<name> — 개별 워크플로우 YAML 조회
+            parts = path.split('/')
+            name = parts[3] if len(parts) > 3 else ''
+            if not name or not re.match(r'^[a-zA-Z0-9_-]+$', name):
+                self.send_json({"ok": False, "error": "잘못된 워크플로우 이름"}, 400)
+                return
+            # .yml 또는 .yaml 확장자 탐색
+            wf_path = None
+            for ext in ('.yml', '.yaml'):
+                candidate = os.path.join(WORKFLOWS_DIR, f"{name}{ext}")
+                if os.path.isfile(candidate):
+                    wf_path = candidate
+                    break
+            if not wf_path:
+                self.send_json({"ok": False, "error": "워크플로우를 찾을 수 없습니다"}, 404)
+                return
+            with open(wf_path, encoding='utf-8') as f:
+                raw_yaml = f.read()
+            self.send_json({"ok": True, "name": name, "content": raw_yaml})
         elif path == '/api/token':
+            # localhost에서만 접근 가능 (remote IP 체크)
+            client_ip = self.client_address[0]
+            if client_ip not in ('127.0.0.1', '::1', 'localhost'):
+                self.send_json({"error": "forbidden"}, 403)
+                return
             self.send_json({"token": AUTH_TOKEN})
+        elif path == '/api/retrospectives':
+            self.send_json({"retrospectives": read_retrospectives()})
         elif path == '/api/running':
             with PROC_LOCK:
                 data = dict(RUNNING_PROC)
@@ -546,17 +677,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass
 
     def serve_file(self, filename):
-        filepath = os.path.realpath(os.path.join(DASHBOARD_DIR, filename))
-        if not filepath.startswith(os.path.realpath(DASHBOARD_DIR)):
+        filepath = os.path.join(DASHBOARD_DIR, filename)
+
+        # trailing slash 지원: /foo/ → /foo/index.html (Next.js trailingSlash: true)
+        if os.path.isdir(filepath):
+            filepath = os.path.join(filepath, 'index.html')
+            filename = os.path.join(filename, 'index.html')
+
+        # path traversal 방지
+        real = os.path.realpath(filepath)
+        if not real.startswith(os.path.realpath(DASHBOARD_DIR)):
             self.send_error(403)
             return
-        if not os.path.isfile(filepath):
+        if not os.path.isfile(real):
             self.send_error(404)
             return
         ext = os.path.splitext(filename)[1]
         mime = MIME_TYPES.get(ext, 'application/octet-stream')
-        with open(filepath, 'rb') as f:
+        with open(real, 'rb') as f:
             body = f.read()
+        # index.html: 인증 토큰 주입 + 프로젝트 이름 타이틀
+        if filename.endswith('index.html'):
+            body = body.replace(b'</head>', f'<meta name="vc-token" content="{AUTH_TOKEN}">\n</head>'.encode())
+            config = read_config()
+            project = config.get("project", "Company")
+            body = body.replace(b'<title>Virtual Company Dashboard</title>',
+                                f'<title>VC — {project}</title>'.encode())
         self.send_response(200)
         self.send_header('Content-Type', mime)
         self.send_header('Content-Length', len(body))
@@ -569,6 +715,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         content_len = int(self.headers.get('Content-Length', 0))
+        MAX_BODY = 1_048_576  # 1MB
+        if content_len > MAX_BODY:
+            self.send_json({"error": "payload too large"}, 413)
+            return
         try:
             body = json.loads(self.rfile.read(content_len)) if content_len else {}
         except (json.JSONDecodeError, ValueError):
@@ -595,6 +745,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
             result = run_company_task(task, mode='workflow')
             self.send_json(result)
 
+        elif path == '/api/workflows/save':
+            # 워크플로우 저장: {"name": "string", "content": "raw YAML string"}
+            name = body.get('name', '').strip()
+            content = body.get('content', '')
+            if not name or not re.match(r'^[a-zA-Z0-9_-]+$', name):
+                self.send_json({"ok": False, "error": "잘못된 워크플로우 이름"}, 400)
+                return
+            if not content:
+                self.send_json({"ok": False, "error": "content가 비어있습니다"}, 400)
+                return
+            os.makedirs(WORKFLOWS_DIR, exist_ok=True)
+            wf_path = os.path.join(WORKFLOWS_DIR, f"{name}.yml")
+            with open(wf_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            invalidate_cache("workflows")
+            self.send_json({"ok": True, "name": name})
+
+        elif path == '/api/workflows/delete':
+            # 워크플로우 삭제: {"name": "string"}
+            name = body.get('name', '').strip()
+            if not name or not re.match(r'^[a-zA-Z0-9_-]+$', name):
+                self.send_json({"ok": False, "error": "잘못된 워크플로우 이름"}, 400)
+                return
+            # .yml 또는 .yaml 확장자 탐색
+            deleted = False
+            for ext in ('.yml', '.yaml'):
+                candidate = os.path.join(WORKFLOWS_DIR, f"{name}{ext}")
+                if os.path.isfile(candidate):
+                    os.remove(candidate)
+                    deleted = True
+                    break
+            if not deleted:
+                self.send_json({"ok": False, "error": "워크플로우를 찾을 수 없습니다"}, 404)
+                return
+            invalidate_cache("workflows")
+            self.send_json({"ok": True})
+
         elif path == '/api/agents/save':
             # 에이전트 저장: {"id", "content", "scope": "local"|"global"|"both", "color"}
             aid = body.get('id', '').strip()
@@ -611,6 +798,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 save_agent(aid, content, 'global', color)
             else:
                 save_agent(aid, content, scope, color)
+            invalidate_cache("agents_full")
+            invalidate_cache("config")
             self.send_json({"ok": True, "id": aid})
 
         elif path == '/api/agents/generate':
@@ -644,6 +833,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "CEO는 삭제할 수 없습니다"}, 400)
                 return
             delete_agent(aid)
+            invalidate_cache("agents_full")
+            invalidate_cache("config")
             self.send_json({"ok": True})
 
         elif path == '/api/agents/import':
@@ -659,6 +850,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "id": aid})
             else:
                 self.send_json({"ok": False, "error": "글로벌 에이전트를 찾을 수 없습니다"})
+
+        elif path == '/api/workflows/generate':
+            # AI로 워크플로우 YAML 생성: {"description": "..."}
+            desc = body.get('description', '').strip()
+            if not desc:
+                self.send_json({"ok": False, "error": "설명을 입력하세요"}, 400)
+                return
+            content = generate_workflow_with_ai(desc)
+            if content and isinstance(content, str):
+                self.send_json({"ok": True, "content": content})
+            elif isinstance(content, dict) and "error" in content:
+                self.send_json({"ok": False, "error": content["error"]})
+            else:
+                self.send_json({"ok": False, "error": "워크플로우 생성 실패"})
+
+        elif path == '/api/retrospectives/save':
+            # 회고 저장: JSON 객체 전체를 파일로 저장
+            if not body or not isinstance(body, dict):
+                self.send_json({"ok": False, "error": "유효한 JSON 객체를 전송하세요"}, 400)
+                return
+            os.makedirs(RETRO_DIR, exist_ok=True)
+            ts = int(time.time() * 1000)
+            filename = f"retro-{ts}.json"
+            filepath = os.path.join(RETRO_DIR, filename)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(body, f, ensure_ascii=False, indent=2)
+            self.send_json({"ok": True, "file": filename})
 
         elif path == '/api/stop':
             # 실행 중인 태스크 중지 (SIGTERM → 3초 후 SIGKILL fallback)
@@ -696,10 +914,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 7777
+    config = read_config()
+    project = config.get("project", "Company")
     server = ThreadingHTTPServer(('127.0.0.1', port), DashboardHandler)
-    print(f"\n  🌐 Virtual Company Dashboard")
+    print(f"\n  🌐 {project} Dashboard")
     print(f"  http://localhost:{port}")
-    print(f"  Auth Token: {AUTH_TOKEN}")
     print(f"  Ctrl+C to stop\n")
     try:
         server.serve_forever()
