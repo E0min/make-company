@@ -404,33 +404,36 @@ steps:
 
 ## Dashboard (대시보드)
 
-### 웹 대시보드 (SSE 실시간)
+```
+/company dashboard
+```
 
-```bash
-python3 .claude/company/dashboard/server.py 7778
-# → http://localhost:7778
+자동으로 빈 포트를 찾아 웹 대시보드를 실행하고 브라우저를 엽니다.
+
+```
+🌐 대시보드: http://localhost:7777
 ```
 
 | 탭 | 기능 |
 |---|---|
-| **Overview** | KPI (총원/작업중/완료/대기), 에이전트 상태 그리드 |
-| **Run** | 멀티에이전트 실행 + 워크플로우 실행 (브라우저에서 직접) |
+| **Overview** | KPI (총원/작업중/완료/대기), 에이전트 상태 그리드 (사이드바) |
+| **Workflows** | React Flow 시각적 워크플로우 빌더 + 자연어 생성 + 실행 |
 | **Activity** | SSE 실시간 활동 로그 |
-| **Agents** | 에이전트 목록, 편집, 생성 (AI 생성), 삭제, 글로벌 가져오기, 색상 선택 |
+| **Agents** | 에이전트 CRUD, AI 생성, 색상 선택, 글로벌 가져오기 |
 
-- 디자인: Linear-leaning Cyber Refined (다크, Geist 폰트, Lucide 아이콘)
-- 보안: 인증 토큰 (POST 요청), Path Traversal 방지, Agent ID 검증
+- **기술**: Next.js 16 + shadcn/ui + React Flow (static export → Python 서버가 서빙)
+- **디자인**: 사이드바 레이아웃, 다크 전용, Geist 폰트, Indigo 액센트
+- **보안**: 인증 토큰, Path Traversal 방지, Request Body Limit, Agent ID 검증
+- **런타임**: `python3 server.py` 하나로 API + 대시보드 동시 서빙 (Node.js 불필요)
 
-### tmux 대시보드 (터미널)
+### 멀티 프로젝트
 
-```bash
-bash .claude/company/dashboard.sh
-# 다른 터미널에서:
-tmux attach -t vc-dashboard
+두 프로젝트를 동시에 실행하면 각각 다른 포트에서 대시보드가 뜹니다:
+
 ```
-
-- 윈도우 0: Monitor (`tail -f activity.log`)
-- 윈도우 1~N: 에이전트별 출력 (`tail -f agent-output/{id}.log`)
+프로젝트 A: /company dashboard → http://localhost:7777  탭: "VC — project-a"
+프로젝트 B: /company dashboard → http://localhost:7778  탭: "VC — project-b"
+```
 
 ---
 
@@ -451,11 +454,14 @@ tmux attach -t vc-dashboard
 
 | 명령 | 설명 |
 |---|---|
+| `claude -company` | tmux 세션 시작 (에이전트 선택 + claude + 에이전트 윈도우) |
 | `/company setup` | 에이전트 선택 + 프로젝트 설정 |
 | `/company run <태스크>` | 멀티에이전트 (CEO 자율 모드) |
 | `/company workflow <name> [input]` | 서브에이전트 (YAML 파이프라인) |
-| `/company dashboard` | tmux 대시보드 시작 |
+| `/company dashboard` | 웹 대시보드 실행 (자동 포트 + 브라우저 오픈) |
 | `/company memory [agent-id]` | 에이전트 메모리 조회/수정 |
+| `/company retro` | 회고 목록 조회/분석 |
+| `/company upgrade` | 최신 버전으로 업그레이드 (git pull + 파일 복사) |
 
 ---
 
@@ -475,11 +481,12 @@ your-project/
 │   │   └── ...
 │   ├── company/
 │   │   ├── config.json            # 프로젝트 설정
-│   │   ├── activity.log           # 활동 로그 (tail -f 가능)
+│   │   ├── activity.log           # 활동 로그
 │   │   ├── agent-memory/          # 에이전트별 누적 메모리
 │   │   ├── agent-output/          # 에이전트별 출력 로그
-│   │   ├── dashboard/             # 웹 대시보드 (server.py + HTML/CSS/JS)
-│   │   └── dashboard.sh           # tmux 대시보드 스크립트
+│   │   ├── retrospectives/        # 자동 회고 JSON
+│   │   ├── dashboard/             # Python API 서버 (server.py)
+│   │   └── dashboard-next-v2/out/ # Next.js static export (대시보드 UI)
 │   └── skills/
 │       └── company/
 │           └── skill.md           # /company 스킬 정의
@@ -493,22 +500,20 @@ your-project/
 make-company/
 ├── README.md
 ├── LICENSE
-├── install.sh                     # 프로젝트에 설치하는 스크립트
+├── VERSION                        # 현재 버전 (자동 업데이트 체크용)
+├── LAUNCH.md                      # HN/X 론칭 초안
 ├── vc-launch.sh                   # claude -company 런처
+├── bin/
+│   ├── vc-update-check            # 자동 버전 체크 (gstack 방식)
+│   └── vc-upgrade                 # 업그레이드 스크립트
 ├── template/
 │   ├── agents-v2/                 # v2 에이전트 정의 8종
 │   ├── workflows/                 # YAML 워크플로우 4종
 │   ├── skill/                     # /company 스킬 정의
-│   ├── dashboard/                 # 웹 대시보드 (Python + vanilla JS)
-│   │   ├── server.py              # SSE 서버 (stdlib only)
-│   │   ├── index.html
-│   │   ├── app.js
-│   │   └── style.css
-│   ├── dashboard.sh               # tmux 대시보드
-│   ├── config-v2-example.json     # 설정 예시
-│   ├── agents/                    # v1 에이전트 스크립트 (legacy)
-│   ├── dashboard-next/            # v1 Next.js 대시보드 (legacy)
-│   └── ...                        # v1 파일들 (run.sh, router.sh 등)
+│   ├── handoff-schemas.json       # 에이전트 간 핸드오프 스키마
+│   ├── dashboard/                 # Python API 서버
+│   │   └── server.py              # SSE + Next.js static export 서빙
+│   └── ...
 ├── CLAUDE.md
 └── DESIGN.md
 ```
