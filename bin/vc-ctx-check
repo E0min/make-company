@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# vc-ctx-check — CTX 60% 도달 시 compact 제안 훅
+# Claude Code의 Notification 훅에서 호출됨
+# stdin으로 JSON이 들어옴 (hook payload)
+
+# 환경변수로 전달되는 컨텍스트 정보 파싱
+INPUT=$(cat)
+
+# context_window.used_percentage 추출
+CTX_PCT=$(echo "$INPUT" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    pct = data.get('session', {}).get('context_window', {}).get('used_percentage', 0)
+    print(int(pct))
+except:
+    print(0)
+" 2>/dev/null || echo "0")
+
+# 60% 미만이면 통과
+if [ "$CTX_PCT" -lt 60 ] 2>/dev/null; then
+  exit 0
+fi
+
+# 이미 알림을 보냈는지 체크 (세션당 1번만)
+MARKER="/tmp/vc-ctx-warned-$$"
+if [ -f "$MARKER" ]; then
+  exit 0
+fi
+touch "$MARKER"
+
+# 60% 이상: 메시지 출력 (Claude가 이걸 보고 사용자에게 전달)
+cat << 'EOF'
+⚠️ 컨텍스트 사용률이 60%를 넘었습니다.
+
+/compact 전에 보존할 내용이 있으면 알려주세요:
+- 현재 작업 중인 내용
+- 기억해야 할 결정사항
+- 다음에 이어서 할 작업
+
+사용자가 보존할 내용을 알려주면 에이전트 메모리에 저장한 뒤 /compact를 실행하세요.
+사용자가 "그냥 compact해"라고 하면 바로 /compact를 실행하세요.
+EOF
+
+exit 0

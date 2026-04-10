@@ -322,6 +322,19 @@ bash "${VC_TEMPLATE:-$HOME/make-company}/bin/vc-upgrade"
 
 ---
 
+## 컨텍스트 관리 (CTX 60% 규칙)
+
+PostToolUse 훅이 컨텍스트 사용률 60%를 감지하면 알림이 표시된다.
+이 알림이 뜨면 다음을 수행:
+
+1. 사용자에게 물어본다: "컨텍스트가 60%를 넘었습니다. /compact 전에 보존할 내용이 있으면 알려주세요."
+2. 사용자가 보존할 내용을 알려주면:
+   - `.claude/company/agent-memory/<현재-에이전트>.md`에 해당 내용을 저장
+   - 그 후 `/compact` 실행
+3. 사용자가 "그냥 해"라고 하면 바로 `/compact` 실행
+
+---
+
 ## 에러 처리
 
 - config.json 없으면: "❌ `/company setup`을 먼저 실행하세요."
