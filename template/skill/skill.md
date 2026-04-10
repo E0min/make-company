@@ -6,6 +6,7 @@
 - `/company workflow <name> [input]` → **서브에이전트** (YAML 파이프라인)
 - `/company dashboard` → tmux 대시보드 시작
 - `/company memory [agent-id]` → 에이전트 메모리 조회/수정
+- `/company retro` → 회고 목록 조회/분석
 - 서브커맨드 없으면 → 사용법 안내 (한국어)
 
 ---
@@ -74,8 +75,8 @@
 }
 ```
 
-### 1-5. 에이전트 메모리 + 출력 디렉토리 생성
-- `mkdir -p .claude/company/agent-memory .claude/company/agent-output`
+### 1-5. 에이전트 메모리 + 출력 + 회고 디렉토리 생성
+- `mkdir -p .claude/company/agent-memory .claude/company/agent-output .claude/company/retrospectives`
 - 각 에이전트별 메모리/출력 파일 생성 (이미 있으면 건드리지 않음)
 
 ### 1-6. 워크플로우 템플릿 복사
@@ -100,7 +101,19 @@
 5. 대시보드가 떠 있으면 자동으로 표시됨
 
 ### 2-2. CEO 모드로 태스크 분석
-CEO .md의 "Discovery 우선" 원칙에 따라 태스크를 분류:
+
+**a) 과거 회고 참조:**
+1. `.claude/company/retrospectives/` 디렉토리 확인
+2. 존재하면 최근 JSON 파일들의 `tags`와 `task`를 스캔
+3. 현재 태스크와 유사한 과거 회고를 최대 3건 선택 (tags 교집합 2개 이상 or 키워드 매칭)
+4. 매칭된 회고의 action_item들을 이번 계획에 반영:
+   ```
+   [과거 회고 참조]
+   - retro-2026-04-09-001: "API 계약서를 핸드오프 전 확정" (frontend, backend)
+   ```
+
+**b) 태스크 분류:**
+CEO .md의 "Discovery 우선" 원칙에 따라:
 - 신규 제품/기능 → PM 먼저
 - UI 변경 → Designer 직접
 - 버그 → QA 먼저
@@ -140,7 +153,45 @@ echo -e "━━━ $(date '+%H:%M:%S') 작업 완료 ━━━\n결과 요약: .
 모든 팀원 작업 완료 후:
 1. activity.log에 완료 기록
 2. 참여 에이전트 메모리 업데이트 (각 에이전트에 "배운 점 3줄 요약" Agent 호출 → append)
-3. 사용자에게 최종 결과 표시
+3. **회고 수집** (2-6 자동 실행)
+4. 사용자에게 최종 결과 + 회고 요약 표시
+
+### 2-6. 회고 수집 (자동)
+2-5 완료 직후 자동 실행. 사용자 개입 없음.
+
+**a) 디렉토리 보장:**
+```bash
+mkdir -p .claude/company/retrospectives
+```
+
+**b) 참여 에이전트에게 회고 요청 (병렬 Agent 호출):**
+각 참여 에이전트에게 다음 프롬프트로 Agent tool 호출:
+```
+이번 작업에 대해 3줄 회고를 JSON으로만 응답하세요:
+{"went_well": "잘 된 것", "went_wrong": "문제였던 것", "action_item": "다음 개선점"}
+```
+JSON 파싱 실패 시 원문을 raw_response에 보존.
+
+**c) CEO 요약:**
+수집된 feedback을 읽고 1~2줄 summary 생성. 2명 이상 같은 문제 지적 시 반드시 포함.
+
+**d) 태그 자동 부여:**
+participants에서 역할 기반 태그 + 태스크 키워드 매칭 (버그→bugfix, 디자인→design 등)
+
+**e) JSON 저장:**
+`.claude/company/retrospectives/retro-{날짜}-{순번}.json`에 저장.
+구조: id, project, task, trigger, completed_at, duration_seconds, participants, feedback, summary, tags
+
+**f) 에이전트 메모리에 action_item 반영:**
+각 에이전트의 action_item을 `agent-memory/<id>.md`에 append:
+```
+- [retro-2026-04-10-001] API 계약서를 핸드오프 전 확정
+```
+
+**g) activity.log에 기록:**
+```bash
+echo "[timestamp] 📝 회고 저장 | retro-id | 참여: agents" >> .claude/company/activity.log
+```
 
 ---
 
