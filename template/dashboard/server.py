@@ -414,6 +414,7 @@ def _read_agent_states_for_project(company_dir, agents_dir=None):
     for aid in agents:
         states[aid] = {"id": aid, "state": "idle", "last_message": "", "timestamp": ""}
 
+    # 1. activity.log 기반 상태
     activity_log = os.path.join(company_dir, 'activity.log')
     if os.path.exists(activity_log):
         with open(activity_log) as f:
@@ -431,6 +432,25 @@ def _read_agent_states_for_project(company_dir, agents_dir=None):
                         if ts_match:
                             states[aid]["timestamp"] = ts_match.group(1)
                         states[aid]["last_message"] = line
+
+    # 2. tmux 세션 기반 상태 보강 (activity.log가 비어있어도 세션이 있으면 active)
+    config = _read_config_for_project(company_dir)
+    project_id = config.get("project", "")
+    if project_id and _check_tmux_session(project_id):
+        windows = _get_tmux_windows(f"vc-{project_id}")
+        # 윈도우 이름 → agent_id 역매핑
+        label_to_id = {}
+        for aid in agents:
+            label_to_id[_agent_short_label(aid)] = aid
+        for w in windows:
+            parts = w.split(':')
+            if len(parts) == 2:
+                win_label = parts[1].strip()
+                aid = label_to_id.get(win_label)
+                if aid and states[aid]["state"] == "idle":
+                    states[aid]["state"] = "active"
+                    states[aid]["last_message"] = f"tmux window: {w}"
+
     return list(states.values())
 
 def _read_agent_states_raw():
