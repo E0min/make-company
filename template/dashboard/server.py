@@ -126,6 +126,13 @@ def _stop_company_session(project_id):
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
+            # 터미널 임시 파일 정리
+            import glob
+            for f in glob.glob(f"/tmp/vc-term-{project_id}-*.log"):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
             return {"ok": True}
         else:
             return {"ok": False, "error": f"세션 종료 실패: {result.stderr.strip()}"}
@@ -153,6 +160,9 @@ def _agent_short_label(agent_id):
 def _terminal_open(project_id, agent_id):
     """tmux pipe-pane 시작 + 스크롤백 반환"""
     session = f"vc-{project_id}"
+    # tmux 세션 존재 확인
+    if not _check_tmux_session(project_id):
+        return None, "회사가 실행중이지 않습니다. Start 버튼으로 시작하세요."
     # 에이전트의 tmux 윈도우 인덱스 찾기
     windows = _get_tmux_windows(session)
     agent_label = _agent_short_label(agent_id)  # PM, Frontend 등
@@ -225,22 +235,16 @@ def _terminal_read(project_id, agent_id, since=0):
     return {"data": text, "offset": size}, None
 
 def _terminal_close(project_id, agent_id):
-    """pipe-pane 해제 + 임시 파일 삭제"""
+    """pipe-pane 해제 (파일은 유지 — 다시 열 때 이어서 읽기)"""
     key = f"{project_id}:{agent_id}"
     with TERMINAL_LOCK:
         session = TERMINAL_SESSIONS.pop(key, None)
     if not session:
         return
 
-    # pipe-pane 해제
+    # pipe-pane만 해제 (파일은 삭제하지 않음 — 재오픈 시 offset으로 이어서 읽기)
     subprocess.run(['tmux', 'pipe-pane', '-t', session["pane_target"]],
                    capture_output=True, timeout=2)
-
-    # 임시 파일 삭제
-    try:
-        os.remove(session["pipe_file"])
-    except OSError:
-        pass
 
 def read_projects():
     """등록된 프로젝트 목록 반환 (tmux 세션 상태 포함)."""
