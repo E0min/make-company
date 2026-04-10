@@ -7,7 +7,7 @@ Virtual Company v2 Dashboard Server (의존성 0)
 """
 import os, sys, json, time, re, threading, subprocess, shlex, secrets, signal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 COMPANY_DIR = os.path.dirname(os.path.abspath(__file__)).rsplit('/dashboard', 1)[0]
 # Next.js static export(out/)가 있으면 우선 서빙, 없으면 기존 vanilla 폴백
@@ -113,6 +113,112 @@ def _stop_company_session(project_id):
     except Exception as e:
         return {"ok": False, "error": f"세션 종료 실패: {str(e)}"}
 
+def _agent_short_label(agent_id):
+    """에이전트 ID -> tmux 윈도우 이름 매핑"""
+    labels = {
+        "ceo": "claude",
+        "product-manager": "PM",
+        "ui-ux-designer": "Designer",
+        "frontend-engineer": "Frontend",
+        "backend-engineer": "Backend",
+        "fe-qa": "FE-QA",
+        "be-qa": "BE-QA",
+        "marketing-strategist": "Marketing",
+    }
+    return labels.get(agent_id, agent_id)
+
+def _terminal_open(project_id, agent_id):
+    """tmux pipe-pane 시작 + 스크롤백 반환"""
+    session = f"vc-{project_id}"
+    # 에이전트의 tmux 윈도우 인덱스 찾기
+    windows = _get_tmux_windows(session)
+    agent_label = _agent_short_label(agent_id)  # PM, Frontend 등
+    win_idx = None
+    for w in windows:
+        # "3:PM" 형태에서 매칭
+        parts = w.split(':')
+        if len(parts) == 2 and parts[1].strip() == agent_label:
+            win_idx = parts[0].strip()
+            break
+    if not win_idx:
+        # claude 윈도우 (메인)
+        if agent_id in ('ceo', 'claude', 'main'):
+            win_idx = '0'
+        else:
+            return None, "에이전트 윈도우를 찾을 수 없습니다"
+
+    pane_target = f"{session}:{win_idx}"
+    pipe_file = f"/tmp/vc-term-{project_id}-{agent_id}.log"
+
+    # 기존 pipe 해제
+    subprocess.run(['tmux', 'pipe-pane', '-t', pane_target], capture_output=True, timeout=2)
+
+    # 새 pipe 시작 (-o: output only)
+    subprocess.run(['tmux', 'pipe-pane', '-o', '-t', pane_target, f'cat >> {pipe_file}'],
+                   capture_output=True, timeout=2)
+
+    # 스크롤백 캡처 (최근 500줄, ANSI 포함)
+    result = subprocess.run(
+        ['tmux', 'capture-pane', '-t', pane_target, '-p', '-e', '-S', '-500'],
+        capture_output=True, text=True, timeout=5
+    )
+    scrollback = result.stdout if result.returncode == 0 else ""
+
+    # 세션 등록
+    key = f"{project_id}:{agent_id}"
+    with TERMINAL_LOCK:
+        # pipe_file 초기 오프셋 = 현재 파일 크기
+        initial_offset = os.path.getsize(pipe_file) if os.path.exists(pipe_file) else 0
+        TERMINAL_SESSIONS[key] = {"pipe_file": pipe_file, "pane_target": pane_target}
+
+    return {"scrollback": scrollback, "offset": initial_offset}, None
+
+def _terminal_read(project_id, agent_id, since=0):
+    """pipe-pane 출력에서 since 이후 새 내용 반환"""
+    key = f"{project_id}:{agent_id}"
+    with TERMINAL_LOCK:
+        session = TERMINAL_SESSIONS.get(key)
+    if not session:
+        return None, "터미널 세션이 열려있지 않습니다"
+
+    pipe_file = session["pipe_file"]
+    if not os.path.exists(pipe_file):
+        return {"data": "", "offset": since}, None
+
+    size = os.path.getsize(pipe_file)
+    if size <= since:
+        return {"data": "", "offset": since}, None
+
+    with open(pipe_file, 'rb') as f:
+        f.seek(since)
+        data = f.read()
+
+    # 바이너리를 UTF-8로 디코딩 (ANSI escape 포함)
+    try:
+        text = data.decode('utf-8', errors='replace')
+    except Exception:
+        text = data.decode('latin-1')
+
+    return {"data": text, "offset": size}, None
+
+def _terminal_close(project_id, agent_id):
+    """pipe-pane 해제 + 임시 파일 삭제"""
+    key = f"{project_id}:{agent_id}"
+    with TERMINAL_LOCK:
+        session = TERMINAL_SESSIONS.pop(key, None)
+    if not session:
+        return
+
+    # pipe-pane 해제
+    subprocess.run(['tmux', 'pipe-pane', '-t', session["pane_target"]],
+                   capture_output=True, timeout=2)
+
+    # 임시 파일 삭제
+    try:
+        os.remove(session["pipe_file"])
+    except OSError:
+        pass
+
 def read_projects():
     """등록된 프로젝트 목록 반환 (tmux 세션 상태 포함)."""
     if not os.path.exists(PROJECTS_REGISTRY):
@@ -173,6 +279,11 @@ def get_project_root(project_id):
         if p["id"] == project_id:
             return p["path"]
     return None
+
+# 활성 터미널 세션 관리
+# key: "{project_id}:{agent_id}", value: {"pipe_file": "/tmp/vc-term-...", "pane_target": "..."}
+TERMINAL_SESSIONS = {}
+TERMINAL_LOCK = threading.Lock()
 
 # 실행 중인 프로세스 추적
 RUNNING_PROC = {"pid": None, "task": None, "mode": None, "started": None}
@@ -941,6 +1052,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
             agent_output_dir = os.path.join(company_dir, 'agent-output')
             self._handle_sse_for_dirs(company_dir, agent_output_dir)
 
+        elif sub_path.startswith('terminal/'):
+            # /api/{project}/terminal/{agent}/read?since=0
+            parts = sub_path.split('/')  # ['terminal', agent_id, action]
+            if len(parts) >= 3:
+                agent_id = parts[1]
+                action = parts[2]
+                # agent_id 검증
+                if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                    self.send_json({"error": "invalid agent id"}, 400)
+                    return
+                if action == 'read':
+                    query = urlparse(self.path).query
+                    since = int(parse_qs(query).get('since', ['0'])[0])
+                    result, err = _terminal_read(project_id, agent_id, since)
+                    if err:
+                        self.send_json({"error": err}, 400)
+                    else:
+                        self.send_json(result)
+                else:
+                    self.send_json({"error": "unknown terminal action"}, 404)
+            else:
+                self.send_json({"error": "invalid terminal path"}, 400)
+
         else:
             self.send_json({"error": f"unknown sub-path: {sub_path}"}, 404)
 
@@ -1467,6 +1601,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "프로세스가 이미 종료됨"})
             else:
                 self.send_json({"ok": False, "error": "실행 중인 태스크 없음"})
+
+        elif sub_path.startswith('terminal/'):
+            parts = sub_path.split('/')
+            if len(parts) >= 3:
+                agent_id = parts[1]
+                action = parts[2]
+                if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                    self.send_json({"ok": False, "error": "invalid agent id"}, 400)
+                    return
+                if action == 'open':
+                    result, err = _terminal_open(project_id, agent_id)
+                    if err:
+                        self.send_json({"ok": False, "error": err})
+                    else:
+                        self.send_json({"ok": True, **result})
+                elif action == 'close':
+                    _terminal_close(project_id, agent_id)
+                    self.send_json({"ok": True})
+                elif action == 'write':
+                    # Phase 3: send-keys
+                    user_input = body.get('input', '').strip()
+                    if not user_input:
+                        self.send_json({"ok": False, "error": "input required"}, 400)
+                        return
+                    if len(user_input) > 2000:
+                        self.send_json({"ok": False, "error": "input too long"}, 400)
+                        return
+                    key = f"{project_id}:{agent_id}"
+                    with TERMINAL_LOCK:
+                        session = TERMINAL_SESSIONS.get(key)
+                    if not session:
+                        self.send_json({"ok": False, "error": "터미널이 열려있지 않습니다"})
+                        return
+                    user_input = user_input.replace('\x00', '')
+                    subprocess.run(['tmux', 'send-keys', '-t', session["pane_target"], user_input, 'Enter'],
+                                  capture_output=True, timeout=2)
+                    self.send_json({"ok": True})
+                else:
+                    self.send_json({"ok": False, "error": "unknown terminal action"}, 404)
+            else:
+                self.send_json({"ok": False, "error": "invalid terminal path"}, 400)
 
         else:
             self.send_json({"error": f"unknown POST sub-path: {sub_path}"}, 404)
