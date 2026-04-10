@@ -86,6 +86,29 @@ def _start_company_session(project_id):
             capture_output=True, timeout=5
         )
 
+        # 에이전트 윈도우 생성 (config.json에서 에이전트 목록 읽기)
+        company_dir = os.path.join(project_path, '.claude', 'company')
+        agents_dir = os.path.join(project_path, '.claude', 'agents')
+        if os.path.isdir(agents_dir):
+            agent_ids = [os.path.splitext(f)[0] for f in sorted(os.listdir(agents_dir)) if f.endswith('.md') and f != 'ceo.md']
+            idx = 1  # 0=claude, 1=Monitor
+            for agent_id in agent_ids:
+                idx += 1
+                label = _agent_short_label(agent_id)
+                subprocess.run(
+                    ['tmux', 'new-window', '-d', '-t', f'{session_name}:', '-n', label, '-c', project_path],
+                    capture_output=True, timeout=5
+                )
+            # 쉘 초기화 대기
+            time.sleep(1)
+            idx = 1
+            for agent_id in agent_ids:
+                idx += 1
+                subprocess.run(
+                    ['tmux', 'send-keys', '-t', f'{session_name}:{idx}', f'command claude --agent {agent_id}', 'Enter'],
+                    capture_output=True, timeout=5
+                )
+
         return {"ok": True, "session": session_name}
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "tmux 명령 타임아웃"}
