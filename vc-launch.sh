@@ -328,16 +328,6 @@ else
   SESSION_FOR_LIST="$SESSION"
 fi
 
-# ── 웹 대시보드 ──
-if [ -f "$DASHBOARD_SERVER" ]; then
-  if ! lsof -ti:$DASHBOARD_PORT >/dev/null 2>&1; then
-    python3 "$DASHBOARD_SERVER" "$DASHBOARD_PORT" &>/dev/null &
-    echo -e "  ${_g}🌐${_0} 웹 대시보드: ${_g}http://localhost:$DASHBOARD_PORT${_0}"
-  else
-    echo -e "  ${_d}🌐 대시보드 이미 실행중 (포트 $DASHBOARD_PORT)${_0}"
-  fi
-fi
-
 # ── 윈도우 목록 ──
 echo ""
 tmux list-windows -t "$SESSION_FOR_LIST" -F "    #I: #W" 2>/dev/null || true
