@@ -38,6 +38,81 @@ def _check_tmux_session(project_id):
     except Exception:
         return False
 
+def _get_tmux_windows(session_name):
+    """tmux 세션의 윈도우 목록 반환."""
+    try:
+        result = subprocess.run(
+            ['tmux', 'list-windows', '-t', session_name, '-F', '#{window_index}:#{window_name}'],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.returncode != 0:
+            return []
+        return [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+    except Exception:
+        return []
+
+def _start_company_session(project_id):
+    """프로젝트의 tmux 세션 생성 + claude 실행 + Monitor 윈도우."""
+    session_name = f"vc-{project_id}"
+    project_path = get_project_root(project_id)
+    if not project_path:
+        return {"ok": False, "error": f"프로젝트 '{project_id}'를 찾을 수 없습니다"}
+
+    # 이미 실행 중인지 확인
+    if _check_tmux_session(project_id):
+        return {"ok": False, "error": "이미 실행중"}
+
+    try:
+        # tmux 세션 생성 + claude 실행
+        subprocess.run(
+            ['tmux', 'new-session', '-d', '-s', session_name, '-n', 'claude', '-c', project_path],
+            capture_output=True, timeout=5
+        )
+        time.sleep(0.5)
+        subprocess.run(
+            ['tmux', 'send-keys', '-t', f'{session_name}:0', 'command claude', 'Enter'],
+            capture_output=True, timeout=5
+        )
+
+        # Monitor 윈도우
+        activity_log = os.path.join(project_path, '.claude', 'company', 'activity.log')
+        subprocess.run(
+            ['tmux', 'new-window', '-d', '-t', f'{session_name}:', '-n', 'Monitor', '-c', project_path],
+            capture_output=True, timeout=5
+        )
+        time.sleep(0.3)
+        subprocess.run(
+            ['tmux', 'send-keys', '-t', f'{session_name}:1', f'tail -f {shlex.quote(activity_log)}', 'Enter'],
+            capture_output=True, timeout=5
+        )
+
+        return {"ok": True, "session": session_name}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "tmux 명령 타임아웃"}
+    except FileNotFoundError:
+        return {"ok": False, "error": "tmux를 찾을 수 없습니다"}
+    except Exception as e:
+        return {"ok": False, "error": f"세션 생성 실패: {str(e)}"}
+
+def _stop_company_session(project_id):
+    """프로젝트의 tmux 세션 종료."""
+    session_name = f"vc-{project_id}"
+    try:
+        result = subprocess.run(
+            ['tmux', 'kill-session', '-t', session_name],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            return {"ok": True}
+        else:
+            return {"ok": False, "error": f"세션 종료 실패: {result.stderr.strip()}"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "tmux 명령 타임아웃"}
+    except FileNotFoundError:
+        return {"ok": False, "error": "tmux를 찾을 수 없습니다"}
+    except Exception as e:
+        return {"ok": False, "error": f"세션 종료 실패: {str(e)}"}
+
 def read_projects():
     """등록된 프로젝트 목록 반환 (tmux 세션 상태 포함)."""
     if not os.path.exists(PROJECTS_REGISTRY):
@@ -847,6 +922,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             retros = _read_retrospectives_for_project(company_dir)
             self.send_json({"retrospectives": retros})
 
+        elif sub_path == 'company/status':
+            session_name = f"vc-{project_id}"
+            active = _check_tmux_session(project_id)
+            windows = _get_tmux_windows(session_name) if active else []
+            self.send_json({
+                "active": active,
+                "session": session_name,
+                "windows": windows,
+            })
+
         elif sub_path == 'running':
             with PROC_LOCK:
                 data = dict(RUNNING_PROC)
@@ -1350,6 +1435,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(body, f, ensure_ascii=False, indent=2)
             self.send_json({"ok": True, "file": filename})
+
+        elif sub_path == 'company/start':
+            result = _start_company_session(project_id)
+            status_code = 200 if result.get("ok") else 409
+            self.send_json(result, status_code)
+
+        elif sub_path == 'company/stop':
+            result = _stop_company_session(project_id)
+            status_code = 200 if result.get("ok") else 500
+            self.send_json(result, status_code)
 
         elif sub_path == 'stop':
             with PROC_LOCK:
