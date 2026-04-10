@@ -27,13 +27,28 @@ PROJECT_DIR = os.path.dirname(os.path.dirname(COMPANY_DIR))  # project root
 # ━━━ 글로벌 멀티프로젝트 레지스트리 ━━━
 PROJECTS_REGISTRY = os.path.expanduser("~/.make-company/projects.json")
 
+def _check_tmux_session(project_id):
+    """프로젝트의 tmux 세션이 살아있는지 확인."""
+    try:
+        result = subprocess.run(
+            ['tmux', 'has-session', '-t', f'vc-{project_id}'],
+            capture_output=True, timeout=2
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
 def read_projects():
-    """등록된 프로젝트 목록 반환."""
+    """등록된 프로젝트 목록 반환 (tmux 세션 상태 포함)."""
     if not os.path.exists(PROJECTS_REGISTRY):
         return []
     try:
         with open(PROJECTS_REGISTRY) as f:
-            return json.load(f).get("projects", [])
+            projects = json.load(f).get("projects", [])
+        # 각 프로젝트에 활성 상태 추가
+        for p in projects:
+            p["active"] = _check_tmux_session(p["id"])
+        return projects
     except Exception:
         return []
 
