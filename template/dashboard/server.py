@@ -24,6 +24,66 @@ RETRO_DIR = os.path.join(COMPANY_DIR, 'retrospectives')  # .claude/company/retro
 GLOBAL_AGENTS_DIR = os.path.expanduser('~/.claude/agents')  # 글로벌 에이전트
 PROJECT_DIR = os.path.dirname(os.path.dirname(COMPANY_DIR))  # project root
 
+# ━━━ 글로벌 멀티프로젝트 레지스트리 ━━━
+PROJECTS_REGISTRY = os.path.expanduser("~/.make-company/projects.json")
+
+def read_projects():
+    """등록된 프로젝트 목록 반환."""
+    if not os.path.exists(PROJECTS_REGISTRY):
+        return []
+    try:
+        with open(PROJECTS_REGISTRY) as f:
+            return json.load(f).get("projects", [])
+    except Exception:
+        return []
+
+def register_project(project_id, project_path):
+    """프로젝트를 글로벌 레지스트리에 등록 (기존 동일 ID는 덮어씀)."""
+    os.makedirs(os.path.dirname(PROJECTS_REGISTRY), exist_ok=True)
+    projects = read_projects()
+    projects = [p for p in projects if p["id"] != project_id]
+    projects.append({
+        "id": project_id,
+        "path": project_path,
+        "registered_at": time.strftime('%Y-%m-%dT%H:%M:%S'),
+    })
+    with open(PROJECTS_REGISTRY, 'w') as f:
+        json.dump({"projects": projects}, f, ensure_ascii=False, indent=2)
+
+def get_project_company_dir(project_id):
+    """프로젝트 ID → .claude/company 디렉토리 경로 (없으면 None)."""
+    for p in read_projects():
+        if p["id"] == project_id:
+            company_dir = os.path.join(p["path"], ".claude", "company")
+            if os.path.isdir(company_dir):
+                return company_dir
+    return None
+
+def get_project_agents_dir(project_id):
+    """프로젝트 ID → .claude/agents 디렉토리 경로 (없으면 None)."""
+    for p in read_projects():
+        if p["id"] == project_id:
+            agents_dir = os.path.join(p["path"], ".claude", "agents")
+            if os.path.isdir(agents_dir):
+                return agents_dir
+    return None
+
+def get_project_workflows_dir(project_id):
+    """프로젝트 ID → .claude/workflows 디렉토리 경로 (없으면 None)."""
+    for p in read_projects():
+        if p["id"] == project_id:
+            wf_dir = os.path.join(p["path"], ".claude", "workflows")
+            if os.path.isdir(wf_dir):
+                return wf_dir
+    return None
+
+def get_project_root(project_id):
+    """프로젝트 ID → 프로젝트 루트 경로 (없으면 None)."""
+    for p in read_projects():
+        if p["id"] == project_id:
+            return p["path"]
+    return None
+
 # 실행 중인 프로세스 추적
 RUNNING_PROC = {"pid": None, "task": None, "mode": None, "started": None}
 PROC_LOCK = threading.Lock()
@@ -70,25 +130,32 @@ MIME_TYPES = {
     '.map': 'application/json',
 }
 
-# ━━━ Data readers ━━━
+# ━━━ Data readers (프로젝트별 디렉토리 지원) ━━━
 
-def _read_config_raw():
-    if not os.path.exists(CONFIG_PATH):
+def _read_config_for_project(company_dir):
+    """지정된 company_dir의 config.json 읽기."""
+    config_path = os.path.join(company_dir, 'config.json')
+    if not os.path.exists(config_path):
         return {}
-    with open(CONFIG_PATH) as f:
+    with open(config_path) as f:
         return json.load(f)
 
-def read_config():
+def _read_config_raw():
+    return _read_config_for_project(COMPANY_DIR)
+
+def read_config(company_dir=None):
+    if company_dir and company_dir != COMPANY_DIR:
+        return _read_config_for_project(company_dir)
     return cached("config", 2, _read_config_raw)
 
-def read_activity(lines=50):
-    """activity.log에서 최근 N줄 + 파싱"""
-    if not os.path.exists(ACTIVITY_LOG):
+def _read_activity_for_project(company_dir, lines=50):
+    """지정된 company_dir의 activity.log에서 최근 N줄 + 파싱."""
+    activity_log = os.path.join(company_dir, 'activity.log')
+    if not os.path.exists(activity_log):
         return []
-    with open(ACTIVITY_LOG) as f:
+    with open(activity_log) as f:
         all_lines = f.readlines()
     entries = []
-    # 패턴: [2026-04-09 16:26:58] [agent-id] 🟢 시작 | 설명
     pattern = re.compile(r'\[([^\]]+)\]\s*(?:\[([^\]]+)\])?\s*(.*)')
     for line in all_lines[-lines:]:
         line = line.strip()
@@ -106,21 +173,26 @@ def read_activity(lines=50):
             entries.append({"timestamp": "", "agent": "", "message": line, "raw": line})
     return entries
 
-def _read_agent_states_raw():
-    """activity.log에서 에이전트별 최신 상태 추출 (원본)"""
-    # 실제 .claude/agents/ 파일 기준으로 에이전트 목록 생성 (config.json만 보면 누락 발생)
-    agents_dir = os.path.join(os.path.dirname(COMPANY_DIR), 'agents')
+def read_activity(lines=50, company_dir=None):
+    """activity.log에서 최근 N줄 + 파싱 (호환성: company_dir=None → 기본 COMPANY_DIR)."""
+    return _read_activity_for_project(company_dir or COMPANY_DIR, lines)
+
+def _read_agent_states_for_project(company_dir, agents_dir=None):
+    """지정된 디렉토리에서 에이전트별 최신 상태 추출."""
+    if agents_dir is None:
+        agents_dir = os.path.join(os.path.dirname(company_dir), 'agents')
     if os.path.isdir(agents_dir):
         agents = [os.path.splitext(f)[0] for f in sorted(os.listdir(agents_dir)) if f.endswith('.md')]
     else:
-        config = read_config()
+        config = _read_config_for_project(company_dir)
         agents = config.get('agents', [])
     states = {}
     for aid in agents:
         states[aid] = {"id": aid, "state": "idle", "last_message": "", "timestamp": ""}
 
-    if os.path.exists(ACTIVITY_LOG):
-        with open(ACTIVITY_LOG) as f:
+    activity_log = os.path.join(company_dir, 'activity.log')
+    if os.path.exists(activity_log):
+        with open(activity_log) as f:
             for line in f:
                 line = line.strip()
                 for aid in states:
@@ -131,49 +203,62 @@ def _read_agent_states_raw():
                             states[aid]["state"] = "done"
                         elif '❌' in line:
                             states[aid]["state"] = "error"
-                        # 타임스탬프 추출
                         ts_match = re.match(r'\[([^\]]+)\]', line)
                         if ts_match:
                             states[aid]["timestamp"] = ts_match.group(1)
                         states[aid]["last_message"] = line
     return list(states.values())
 
-def read_agent_states():
+def _read_agent_states_raw():
+    return _read_agent_states_for_project(COMPANY_DIR, AGENTS_DIR)
+
+def read_agent_states(company_dir=None, agents_dir=None):
+    if company_dir and company_dir != COMPANY_DIR:
+        return _read_agent_states_for_project(company_dir, agents_dir)
     return cached("states", 1, _read_agent_states_raw)
 
-def read_agent_output(agent_id, lines=30):
-    """agent-output/{id}.log에서 최근 내용"""
-    path = os.path.join(AGENT_OUTPUT_DIR, f"{agent_id}.log")
+def _read_agent_output_for_project(agent_id, company_dir, lines=30):
+    """지정된 company_dir의 agent-output/{id}.log 읽기."""
+    output_dir = os.path.join(company_dir, 'agent-output')
+    path = os.path.join(output_dir, f"{agent_id}.log")
     if not os.path.exists(path):
         return ""
     with open(path) as f:
         all_lines = f.readlines()
     return "".join(all_lines[-lines:])
 
-def read_agent_memory(agent_id):
-    """agent-memory/{id}.md"""
-    path = os.path.join(AGENT_MEMORY_DIR, f"{agent_id}.md")
+def read_agent_output(agent_id, lines=30, company_dir=None):
+    """agent-output/{id}.log에서 최근 내용 (호환성: company_dir=None → 기본)."""
+    return _read_agent_output_for_project(agent_id, company_dir or COMPANY_DIR, lines)
+
+def _read_agent_memory_for_project(agent_id, company_dir):
+    """지정된 company_dir의 agent-memory/{id}.md 읽기."""
+    memory_dir = os.path.join(company_dir, 'agent-memory')
+    path = os.path.join(memory_dir, f"{agent_id}.md")
     if not os.path.exists(path):
         return ""
     with open(path) as f:
         return f.read()
 
+def read_agent_memory(agent_id, company_dir=None):
+    """agent-memory/{id}.md (호환성: company_dir=None → 기본)."""
+    return _read_agent_memory_for_project(agent_id, company_dir or COMPANY_DIR)
+
 # ━━━ SSE watchers ━━━
 
-def _read_agents_full_raw():
-    """프로젝트 에이전트 .md 파일 목록 (frontmatter + 본문) — 원본"""
+def _read_agents_full_for_project(agents_dir):
+    """지정된 agents_dir의 에이전트 .md 파일 목록 (frontmatter + 본문)."""
     agents = []
-    if not os.path.isdir(AGENTS_DIR):
+    if not agents_dir or not os.path.isdir(agents_dir):
         return agents
-    for f in sorted(os.listdir(AGENTS_DIR)):
+    for f in sorted(os.listdir(agents_dir)):
         if not f.endswith('.md'):
             continue
         aid = os.path.splitext(f)[0]
-        path = os.path.join(AGENTS_DIR, f)
+        path = os.path.join(agents_dir, f)
         try:
             with open(path) as fh:
                 content = fh.read()
-            # frontmatter 파싱
             meta = {}
             body = content
             if content.startswith('---'):
@@ -197,7 +282,12 @@ def _read_agents_full_raw():
         except Exception: pass
     return agents
 
-def read_agents_full():
+def _read_agents_full_raw():
+    return _read_agents_full_for_project(AGENTS_DIR)
+
+def read_agents_full(agents_dir=None):
+    if agents_dir and agents_dir != AGENTS_DIR:
+        return _read_agents_full_for_project(agents_dir)
     return cached("agents_full", 5, _read_agents_full_raw)
 
 def read_global_agents():
@@ -400,16 +490,15 @@ def import_global_agent(agent_id):
         content = f.read()
     return save_agent(agent_id, content)
 
-def _read_workflows_raw():
-    """워크플로우 YAML 목록 (원본)"""
-    if not os.path.isdir(WORKFLOWS_DIR):
+def _read_workflows_for_project(workflows_dir):
+    """지정된 workflows_dir의 워크플로우 YAML 목록."""
+    if not workflows_dir or not os.path.isdir(workflows_dir):
         return []
     workflows = []
-    for f in sorted(os.listdir(WORKFLOWS_DIR)):
+    for f in sorted(os.listdir(workflows_dir)):
         if f.endswith('.yml') or f.endswith('.yaml'):
-            path = os.path.join(WORKFLOWS_DIR, f)
+            path = os.path.join(workflows_dir, f)
             name = os.path.splitext(f)[0]
-            # YAML 파싱 (간단히 name/description 추출)
             title, desc = name, ''
             try:
                 with open(path) as fh:
@@ -423,25 +512,35 @@ def _read_workflows_raw():
             workflows.append({"file": f, "name": name, "title": title, "description": desc})
     return workflows
 
-def read_workflows():
+def _read_workflows_raw():
+    return _read_workflows_for_project(WORKFLOWS_DIR)
+
+def read_workflows(workflows_dir=None):
+    if workflows_dir and workflows_dir != WORKFLOWS_DIR:
+        return _read_workflows_for_project(workflows_dir)
     return cached("workflows", 10, _read_workflows_raw)
 
-def read_retrospectives(limit=20):
-    """회고 JSON 파일 목록 (최신순, 최대 limit개)"""
-    if not os.path.isdir(RETRO_DIR):
+def _read_retrospectives_for_project(company_dir, limit=20):
+    """지정된 company_dir의 회고 JSON 파일 목록 (최신순)."""
+    retro_dir = os.path.join(company_dir, 'retrospectives')
+    if not os.path.isdir(retro_dir):
         return []
     files = sorted(
-        [f for f in os.listdir(RETRO_DIR) if f.endswith('.json')],
+        [f for f in os.listdir(retro_dir) if f.endswith('.json')],
         reverse=True
     )[:limit]
     retros = []
     for f in files:
         try:
-            with open(os.path.join(RETRO_DIR, f)) as fh:
+            with open(os.path.join(retro_dir, f)) as fh:
                 retros.append(json.load(fh))
         except Exception:
             pass
     return retros
+
+def read_retrospectives(limit=20, company_dir=None):
+    """회고 JSON 파일 목록 (호환성: company_dir=None → 기본)."""
+    return _read_retrospectives_for_project(company_dir or COMPANY_DIR, limit)
 
 def run_company_task(task, mode='run'):
     """claude CLI로 /company run 또는 /company workflow 실행"""
@@ -552,7 +651,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        # API 라우팅
+        # ━━━ 글로벌 API (프로젝트 무관) ━━━
+        if path == '/api/projects':
+            self.send_json({"projects": read_projects()})
+            return
+        if path == '/api/token':
+            client_ip = self.client_address[0]
+            if client_ip not in ('127.0.0.1', '::1', 'localhost'):
+                self.send_json({"error": "forbidden"}, 403)
+                return
+            self.send_json({"token": AUTH_TOKEN})
+            return
+
+        # ━━━ 프로젝트별 API: /api/{project_id}/{sub_path} ━━━
+        project_match = re.match(r'^/api/([a-zA-Z0-9_-]+)/(.+)$', path)
+        if project_match:
+            project_id = project_match.group(1)
+            sub_path = project_match.group(2)
+            # 예약된 레거시 경로 제외 (agent/, workflow/ 등은 기존 라우트)
+            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop'):
+                company_dir = get_project_company_dir(project_id)
+                if not company_dir:
+                    self.send_json({"error": f"project '{project_id}' not found"}, 404)
+                    return
+                self._handle_project_api(project_id, sub_path, company_dir)
+                return
+
+        # ━━━ 레거시 라우트 (기본 COMPANY_DIR, 하위 호환성) ━━━
         if path == '/api/state':
             config = read_config()
             agents = read_agent_states()
@@ -591,13 +716,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == '/api/workflows':
             self.send_json({"workflows": read_workflows()})
         elif path.startswith('/api/workflow/'):
-            # GET /api/workflow/<name> — 개별 워크플로우 YAML 조회
             parts = path.split('/')
             name = parts[3] if len(parts) > 3 else ''
             if not name or not re.match(r'^[a-zA-Z0-9_-]+$', name):
                 self.send_json({"ok": False, "error": "잘못된 워크플로우 이름"}, 400)
                 return
-            # .yml 또는 .yaml 확장자 탐색
             wf_path = None
             for ext in ('.yml', '.yaml'):
                 candidate = os.path.join(WORKFLOWS_DIR, f"{name}{ext}")
@@ -610,13 +733,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             with open(wf_path, encoding='utf-8') as f:
                 raw_yaml = f.read()
             self.send_json({"ok": True, "name": name, "content": raw_yaml})
-        elif path == '/api/token':
-            # localhost에서만 접근 가능 (remote IP 체크)
-            client_ip = self.client_address[0]
-            if client_ip not in ('127.0.0.1', '::1', 'localhost'):
-                self.send_json({"error": "forbidden"}, 403)
-                return
-            self.send_json({"token": AUTH_TOKEN})
         elif path == '/api/retrospectives':
             self.send_json({"retrospectives": read_retrospectives()})
         elif path == '/api/running':
@@ -624,41 +740,139 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 data = dict(RUNNING_PROC)
             self.send_json(data)
         elif path == '/api/sse':
-            self.handle_sse()
+            self._handle_sse_for_dirs(COMPANY_DIR, AGENT_OUTPUT_DIR)
         elif path == '/' or path == '/index.html':
             self.serve_file('index.html')
         else:
             self.serve_file(path.lstrip('/'))
 
-    def handle_sse(self):
-        """Server-Sent Events — activity.log 변경을 실시간 스트리밍"""
+    # ━━━ 프로젝트별 GET API 핸들러 ━━━
+
+    def _handle_project_api(self, project_id, sub_path, company_dir):
+        """프로젝트 스코프 GET 요청 처리."""
+        agents_dir = get_project_agents_dir(project_id)
+        workflows_dir = get_project_workflows_dir(project_id)
+
+        if sub_path == 'state':
+            config = cached(f"{project_id}:config", 2,
+                            lambda: _read_config_for_project(company_dir))
+            agents = cached(f"{project_id}:states", 1,
+                            lambda: _read_agent_states_for_project(company_dir, agents_dir))
+            self.send_json({
+                "project": config.get("project", "Company"),
+                "tech_stack": config.get("tech_stack", ""),
+                "agents": agents,
+                "now": int(time.time()),
+            })
+
+        elif sub_path == 'activity':
+            entries = _read_activity_for_project(company_dir)
+            self.send_json({"entries": entries})
+
+        elif sub_path == 'agents':
+            agents = cached(f"{project_id}:agents_full", 5,
+                            lambda: _read_agents_full_for_project(agents_dir))
+            self.send_json({"agents": agents})
+
+        elif sub_path == 'agents/global':
+            self.send_json({"agents": read_global_agents()})
+
+        elif sub_path == 'workflows':
+            wfs = cached(f"{project_id}:workflows", 10,
+                         lambda: _read_workflows_for_project(workflows_dir))
+            self.send_json({"workflows": wfs})
+
+        elif sub_path.startswith('workflow/'):
+            name = sub_path.split('/', 1)[1] if '/' in sub_path else ''
+            if not name or not re.match(r'^[a-zA-Z0-9_-]+$', name):
+                self.send_json({"ok": False, "error": "잘못된 워크플로우 이름"}, 400)
+                return
+            if not workflows_dir:
+                self.send_json({"ok": False, "error": "워크플로우 디렉토리 없음"}, 404)
+                return
+            wf_path = None
+            for ext in ('.yml', '.yaml'):
+                candidate = os.path.join(workflows_dir, f"{name}{ext}")
+                if os.path.isfile(candidate):
+                    wf_path = candidate
+                    break
+            if not wf_path:
+                self.send_json({"ok": False, "error": "워크플로우를 찾을 수 없습니다"}, 404)
+                return
+            with open(wf_path, encoding='utf-8') as f:
+                raw_yaml = f.read()
+            self.send_json({"ok": True, "name": name, "content": raw_yaml})
+
+        elif sub_path.startswith('agent/') and sub_path.endswith('/output'):
+            agent_id = sub_path.split('/')[1]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"error": "invalid agent id"}, 400)
+                return
+            output = _read_agent_output_for_project(agent_id, company_dir)
+            self.send_json({"output": output})
+
+        elif sub_path.startswith('agent/') and sub_path.endswith('/memory'):
+            agent_id = sub_path.split('/')[1]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"error": "invalid agent id"}, 400)
+                return
+            memory = _read_agent_memory_for_project(agent_id, company_dir)
+            self.send_json({"memory": memory})
+
+        elif sub_path.startswith('agent/') and sub_path.endswith('/content'):
+            agent_id = sub_path.split('/')[1]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"error": "invalid agent id"}, 400)
+                return
+            agents = _read_agents_full_for_project(agents_dir)
+            agent = next((a for a in agents if a['id'] == agent_id), None)
+            self.send_json(agent or {"error": "not found"})
+
+        elif sub_path == 'retrospectives':
+            retros = _read_retrospectives_for_project(company_dir)
+            self.send_json({"retrospectives": retros})
+
+        elif sub_path == 'running':
+            with PROC_LOCK:
+                data = dict(RUNNING_PROC)
+            self.send_json(data)
+
+        elif sub_path == 'sse':
+            agent_output_dir = os.path.join(company_dir, 'agent-output')
+            self._handle_sse_for_dirs(company_dir, agent_output_dir)
+
+        else:
+            self.send_json({"error": f"unknown sub-path: {sub_path}"}, 404)
+
+    # ━━━ SSE (디렉토리 파라미터화) ━━━
+
+    def _handle_sse_for_dirs(self, company_dir, agent_output_dir):
+        """Server-Sent Events -- 지정 디렉토리의 activity.log + agent-output를 실시간 스트리밍."""
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Cache-Control', 'no-cache')
         self.send_header('Connection', 'keep-alive')
         self.end_headers()
 
-        # 파일 워처 생성
-        activity_watcher = FileWatcher(ACTIVITY_LOG)
+        activity_log = os.path.join(company_dir, 'activity.log')
+        activity_watcher = FileWatcher(activity_log)
         agent_watchers = {}
-        config = read_config()
+        config = _read_config_for_project(company_dir)
         for aid in config.get('agents', []):
-            path = os.path.join(AGENT_OUTPUT_DIR, f"{aid}.log")
-            agent_watchers[aid] = FileWatcher(path)
+            p = os.path.join(agent_output_dir, f"{aid}.log")
+            agent_watchers[aid] = FileWatcher(p)
 
         last_config_check = time.time()
         try:
             while True:
-                # 10초마다 config 재확인 → 새 에이전트 감지
                 if time.time() - last_config_check > 10:
                     last_config_check = time.time()
-                    config = read_config()
+                    config = _read_config_for_project(company_dir)
                     for aid in config.get('agents', []):
                         if aid not in agent_watchers:
-                            p = os.path.join(AGENT_OUTPUT_DIR, f"{aid}.log")
+                            p = os.path.join(agent_output_dir, f"{aid}.log")
                             agent_watchers[aid] = FileWatcher(p)
 
-                # activity.log 변경 감지
                 new_activity = activity_watcher.get_new_content()
                 if new_activity:
                     for line in new_activity.strip().split('\n'):
@@ -667,7 +881,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             self.wfile.write(f"data: {event}\n\n".encode())
                             self.wfile.flush()
 
-                # agent-output 변경 감지
                 for aid, watcher in list(agent_watchers.items()):
                     new_content = watcher.get_new_content()
                     if new_content:
@@ -728,8 +941,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "invalid JSON body"}, 400)
             return
 
+        # ━━━ 글로벌 POST: 프로젝트 등록 ━━━
+        if path == '/api/projects/register':
+            pid = body.get('id', '').strip()
+            ppath = body.get('path', '').strip()
+            if not pid or not ppath:
+                self.send_json({"ok": False, "error": "id와 path 필수"}, 400)
+                return
+            if not re.match(r'^[a-zA-Z0-9_-]+$', pid):
+                self.send_json({"ok": False, "error": "ID는 영숫자, 하이픈, 언더스코어만 허용"}, 400)
+                return
+            if not os.path.isdir(ppath):
+                self.send_json({"ok": False, "error": f"경로가 존재하지 않습니다: {ppath}"}, 400)
+                return
+            register_project(pid, ppath)
+            self.send_json({"ok": True, "id": pid, "path": ppath})
+            return
+
+        # ━━━ 프로젝트별 POST: /api/{project_id}/{sub_path} ━━━
+        project_match = re.match(r'^/api/([a-zA-Z0-9_-]+)/(.+)$', path)
+        if project_match:
+            project_id = project_match.group(1)
+            sub_path = project_match.group(2)
+            # 예약된 레거시 경로 제외
+            if project_id not in ('run', 'workflow', 'workflows', 'agents', 'retrospectives', 'stop', 'projects'):
+                company_dir = get_project_company_dir(project_id)
+                if not company_dir:
+                    self.send_json({"error": f"project '{project_id}' not found"}, 404)
+                    return
+                self._handle_project_post(project_id, sub_path, company_dir, body)
+                return
+
+        # ━━━ 레거시 POST 라우트 (하위 호환성) ━━━
         if path == '/api/run':
-            # 멀티에이전트 실행: {"task": "..."}
             task = body.get('task', '').strip()
             if not task:
                 self.send_json({"ok": False, "error": "태스크를 입력하세요"}, 400)
@@ -738,7 +982,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(result)
 
         elif path == '/api/workflow':
-            # 워크플로우 실행: {"name": "new-feature", "input": "..."}
             name = body.get('name', '').strip()
             input_text = body.get('input', '').strip()
             if not name:
@@ -749,7 +992,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(result)
 
         elif path == '/api/workflows/save':
-            # 워크플로우 저장: {"name": "string", "content": "raw YAML string"}
             name = body.get('name', '').strip()
             content = body.get('content', '')
             if not name or not re.match(r'^[a-zA-Z0-9_-]+$', name):
@@ -766,12 +1008,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "name": name})
 
         elif path == '/api/workflows/delete':
-            # 워크플로우 삭제: {"name": "string"}
             name = body.get('name', '').strip()
             if not name or not re.match(r'^[a-zA-Z0-9_-]+$', name):
                 self.send_json({"ok": False, "error": "잘못된 워크플로우 이름"}, 400)
                 return
-            # .yml 또는 .yaml 확장자 탐색
             deleted = False
             for ext in ('.yml', '.yaml'):
                 candidate = os.path.join(WORKFLOWS_DIR, f"{name}{ext}")
@@ -786,7 +1026,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True})
 
         elif path == '/api/agents/save':
-            # 에이전트 저장: {"id", "content", "scope": "local"|"global"|"both", "color"}
             aid = body.get('id', '').strip()
             content = body.get('content', '').strip()
             scope = body.get('scope', 'local')
@@ -806,14 +1045,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "id": aid})
 
         elif path == '/api/agents/generate':
-            # AI로 에이전트 생성: {"role": "...", "id": "..."}
             role = body.get('role', '').strip()
             aid = body.get('id', '').strip()
             if not role:
                 self.send_json({"ok": False, "error": "역할 설명을 입력하세요"}, 400)
                 return
             if not aid:
-                # role에서 ID 자동 생성
                 aid = re.sub(r'[^a-z0-9]+', '-', role.lower().strip())[:30].strip('-')
             content = generate_agent_with_ai(role, aid)
             if content and isinstance(content, str):
@@ -824,7 +1061,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "AI 생성 실패"})
 
         elif path == '/api/agents/delete':
-            # 에이전트 삭제: {"id": "..."}
             aid = body.get('id', '').strip()
             if not aid:
                 self.send_json({"ok": False, "error": "ID 필요"}, 400)
@@ -841,7 +1077,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True})
 
         elif path == '/api/agents/import':
-            # 글로벌 에이전트 가져오기: {"id": "..."}
             aid = body.get('id', '').strip()
             if not aid:
                 self.send_json({"ok": False, "error": "ID 필요"}, 400)
@@ -855,7 +1090,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "글로벌 에이전트를 찾을 수 없습니다"})
 
         elif path == '/api/workflows/generate':
-            # AI로 워크플로우 YAML 생성: {"description": "..."}
             desc = body.get('description', '').strip()
             if not desc:
                 self.send_json({"ok": False, "error": "설명을 입력하세요"}, 400)
@@ -869,7 +1103,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "워크플로우 생성 실패"})
 
         elif path == '/api/retrospectives/save':
-            # 회고 저장: JSON 객체 전체를 파일로 저장
             if not body or not isinstance(body, dict):
                 self.send_json({"ok": False, "error": "유효한 JSON 객체를 전송하세요"}, 400)
                 return
@@ -882,13 +1115,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "file": filename})
 
         elif path == '/api/stop':
-            # 실행 중인 태스크 중지 (SIGTERM → 3초 후 SIGKILL fallback)
             with PROC_LOCK:
                 pid = RUNNING_PROC["pid"]
             if pid:
                 try:
                     os.kill(pid, signal.SIGTERM)
-                    # 3초 후에도 살아있으면 SIGKILL
                     def force_kill():
                         global RUNNING_PROC
                         time.sleep(3)
@@ -906,6 +1137,229 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "실행 중인 태스크 없음"})
         else:
             self.send_error(404)
+
+    # ━━━ 프로젝트별 POST API 핸들러 ━━━
+
+    def _handle_project_post(self, project_id, sub_path, company_dir, body):
+        """프로젝트 스코프 POST 요청 처리."""
+        agents_dir = get_project_agents_dir(project_id)
+        workflows_dir = get_project_workflows_dir(project_id)
+        project_root = get_project_root(project_id)
+
+        if sub_path == 'run':
+            task = body.get('task', '').strip()
+            if not task:
+                self.send_json({"ok": False, "error": "태스크를 입력하세요"}, 400)
+                return
+            # 프로젝트 루트에서 실행
+            result = run_company_task(task, mode='run')
+            self.send_json(result)
+
+        elif sub_path == 'workflow':
+            name = body.get('name', '').strip()
+            input_text = body.get('input', '').strip()
+            if not name:
+                self.send_json({"ok": False, "error": "워크플로우를 선택하세요"}, 400)
+                return
+            task = f"{name} {input_text}".strip()
+            result = run_company_task(task, mode='workflow')
+            self.send_json(result)
+
+        elif sub_path == 'workflows/save':
+            name = body.get('name', '').strip()
+            content = body.get('content', '')
+            if not name or not re.match(r'^[a-zA-Z0-9_-]+$', name):
+                self.send_json({"ok": False, "error": "잘못된 워크플로우 이름"}, 400)
+                return
+            if not content:
+                self.send_json({"ok": False, "error": "content가 비어있습니다"}, 400)
+                return
+            wf_dir = workflows_dir or os.path.join(os.path.dirname(company_dir), 'workflows')
+            os.makedirs(wf_dir, exist_ok=True)
+            wf_path = os.path.join(wf_dir, f"{name}.yml")
+            with open(wf_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            invalidate_cache(f"{project_id}:workflows")
+            self.send_json({"ok": True, "name": name})
+
+        elif sub_path == 'workflows/delete':
+            name = body.get('name', '').strip()
+            if not name or not re.match(r'^[a-zA-Z0-9_-]+$', name):
+                self.send_json({"ok": False, "error": "잘못된 워크플로우 이름"}, 400)
+                return
+            if not workflows_dir:
+                self.send_json({"ok": False, "error": "워크플로우 디렉토리 없음"}, 404)
+                return
+            deleted = False
+            for ext in ('.yml', '.yaml'):
+                candidate = os.path.join(workflows_dir, f"{name}{ext}")
+                if os.path.isfile(candidate):
+                    os.remove(candidate)
+                    deleted = True
+                    break
+            if not deleted:
+                self.send_json({"ok": False, "error": "워크플로우를 찾을 수 없습니다"}, 404)
+                return
+            invalidate_cache(f"{project_id}:workflows")
+            self.send_json({"ok": True})
+
+        elif sub_path == 'agents/save':
+            aid = body.get('id', '').strip()
+            content = body.get('content', '').strip()
+            scope = body.get('scope', 'local')
+            color = body.get('color', '').strip() or None
+            if not aid or not content:
+                self.send_json({"ok": False, "error": "ID와 내용을 입력하세요"}, 400)
+                return
+            if not re.match(r'^[a-z][a-z0-9-]*$', aid):
+                self.send_json({"ok": False, "error": "ID는 영문 소문자, 숫자, 하이픈만 허용"}, 400)
+                return
+            # 프로젝트별 에이전트 저장
+            target_agents_dir = agents_dir or os.path.join(os.path.dirname(company_dir), 'agents')
+            if scope == 'both' or scope == 'global':
+                save_agent(aid, content, 'global', color)
+            # 로컬 저장
+            os.makedirs(target_agents_dir, exist_ok=True)
+            # 색상 주입
+            if color and '---' in content:
+                end = content.find('---', 3)
+                if end != -1:
+                    fm = content[3:end].strip()
+                    fm_lines = [l for l in fm.split('\n') if not l.startswith('color:')]
+                    fm_lines.append(f'color: {color}')
+                    content = '---\n' + '\n'.join(fm_lines) + '\n---' + content[end+3:]
+            path = os.path.join(target_agents_dir, f"{aid}.md")
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            # config.json 업데이트
+            config_path = os.path.join(company_dir, 'config.json')
+            with CONFIG_LOCK:
+                config = _read_config_for_project(company_dir)
+                agents_list = config.get('agents', [])
+                if aid not in agents_list:
+                    agents_list.append(aid)
+                    config['agents'] = agents_list
+                    with open(config_path, 'w', encoding='utf-8') as f:
+                        json.dump(config, f, ensure_ascii=False, indent=2)
+            invalidate_cache(f"{project_id}:agents_full")
+            invalidate_cache(f"{project_id}:config")
+            self.send_json({"ok": True, "id": aid})
+
+        elif sub_path == 'agents/delete':
+            aid = body.get('id', '').strip()
+            if not aid:
+                self.send_json({"ok": False, "error": "ID 필요"}, 400)
+                return
+            if not re.match(r'^[a-z][a-z0-9-]*$', aid):
+                self.send_json({"ok": False, "error": "잘못된 ID 형식"}, 400)
+                return
+            if aid == 'ceo':
+                self.send_json({"ok": False, "error": "CEO는 삭제할 수 없습니다"}, 400)
+                return
+            if agents_dir:
+                agent_path = os.path.join(agents_dir, f"{aid}.md")
+                if os.path.exists(agent_path):
+                    os.remove(agent_path)
+            config_path = os.path.join(company_dir, 'config.json')
+            with CONFIG_LOCK:
+                config = _read_config_for_project(company_dir)
+                agents_list = config.get('agents', [])
+                if aid in agents_list:
+                    agents_list.remove(aid)
+                    config['agents'] = agents_list
+                    with open(config_path, 'w', encoding='utf-8') as f:
+                        json.dump(config, f, ensure_ascii=False, indent=2)
+            invalidate_cache(f"{project_id}:agents_full")
+            invalidate_cache(f"{project_id}:config")
+            self.send_json({"ok": True})
+
+        elif sub_path == 'agents/import':
+            aid = body.get('id', '').strip()
+            if not aid:
+                self.send_json({"ok": False, "error": "ID 필요"}, 400)
+                return
+            if not re.match(r'^[a-z][a-z0-9-]*$', aid):
+                self.send_json({"ok": False, "error": "잘못된 ID 형식"}, 400)
+                return
+            src = os.path.join(GLOBAL_AGENTS_DIR, f"{aid}.md")
+            if not os.path.exists(src):
+                self.send_json({"ok": False, "error": "글로벌 에이전트를 찾을 수 없습니다"})
+                return
+            with open(src) as f:
+                content = f.read()
+            target_agents_dir = agents_dir or os.path.join(os.path.dirname(company_dir), 'agents')
+            os.makedirs(target_agents_dir, exist_ok=True)
+            with open(os.path.join(target_agents_dir, f"{aid}.md"), 'w', encoding='utf-8') as f:
+                f.write(content)
+            invalidate_cache(f"{project_id}:agents_full")
+            self.send_json({"ok": True, "id": aid})
+
+        elif sub_path == 'agents/generate':
+            role = body.get('role', '').strip()
+            aid = body.get('id', '').strip()
+            if not role:
+                self.send_json({"ok": False, "error": "역할 설명을 입력하세요"}, 400)
+                return
+            if not aid:
+                aid = re.sub(r'[^a-z0-9]+', '-', role.lower().strip())[:30].strip('-')
+            content = generate_agent_with_ai(role, aid)
+            if content and isinstance(content, str):
+                self.send_json({"ok": True, "id": aid, "content": content})
+            elif content and isinstance(content, dict) and "error" in content:
+                self.send_json({"ok": False, "error": content["error"]})
+            else:
+                self.send_json({"ok": False, "error": "AI 생성 실패"})
+
+        elif sub_path == 'workflows/generate':
+            desc = body.get('description', '').strip()
+            if not desc:
+                self.send_json({"ok": False, "error": "설명을 입력하세요"}, 400)
+                return
+            content = generate_workflow_with_ai(desc)
+            if content and isinstance(content, str):
+                self.send_json({"ok": True, "content": content})
+            elif isinstance(content, dict) and "error" in content:
+                self.send_json({"ok": False, "error": content["error"]})
+            else:
+                self.send_json({"ok": False, "error": "워크플로우 생성 실패"})
+
+        elif sub_path == 'retrospectives/save':
+            if not body or not isinstance(body, dict):
+                self.send_json({"ok": False, "error": "유효한 JSON 객체를 전송하세요"}, 400)
+                return
+            retro_dir = os.path.join(company_dir, 'retrospectives')
+            os.makedirs(retro_dir, exist_ok=True)
+            ts = int(time.time() * 1000)
+            filename = f"retro-{ts}.json"
+            filepath = os.path.join(retro_dir, filename)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(body, f, ensure_ascii=False, indent=2)
+            self.send_json({"ok": True, "file": filename})
+
+        elif sub_path == 'stop':
+            with PROC_LOCK:
+                pid = RUNNING_PROC["pid"]
+            if pid:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    def force_kill():
+                        global RUNNING_PROC
+                        time.sleep(3)
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        with PROC_LOCK:
+                            RUNNING_PROC = {"pid": None, "task": None, "mode": None, "started": None}
+                    threading.Thread(target=force_kill, daemon=True).start()
+                    self.send_json({"ok": True, "message": "중지 요청됨"})
+                except ProcessLookupError:
+                    self.send_json({"ok": False, "error": "프로세스가 이미 종료됨"})
+            else:
+                self.send_json({"ok": False, "error": "실행 중인 태스크 없음"})
+
+        else:
+            self.send_json({"error": f"unknown POST sub-path: {sub_path}"}, 404)
 
     def do_OPTIONS(self):
         self.send_response(200)
