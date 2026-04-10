@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# vc-upgrade — make-company를 최신 버전으로 업그레이드
+#
+# 하는 일:
+#   1. git pull (make-company repo)
+#   2. 글로벌 에이전트 업데이트 (~/.claude/agents/)
+#   3. 글로벌 워크플로우 업데이트 (~/.claude/workflows/)
+#   4. 스킬 업데이트 (~/.claude/skills/company/)
+#   5. 현재 프로젝트의 .claude/company/dashboard/ 업데이트 (있으면)
+
+VC_DIR="${VC_TEMPLATE:-$HOME/make-company}"
+STATE_DIR="$HOME/.make-company"
+
+_g='\033[32m' _y='\033[33m' _d='\033[2m' _b='\033[1m' _0='\033[0m'
+
+if [ ! -d "$VC_DIR/.git" ]; then
+  echo -e "${_y}⚠${_0} make-company 디렉토리를 찾을 수 없습니다: $VC_DIR"
+  echo "  VC_TEMPLATE 환경변수를 확인하세요."
+  exit 1
+fi
+
+# 현재 버전
+OLD_VER=$(cat "$VC_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+
+echo -e "${_b}⬆ make-company 업그레이드${_0}"
+echo -e "  ${_d}현재: v$OLD_VER${_0}"
+echo ""
+
+# 1. git pull
+echo -e "  ${_d}[1/5] git pull...${_0}"
+cd "$VC_DIR"
+git pull --ff-only origin main 2>&1 | sed 's/^/    /'
+NEW_VER=$(cat "$VC_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+
+if [ "$OLD_VER" = "$NEW_VER" ]; then
+  echo -e "\n  ${_g}✅${_0} 이미 최신 버전입니다 (v$NEW_VER)"
+  mkdir -p "$STATE_DIR"
+  echo "UP_TO_DATE $NEW_VER" > "$STATE_DIR/last-update-check"
+  exit 0
+fi
+
+# 2. 에이전트 업데이트
+echo -e "  ${_d}[2/5] 에이전트 업데이트...${_0}"
+mkdir -p ~/.claude/agents
+UPDATED=0
+for f in "$VC_DIR/template/agents-v2/"*.md; do
+  [ -f "$f" ] || continue
+  NAME=$(basename "$f")
+  cp "$f" ~/.claude/agents/"$NAME"
+  UPDATED=$((UPDATED + 1))
+done
+echo -e "    ${_g}${UPDATED}개${_0} 에이전트 업데이트"
+
+# 3. 워크플로우 업데이트
+echo -e "  ${_d}[3/5] 워크플로우 업데이트...${_0}"
+mkdir -p ~/.claude/workflows
+UPDATED=0
+for f in "$VC_DIR/template/workflows/"*.yml; do
+  [ -f "$f" ] || continue
+  NAME=$(basename "$f")
+  cp "$f" ~/.claude/workflows/"$NAME"
+  UPDATED=$((UPDATED + 1))
+done
+echo -e "    ${_g}${UPDATED}개${_0} 워크플로우 업데이트"
+
+# 4. 스킬 업데이트
+echo -e "  ${_d}[4/5] 스킬 업데이트...${_0}"
+mkdir -p ~/.claude/skills/company
+cp "$VC_DIR/template/skill/skill.md" ~/.claude/skills/company/skill.md
+echo -e "    ${_g}skill.md${_0} 업데이트"
+
+# 5. 현재 프로젝트 대시보드 업데이트 (있으면)
+echo -e "  ${_d}[5/5] 대시보드 체크...${_0}"
+PROJ_DASHBOARD="$(pwd)/.claude/company/dashboard"
+if [ -d "$PROJ_DASHBOARD" ] && [ -d "$VC_DIR/template/dashboard" ]; then
+  for f in server.py index.html app.js style.css; do
+    SRC="$VC_DIR/template/dashboard/$f"
+    [ -f "$SRC" ] && cp "$SRC" "$PROJ_DASHBOARD/$f"
+  done
+  echo -e "    ${_g}대시보드${_0} 업데이트"
+else
+  echo -e "    ${_d}프로젝트 대시보드 없음 — 스킵${_0}"
+fi
+
+# 마커 저장 (다음 vc-update-check에서 JUST_UPGRADED 출력)
+mkdir -p "$STATE_DIR"
+echo "$OLD_VER" > "$STATE_DIR/just-upgraded-from"
+echo "UP_TO_DATE $NEW_VER" > "$STATE_DIR/last-update-check"
+rm -f "$STATE_DIR/update-snoozed"
+
+echo ""
+echo -e "  ${_g}✅${_0} ${_b}v$OLD_VER → v$NEW_VER${_0} 업그레이드 완료!"
+echo ""
+echo -e "  ${_d}변경 내용: git log --oneline $OLD_VER..HEAD${_0}"

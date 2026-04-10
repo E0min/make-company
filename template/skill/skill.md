@@ -1,5 +1,24 @@
 # /company Skill
 
+## Preamble (매 실행 시 자동)
+
+```bash
+_VC_DIR="${VC_TEMPLATE:-$HOME/make-company}"
+_UPD=""
+if [ -x "$_VC_DIR/bin/vc-update-check" ]; then
+  _UPD=$("$_VC_DIR/bin/vc-update-check" 2>/dev/null || true)
+fi
+[ -n "$_UPD" ] && echo "$_UPD" || true
+_VC_VER=$(cat "$_VC_DIR/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+echo "VC_VERSION: $_VC_VER"
+```
+
+- `JUST_UPGRADED <old> <new>` → "make-company v{new}로 업그레이드 완료!" 메시지 표시
+- `UPGRADE_AVAILABLE <old> <new>` → "⬆ make-company 업데이트 있음 (v{old} → v{new}). `/company upgrade` 로 업데이트하세요." 표시
+- 그 외 → 무시하고 진행
+
+---
+
 사용자가 `/company`를 호출하면 뒤에 오는 서브커맨드에 따라 분기한다.
 - `/company setup` → 프로젝트 에이전트 셋업
 - `/company run <태스크>` → **멀티에이전트** (메인 Claude가 CEO로서 자율 조율)
@@ -7,6 +26,7 @@
 - `/company dashboard` → tmux 대시보드 시작
 - `/company memory [agent-id]` → 에이전트 메모리 조회/수정
 - `/company retro` → 회고 목록 조회/분석
+- `/company upgrade` → 최신 버전으로 업그레이드
 - 서브커맨드 없으면 → 사용법 안내 (한국어)
 
 ---
@@ -273,6 +293,26 @@ bash .claude/company/dashboard.sh
 2. `{{project_context}}` → config.json의 tech_stack 값으로 치환
 3. `{{agent_memory}}` → `.claude/company/agent-memory/<agent-id>.md` 내용으로 치환 (비어있으면 "(아직 없음)")
 4. 구체적 태스크 지시
+
+---
+
+## 7. `/company upgrade`
+
+make-company를 최신 버전으로 업그레이드한다.
+
+Bash로 실행:
+```bash
+bash "${VC_TEMPLATE:-$HOME/make-company}/bin/vc-upgrade"
+```
+
+업그레이드가 하는 일:
+1. `git pull` (make-company repo)
+2. 글로벌 에이전트 업데이트 (`~/.claude/agents/`)
+3. 글로벌 워크플로우 업데이트 (`~/.claude/workflows/`)
+4. 스킬 업데이트 (`~/.claude/skills/company/`)
+5. 현재 프로젝트 대시보드 업데이트 (있으면)
+
+완료 후 "v{old} → v{new} 업그레이드 완료!" 메시지 표시.
 
 ---
 

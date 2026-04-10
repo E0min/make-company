@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# vc-update-check — make-company 버전 체크
+#
+# 출력 (한 줄, 또는 없음):
+#   JUST_UPGRADED <old> <new>     — 방금 업그레이드 완료
+#   UPGRADE_AVAILABLE <old> <new> — 원격에 새 버전 있음
+#   (없음)                         — 최신, 스누즈됨, 또는 체크 스킵
+
+VC_DIR="${VC_TEMPLATE:-$HOME/make-company}"
+STATE_DIR="$HOME/.make-company"
+CACHE_FILE="$STATE_DIR/last-update-check"
+MARKER_FILE="$STATE_DIR/just-upgraded-from"
+SNOOZE_FILE="$STATE_DIR/update-snoozed"
+VERSION_FILE="$VC_DIR/VERSION"
+REMOTE_URL="${VC_REMOTE_URL:-https://raw.githubusercontent.com/E0min/make-company/main/VERSION}"
+
+# ── 로컬 버전 읽기 ──
+if [ ! -f "$VERSION_FILE" ]; then
+  exit 0
+fi
+LOCAL=$(tr -d '[:space:]' < "$VERSION_FILE")
+
+# ── 방금 업그레이드 마커 확인 ──
+if [ -f "$MARKER_FILE" ]; then
+  OLD=$(cat "$MARKER_FILE" | tr -d '[:space:]')
+  rm -f "$MARKER_FILE"
+  echo "JUST_UPGRADED $OLD $LOCAL"
+  exit 0
+fi
+
+# ── 캐시 확인 (1시간 이내면 캐시 사용) ──
+mkdir -p "$STATE_DIR"
+if [ -f "$CACHE_FILE" ]; then
+  CACHE_AGE=$(( $(date +%s) - $(stat -f%m "$CACHE_FILE" 2>/dev/null || stat -c%Y "$CACHE_FILE" 2>/dev/null || echo 0) ))
+  if [ "$CACHE_AGE" -lt 3600 ]; then
+    CACHED=$(cat "$CACHE_FILE")
+    case "$CACHED" in
+      UP_TO_DATE*) exit 0 ;;
+      UPGRADE_AVAILABLE*)
+        # 스누즈 확인
+        if [ -f "$SNOOZE_FILE" ]; then
+          SNOOZE_VER=$(cat "$SNOOZE_FILE" | tr -d '[:space:]')
+          SNOOZE_REMOTE=$(echo "$CACHED" | awk '{print $3}')
+          [ "$SNOOZE_VER" = "$SNOOZE_REMOTE" ] && exit 0
+        fi
+        echo "$CACHED"
+        exit 0
+        ;;
+    esac
+  fi
+fi
+
+# ── 원격 버전 fetch (5초 타임아웃) ──
+REMOTE=$(curl -sf --max-time 5 "$REMOTE_URL" 2>/dev/null || true)
+REMOTE=$(echo "$REMOTE" | tr -d '[:space:]')
+
+# 유효성 검사 (버전 번호 형식)
+if ! echo "$REMOTE" | grep -qE '^[0-9]+\.[0-9.]+$'; then
+  echo "UP_TO_DATE $LOCAL" > "$CACHE_FILE"
+  exit 0
+fi
+
+if [ "$LOCAL" = "$REMOTE" ]; then
+  echo "UP_TO_DATE $LOCAL" > "$CACHE_FILE"
+  exit 0
+fi
+
+# 새 버전 있음
+echo "UPGRADE_AVAILABLE $LOCAL $REMOTE" > "$CACHE_FILE"
+
+# 스누즈 확인
+if [ -f "$SNOOZE_FILE" ]; then
+  SNOOZE_VER=$(cat "$SNOOZE_FILE" | tr -d '[:space:]')
+  [ "$SNOOZE_VER" = "$REMOTE" ] && exit 0
+fi
+
+echo "UPGRADE_AVAILABLE $LOCAL $REMOTE"
