@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# vc-usage-monitor — 에이전트별 토큰/리소스 실시간 모니터
+# tmux Usage 윈도우에서 실행됨. 3초마다 갱신.
+
+SESSION="${1:-$(tmux display-message -p '#{session_name}' 2>/dev/null)}"
+CLEAR='\033[2J\033[H'
+BOLD='\033[1m'
+DIM='\033[2m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+CYAN='\033[36m'
+RED='\033[31m'
+RESET='\033[0m'
+
+while true; do
+  printf "$CLEAR"
+  echo ""
+  printf "  ${BOLD}📊 Usage Monitor${RESET}  ${DIM}$(date '+%H:%M:%S')${RESET}\n"
+  echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+
+  # ── 시스템 리소스 ──
+  CPU_LOAD=$(sysctl -n vm.loadavg 2>/dev/null | awk '{gsub(/[{}]/,""); print $1}')
+  CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo "?")
+  MEM_TOTAL=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1024/1024/1024}')
+  # macOS: vm_stat으로 사용 중인 메모리 계산
+  MEM_USED=$(vm_stat 2>/dev/null | awk '
+    /Pages active/ {a=$3}
+    /Pages wired/ {w=$4}
+    /Pages speculative/ {s=$3}
+    END {gsub(/\./,"",a); gsub(/\./,"",w); gsub(/\./,"",s); printf "%.1f", (a+w+s)*4096/1024/1024/1024}
+  ')
+
+  printf "  ${BOLD}System${RESET}\n"
+  printf "    CPU Load:  ${CYAN}${CPU_LOAD}${RESET} / ${CPU_CORES} cores\n"
+  printf "    Memory:    ${CYAN}${MEM_USED:-?}${RESET} / ${MEM_TOTAL}GB\n"
+  echo ""
+
+  # ── Claude 프로세스별 리소스 ──
+  printf "  ${BOLD}Agent Processes${RESET}\n"
+  printf "    ${DIM}%-20s %6s %8s %10s  %s${RESET}\n" "AGENT" "CPU%" "MEM(MB)" "TIME" "PID"
+  echo "    ────────────────────────────────────────────────────"
+
+  TOTAL_CPU=0
+  TOTAL_MEM=0
+  AGENT_COUNT=0
+
+  # claude 프로세스 목록 (node/python 자식 프로세스 제외, claude 바이너리만)
+  ps aux | grep -E "command claude|claude --agent" | grep -v grep | grep -v "node\|python\|bash" | while IFS= read -r line; do
+    PID=$(echo "$line" | awk '{print $2}')
+    CPU=$(echo "$line" | awk '{print $3}')
+    MEM_KB=$(echo "$line" | awk '{print $6}')
+    MEM_MB=$(echo "$MEM_KB" | awk '{printf "%.0f", $1/1024}')
+    TIME=$(echo "$line" | awk '{print $10}')
+    CMD=$(echo "$line" | awk '{for(i=11;i<=NF;i++) printf "%s ", $i; print ""}')
+
+    # 에이전트 이름 추출
+    AGENT_NAME=$(echo "$CMD" | grep -o '\-\-agent [a-z-]*' | awk '{print $2}')
+    if [ -z "$AGENT_NAME" ]; then
+      # --agent 없으면 메인 claude
+      if echo "$CMD" | grep -q "claude"; then
+        AGENT_NAME="main (CEO)"
+      else
+        continue
+      fi
+    fi
+
+    # 이름 축약
+    case "$AGENT_NAME" in
+      product-manager)      SHORT="PM" ;;
+      ui-ux-designer)       SHORT="Designer" ;;
+      frontend-engineer)    SHORT="Frontend" ;;
+      backend-engineer)     SHORT="Backend" ;;
+      fe-qa)                SHORT="FE-QA" ;;
+      be-qa)                SHORT="BE-QA" ;;
+      marketing-strategist) SHORT="Marketing" ;;
+      "main (CEO)")         SHORT="CEO (main)" ;;
+      *)                    SHORT="$AGENT_NAME" ;;
+    esac
+
+    # 색상 (CPU 기준)
+    COLOR="$GREEN"
+    CPU_INT=$(echo "$CPU" | awk '{printf "%d", $1}')
+    [ "$CPU_INT" -gt 10 ] && COLOR="$YELLOW"
+    [ "$CPU_INT" -gt 50 ] && COLOR="$RED"
+
+    printf "    ${COLOR}%-20s %5.1f%% %6sMB %10s  %s${RESET}\n" "$SHORT" "$CPU" "$MEM_MB" "$TIME" "$PID"
+  done
+
+  echo ""
+
+  # ── 총합 ──
+  TOTAL_LINE=$(ps aux | grep -E "command claude|claude --agent" | grep -v grep | grep -v "node\|python\|bash" | awk '{cpu+=$3; mem+=$6} END {printf "%.1f %.0f", cpu, mem/1024}')
+  TOTAL_CPU=$(echo "$TOTAL_LINE" | awk '{print $1}')
+  TOTAL_MEM=$(echo "$TOTAL_LINE" | awk '{print $2}')
+  PROC_COUNT=$(ps aux | grep -E "command claude|claude --agent" | grep -v grep | grep -v "node\|python\|bash" | wc -l | tr -d ' ')
+
+  printf "  ${BOLD}Total${RESET}\n"
+  printf "    Processes: ${CYAN}${PROC_COUNT}${RESET}\n"
+  printf "    CPU:       ${CYAN}${TOTAL_CPU}%%${RESET}\n"
+  printf "    Memory:    ${CYAN}${TOTAL_MEM}MB${RESET}\n"
+  echo ""
+
+  # ── Python 서버 ──
+  DASH_LINE=$(ps aux | grep "dashboard/server.py" | grep -v grep | head -1)
+  if [ -n "$DASH_LINE" ]; then
+    DASH_PORT=$(echo "$DASH_LINE" | grep -o '[0-9]*$' || echo "?")
+    DASH_MEM=$(echo "$DASH_LINE" | awk '{printf "%.0f", $6/1024}')
+    printf "  ${BOLD}Dashboard${RESET}\n"
+    printf "    Server:    ${GREEN}running${RESET} (${DASH_MEM}MB)\n"
+  fi
+
+  echo ""
+  printf "  ${DIM}Refresh: 3s | Ctrl+C to stop${RESET}\n"
+
+  sleep 3
+done

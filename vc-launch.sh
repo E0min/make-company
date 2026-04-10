@@ -277,6 +277,7 @@ if $INSIDE_TMUX; then
 
   # 1단계: 윈도우 생성
   tmux new-window -d -t "$CURRENT_SESSION:" -n Monitor -c "$PROJECT_DIR" 2>/dev/null
+  tmux new-window -d -t "$CURRENT_SESSION:" -n Usage -c "$PROJECT_DIR" 2>/dev/null
   for agent in $AGENTS; do
     LABEL=$(agent_label "$agent")
     tmux new-window -d -t "$CURRENT_SESSION:" -n "$LABEL" -c "$PROJECT_DIR" 2>/dev/null
@@ -286,6 +287,8 @@ if $INSIDE_TMUX; then
   sleep 1
   MON_IDX=$(tmux list-windows -t "$CURRENT_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null | grep 'Monitor$' | tail -1 | awk '{print $1}')
   [ -n "$MON_IDX" ] && tmux send-keys -t "$CURRENT_SESSION:$MON_IDX" "tail -f '$ACTIVITY_LOG'" Enter
+  USAGE_IDX=$(tmux list-windows -t "$CURRENT_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null | grep 'Usage$' | tail -1 | awk '{print $1}')
+  [ -n "$USAGE_IDX" ] && tmux send-keys -t "$CURRENT_SESSION:$USAGE_IDX" "bash '${VC_TEMPLATE:-$HOME/make-company}/bin/vc-usage-monitor' '$CURRENT_SESSION'" Enter
   for agent in $AGENTS; do
     LABEL=$(agent_label "$agent")
     W_IDX=$(tmux list-windows -t "$CURRENT_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null | grep "${LABEL}$" | tail -1 | awk '{print $1}')
@@ -303,7 +306,8 @@ else
   # 1단계: 모든 윈도우를 먼저 생성 (빈 쉘)
   tmux new-session -d -s "$SESSION" -n claude -c "$PROJECT_DIR" -x 200 -y 55
   tmux new-window -d -t "$SESSION:" -n Monitor -c "$PROJECT_DIR" 2>/dev/null
-  idx=1
+  tmux new-window -d -t "$SESSION:" -n Usage -c "$PROJECT_DIR" 2>/dev/null
+  idx=2
   for agent in $AGENTS; do
     idx=$((idx + 1))
     LABEL=$(agent_label "$agent")
@@ -318,8 +322,10 @@ else
   tmux send-keys -t "$SESSION:0" 'command claude' Enter
   # 윈도우 1: activity.log 모니터
   tmux send-keys -t "$SESSION:1" "tail -f '$ACTIVITY_LOG'" Enter
-  # 윈도우 2~N: 각 에이전트 독립 claude 세션
-  idx=1
+  # 윈도우 2: Usage 모니터
+  tmux send-keys -t "$SESSION:2" "bash '${VC_TEMPLATE:-$HOME/make-company}/bin/vc-usage-monitor' '$SESSION'" Enter
+  # 윈도우 3~N: 각 에이전트 독립 claude 세션
+  idx=2
   for agent in $AGENTS; do
     idx=$((idx + 1))
     tmux send-keys -t "$SESSION:$idx" "command claude --agent $agent" Enter
