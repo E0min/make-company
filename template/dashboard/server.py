@@ -108,12 +108,15 @@ def read_activity(lines=50):
 
 def _read_agent_states_raw():
     """activity.log에서 에이전트별 최신 상태 추출 (원본)"""
-    config = read_config()
-    agents = config.get('agents', [])
+    # 실제 .claude/agents/ 파일 기준으로 에이전트 목록 생성 (config.json만 보면 누락 발생)
+    agents_dir = os.path.join(os.path.dirname(COMPANY_DIR), 'agents')
+    if os.path.isdir(agents_dir):
+        agents = [os.path.splitext(f)[0] for f in sorted(os.listdir(agents_dir)) if f.endswith('.md')]
+    else:
+        config = read_config()
+        agents = config.get('agents', [])
     states = {}
     for aid in agents:
-        if aid == 'ceo':
-            continue
         states[aid] = {"id": aid, "state": "idle", "last_message": "", "timestamp": ""}
 
     if os.path.exists(ACTIVITY_LOG):
