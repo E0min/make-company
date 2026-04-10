@@ -157,8 +157,8 @@ def _agent_short_label(agent_id):
     }
     return labels.get(agent_id, agent_id)
 
-def _terminal_open(project_id, agent_id):
-    """tmux pipe-pane 시작 + 스크롤백 반환"""
+def _terminal_open(project_id, agent_id, cols=None, rows=None):
+    """tmux pipe-pane 시작 + 스크롤백 반환. cols/rows가 있으면 pane 리사이즈."""
     session = f"vc-{project_id}"
     # tmux 세션 존재 확인
     if not _check_tmux_session(project_id):
@@ -183,6 +183,14 @@ def _terminal_open(project_id, agent_id):
     pane_target = f"{session}:{win_idx}"
     pipe_file = f"/tmp/vc-term-{project_id}-{agent_id}.log"
 
+    # 웹 터미널 크기에 맞게 tmux pane 리사이즈 (출력이 전폭으로 렌더링됨)
+    if cols and cols > 0:
+        subprocess.run(['tmux', 'resize-window', '-t', pane_target, '-x', str(cols)],
+                       capture_output=True, timeout=2)
+    if rows and rows > 0:
+        subprocess.run(['tmux', 'resize-window', '-t', pane_target, '-y', str(rows)],
+                       capture_output=True, timeout=2)
+
     # 기존 pipe 해제
     subprocess.run(['tmux', 'pipe-pane', '-t', pane_target], capture_output=True, timeout=2)
 
@@ -196,6 +204,10 @@ def _terminal_open(project_id, agent_id):
         capture_output=True, text=True, timeout=5
     )
     scrollback = result.stdout if result.returncode == 0 else ""
+    # 후행 빈 줄 제거 (capture-pane이 커서 아래 빈 영역까지 포함)
+    scrollback = scrollback.rstrip('\n') + '\n' if scrollback.strip() else ""
+    # xterm.js Canvas 렌더러는 \r\n 필요 (\n만 있으면 렌더링 안 됨)
+    scrollback = scrollback.replace('\n', '\r\n')
 
     # 세션 등록
     key = f"{project_id}:{agent_id}"
@@ -1658,7 +1670,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "invalid agent id"}, 400)
                     return
                 if action == 'open':
-                    result, err = _terminal_open(project_id, agent_id)
+                    # POST body에서 cols/rows 읽기 (웹 터미널 크기)
+                    t_cols = body.get('cols')
+                    t_rows = body.get('rows')
+                    result, err = _terminal_open(project_id, agent_id, cols=t_cols, rows=t_rows)
                     if err:
                         self.send_json({"ok": False, "error": err})
                     else:
@@ -1667,8 +1682,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     _terminal_close(project_id, agent_id)
                     self.send_json({"ok": True})
                 elif action == 'write':
-                    # Phase 3: send-keys
-                    user_input = body.get('input', '').strip()
+                    # raw 터미널 입력 — strip 금지 (\r=Enter, \x7f=Backspace 등 제어문자 보존)
+                    user_input = body.get('input', '')
                     if not user_input:
                         self.send_json({"ok": False, "error": "input required"}, 400)
                         return
@@ -1682,7 +1697,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         self.send_json({"ok": False, "error": "터미널이 열려있지 않습니다"})
                         return
                     user_input = user_input.replace('\x00', '')
-                    subprocess.run(['tmux', 'send-keys', '-t', session["pane_target"], user_input, 'Enter'],
+                    # -l: 리터럴 텍스트 전송 (xterm onData의 raw 키 입력 그대로)
+                    # Enter(\r), Backspace(\x7f), 방향키(\x1b[A) 등 모두 포함됨
+                    subprocess.run(['tmux', 'send-keys', '-l', '-t', session["pane_target"], user_input],
                                   capture_output=True, timeout=2)
                     self.send_json({"ok": True})
                 else:

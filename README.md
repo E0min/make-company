@@ -416,24 +416,60 @@ steps:
 
 | 탭 | 기능 |
 |---|---|
-| **Overview** | KPI (총원/작업중/완료/대기), 에이전트 상태 그리드 (사이드바) |
+| **Overview** | KPI (총원/작업중/완료/대기), 에이전트 상태 그리드 + 터미널 버튼 |
 | **Workflows** | React Flow 시각적 워크플로우 빌더 + 자연어 생성 + 실행 |
 | **Activity** | SSE 실시간 활동 로그 |
 | **Agents** | 에이전트 CRUD, AI 생성, 색상 선택, 글로벌 가져오기 |
 
-- **기술**: Next.js 16 + shadcn/ui + React Flow (static export → Python 서버가 서빙)
-- **디자인**: 사이드바 레이아웃, 다크 전용, Geist 폰트, Indigo 액센트
+- **기술**: Next.js 16 + shadcn/ui + React Flow + xterm.js v6 (static export → Python 서버가 서빙)
+- **디자인**: Discord 스타일 프로젝트 바 + 사이드바 레이아웃, 다크 전용, Geist 폰트
 - **보안**: 인증 토큰, Path Traversal 방지, Request Body Limit, Agent ID 검증
 - **런타임**: `python3 server.py` 하나로 API + 대시보드 동시 서빙 (Node.js 불필요)
 
+### 웹 터미널
+
+에이전트 카드의 터미널 버튼을 클릭하면 **하단에 실제 터미널이 열립니다**.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Overview    1 working  2h 30m                            │
+│  ┌──────┐  ┌──────┐  ┌──────┐                           │
+│  │ BE   │  │ BQ   │  │ CEO  │  ...                      │
+│  │ done │  │ done │  │ work │                           │
+│  └──────┘  └──────┘  └──────┘                           │
+├─── >_ ceo ● ────────────────────────────── ⬜ ✕ ────────┤
+│ ● ㅎㅎㅎ 뭔가 심심하신가요? 작업 필요하시면 말씀해 주세요!    │
+│ > █                                                      │
+│ leeyoungmin@MacBookPro ~ main± Sonnet 4.6 [ctx: 20%]   │
+└─────────────────────────────────────────────────────────┘
+```
+
+- **실제 터미널처럼 동작**: 키보드 입력이 xterm.js → tmux send-keys로 직접 전달
+- **반응형 전폭**: 웹 터미널 열 때 tmux pane이 브라우저 너비에 맞게 자동 리사이즈
+- **스크롤백 유지**: 터미널 닫았다 다시 열어도 이전 기록 보존 (tmux capture-pane)
+- **최대화/최소화**: 헤더 버튼으로 70vh까지 확대 가능
+- **xterm.js v6**: Canvas 렌더러, ANSI 색상, Powerline 글리프 지원
+
 ### 멀티 프로젝트
 
-두 프로젝트를 동시에 실행하면 각각 다른 포트에서 대시보드가 뜹니다:
+하나의 대시보드에서 **여러 프로젝트를 Discord 서버처럼** 전환합니다:
 
 ```
-프로젝트 A: /company dashboard → http://localhost:7777  탭: "VC — project-a"
-프로젝트 B: /company dashboard → http://localhost:7778  탭: "VC — project-b"
+┌──┬────────────────────────────────────┐
+│LE│  Overview                          │
+│● │   8 agents, 1 working             │
+│  │                                    │
+│GR│   ┌────┐ ┌────┐ ┌────┐           │
+│  │   │ BE │ │ BQ │ │CEO │           │
+│  │   └────┘ └────┘ └────┘           │
+│+ │                                    │
+└──┴────────────────────────────────────┘
+ ↑ 프로젝트 바 (좌측, 활성/비활성 표시)
 ```
+
+- 좌측 프로젝트 바에서 클릭으로 전환 (초록 점 = 활성, 회색 = 비활성)
+- 비활성 프로젝트는 모든 에이전트 offline 표시 + Start 버튼
+- 대시보드에서 직접 Start/Stop 가능 (tmux 세션 생성/종료)
 
 ---
 
@@ -512,7 +548,11 @@ make-company/
 │   ├── skill/                     # /company 스킬 정의
 │   ├── handoff-schemas.json       # 에이전트 간 핸드오프 스키마
 │   ├── dashboard/                 # Python API 서버
-│   │   └── server.py              # SSE + Next.js static export 서빙
+│   │   └── server.py              # SSE + 터미널 API + Next.js static export 서빙
+│   ├── dashboard-next-v2/         # Next.js 대시보드 소스
+│   │   ├── app/                   # App Router (page.tsx)
+│   │   ├── components/dashboard/  # TerminalPanel, OverviewTab, WorkflowEditor 등
+│   │   └── lib/                   # api.ts, types.ts, format.ts
 │   └── ...
 ├── CLAUDE.md
 └── DESIGN.md
@@ -646,5 +686,6 @@ MIT — [LICENSE](LICENSE) 참고.
 
 **v1: Made with tmux send-keys**
 **v2: Made with Claude Code Agent tool**
+**v2.1: Web terminal + multi-project dashboard**
 
 </div>
