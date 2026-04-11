@@ -117,8 +117,16 @@ echo "VC_VERSION: $_VC_VER"
 1. `.claude/company/config.json` 읽기 → project, tech_stack, agents 목록 확인
 2. `.claude/agents/ceo.md` 읽기 → CEO의 핵심 원칙/행동 규칙을 내면화
 3. CEO의 누적 기억: `.claude/company/agent-memory/ceo.md` 읽기
-4. `.claude/company/activity.log`에 시작 기록 (Bash echo >>)
-5. 대시보드가 떠 있으면 자동으로 표시됨
+4. 최근 개선 권고: `.claude/company/improvements/` 최신 JSON 읽기 (있으면)
+5. 로그 기록 (반드시 둘 다):
+```bash
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🚀 멀티에이전트 시작 | 태스크: <태스크>" >> .claude/company/activity.log
+echo '{"event":"task_start","task_id":"task-'$(date +%Y%m%d-%H%M%S)'","task":"<태스크>","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> .claude/company/activity.jsonl
+```
+6. 디렉토리 보장:
+```bash
+mkdir -p .claude/company/retrospectives .claude/company/analytics .claude/company/improvements
+```
 
 ### 2-2. CEO 모드로 태스크 분석
 
@@ -143,25 +151,27 @@ CEO .md의 "Discovery 우선" 원칙에 따라:
 ### 2-3. 팀원 호출 (Agent tool)
 각 팀원을 호출할 때 **반드시 3단계**를 수행:
 
-**a) 호출 전 — 로그 + 출력 기록:**
+**a) 호출 전 — 로그 기록 (activity.log + activity.jsonl 둘 다):**
 ```bash
-# activity.log에 시작 기록
+_START=$(date +%s)
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] [agent-id] 🟢 시작 | 작업 설명" >> .claude/company/activity.log
-# agent-output에 시작 표시
+echo '{"event":"agent_start","agent":"agent-id","task_id":"TASK_ID","workflow":"WORKFLOW","step":"STEP","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> .claude/company/activity.jsonl
 echo -e "\n━━━ $(date '+%H:%M:%S') 작업 시작 ━━━\n요청: 작업 설명\n" >> .claude/company/agent-output/agent-id.log
 ```
 
 **b) Agent tool 호출:**
 - `subagent_type`: 매핑표 참조 (아래)
-- `prompt`: 팀원의 `.claude/agents/<id>.md` 내용 ({{project_context}}와 {{agent_memory}}를 치환) + 구체적 태스크
+- `prompt`: **에이전트 프롬프트 구성 방법** (아래 섹션) 에 따라 구성
 
-**c) 호출 후 — 로그 + 출력 기록:**
+**c) 호출 후 — 로그 + JSONL 기록 (duration 포함):**
 ```bash
-# activity.log에 완료 기록
+_END=$(date +%s)
+_DUR=$((_END - _START))
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] [agent-id] ✅ 완료 | 출력 요약" >> .claude/company/activity.log
-# agent-output에 결과 기록
-echo -e "━━━ $(date '+%H:%M:%S') 작업 완료 ━━━\n결과 요약: ...\n\n전체 출력:\n..." >> .claude/company/agent-output/agent-id.log
+echo '{"event":"agent_end","agent":"agent-id","task_id":"TASK_ID","duration_sec":'$_DUR',"quality_self":0,"ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> .claude/company/activity.jsonl
+echo -e "━━━ $(date '+%H:%M:%S') 작업 완료 ━━━\n결과 요약: ...\n" >> .claude/company/agent-output/agent-id.log
 ```
+**중요**: `TASK_ID`는 2-1에서 생성한 값, `quality_self`는 CEO가 에이전트 출력 품질을 1~10으로 주관 평가 (없으면 0).
 
 ### 2-4. CEO 원칙 적용
 - **병렬화**: 의존성 없는 팀원은 같은 응답에서 여러 Agent tool을 동시 호출
@@ -170,48 +180,100 @@ echo -e "━━━ $(date '+%H:%M:%S') 작업 완료 ━━━\n결과 요약: .
 - **진행 표시**: 각 단계마다 `[진행] PRD ✓ · 디자인 ◔ · 프론트 ⏳` 형태로 사용자에게 표시
 
 ### 2-5. 완료 처리
-모든 팀원 작업 완료 후:
-1. activity.log에 완료 기록
-2. 참여 에이전트 메모리 업데이트 (각 에이전트에 "배운 점 3줄 요약" Agent 호출 → append)
-3. **회고 수집** (2-6 자동 실행)
-4. 사용자에게 최종 결과 + 회고 요약 표시
+모든 팀원 작업 완료 후, **반드시 아래 5단계를 순서대로 실행**:
 
-### 2-6. 회고 수집 (자동)
-2-5 완료 직후 자동 실행. 사용자 개입 없음.
+**1) 태스크 종료 로그:**
+```bash
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🏁 완료 | 태스크: <태스크>" >> .claude/company/activity.log
+echo '{"event":"task_end","task_id":"TASK_ID","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> .claude/company/activity.jsonl
+```
 
-**a) 디렉토리 보장:**
+**2) 참여 에이전트별 자기평가 수집 (Agent tool 병렬 호출):**
+각 참여 에이전트에게 다음 프롬프트로 호출:
+```
+이번 작업에 대해 자기평가를 JSON으로만 응답하세요:
+{"went_well": "잘 된 것", "went_wrong": "문제였던 것", "action_item": "다음에 개선할 점", "quality_score": 7, "learned_pattern": "발견한 재사용 가능한 패턴 (없으면 빈 문자열)"}
+```
+
+**3) 회고 JSON 저장** (2-6 실행)
+
+**4) 에이전트 메모리 업데이트** (2-7 실행)
+
+**5) 사용자에게 최종 결과 + 회고 요약 표시
+
+### 2-6. 회고 수집 및 저장 (자동)
+2-5의 자기평가 결과를 받은 후 **실제로 JSON 파일을 생성**한다:
+
+**a) RETRO_ID와 파일경로 결정:**
 ```bash
 mkdir -p .claude/company/retrospectives
+RETRO_DATE=$(date '+%Y-%m-%d')
+# 같은 날짜의 기존 회고 수 세기
+RETRO_SEQ=$(ls .claude/company/retrospectives/retro-${RETRO_DATE}-*.json 2>/dev/null | wc -l | tr -d ' ')
+RETRO_SEQ=$((RETRO_SEQ + 1))
+RETRO_ID="retro-${RETRO_DATE}-$(printf '%03d' $RETRO_SEQ)"
+RETRO_FILE=".claude/company/retrospectives/${RETRO_ID}.json"
 ```
 
-**b) 참여 에이전트에게 회고 요청 (병렬 Agent 호출):**
-각 참여 에이전트에게 다음 프롬프트로 Agent tool 호출:
+**b) JSON 구성 및 저장** — Write tool로 파일 생성:
+```json
+{
+  "id": "RETRO_ID",
+  "project": "config.json의 project 값",
+  "task": "실행했던 태스크",
+  "trigger": "automatic",
+  "completed_at": "ISO 8601 타임스탬프",
+  "duration_seconds": "태스크 시작~종료 초",
+  "participants": [
+    {"agent_id": "frontend-engineer", "role": "Frontend Engineer"}
+  ],
+  "feedback": [
+    {
+      "agent_id": "frontend-engineer",
+      "went_well": "에이전트 응답에서 가져온 값",
+      "went_wrong": "에이전트 응답에서 가져온 값",
+      "action_item": "에이전트 응답에서 가져온 값"
+    }
+  ],
+  "summary": "CEO가 작성한 1~2줄 요약 (2명 이상 같은 문제 지적 시 반드시 포함)",
+  "tags": ["역할 기반 태그", "태스크 키워드 태그"]
+}
 ```
-이번 작업에 대해 3줄 회고를 JSON으로만 응답하세요:
-{"went_well": "잘 된 것", "went_wrong": "문제였던 것", "action_item": "다음 개선점"}
-```
-JSON 파싱 실패 시 원문을 raw_response에 보존.
+**태그 규칙**: 참여 에이전트 역할 → qa, frontend, backend, design, marketing. 태스크 키워드 → bugfix, feature, refactor, testing 등.
 
-**c) CEO 요약:**
-수집된 feedback을 읽고 1~2줄 summary 생성. 2명 이상 같은 문제 지적 시 반드시 포함.
-
-**d) 태그 자동 부여:**
-participants에서 역할 기반 태그 + 태스크 키워드 매칭 (버그→bugfix, 디자인→design 등)
-
-**e) JSON 저장:**
-`.claude/company/retrospectives/retro-{날짜}-{순번}.json`에 저장.
-구조: id, project, task, trigger, completed_at, duration_seconds, participants, feedback, summary, tags
-
-**f) 에이전트 메모리에 action_item 반영:**
-각 에이전트의 action_item을 `agent-memory/<id>.md`에 append:
-```
-- [retro-2026-04-10-001] API 계약서를 핸드오프 전 확정
-```
-
-**g) activity.log에 기록:**
+**c) JSONL 이벤트 기록:**
 ```bash
-echo "[timestamp] 📝 회고 저장 | retro-id | 참여: agents" >> .claude/company/activity.log
+echo '{"event":"retro_saved","retro_id":"RETRO_ID","participants":["agent-ids"],"ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> .claude/company/activity.jsonl
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] 📝 회고 저장 | ${RETRO_ID} | 참여: agent-ids" >> .claude/company/activity.log
 ```
+
+### 2-7. 메모리 + 공유 지식 업데이트 (자동)
+회고 저장 직후 실행:
+
+**a) 에이전트별 메모리 업데이트** — 각 에이전트의 action_item + learned_pattern을 메모리에 추가.
+Bash로 직접 append:
+```bash
+# action_item → Learnings 섹션
+echo "" >> .claude/company/agent-memory/agent-id.md
+grep -q "## Learnings" .claude/company/agent-memory/agent-id.md || echo -e "\n## Learnings" >> .claude/company/agent-memory/agent-id.md
+echo "- [$(date '+%Y-%m-%d')] ACTION_ITEM (source:${RETRO_ID})" >> .claude/company/agent-memory/agent-id.md
+
+# learned_pattern이 비어있지 않으면 → Patterns 섹션
+grep -q "## Patterns" .claude/company/agent-memory/agent-id.md || echo -e "\n## Patterns" >> .claude/company/agent-memory/agent-id.md
+echo "- LEARNED_PATTERN" >> .claude/company/agent-memory/agent-id.md
+```
+
+**b) 메모리 업데이트 이벤트:**
+```bash
+echo '{"event":"memory_updated","agent":"agent-id","retro_ref":"RETRO_ID","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> .claude/company/activity.jsonl
+```
+
+**c) 교차 에이전트 공유 지식 생성:**
+action_item이 다른 에이전트에게도 관련이 있으면 (예: QA가 발견한 보안 이슈 → 엔지니어에게 공유), shared-knowledge.jsonl에 추가:
+```bash
+echo '{"author":"agent-id","type":"pitfall또는pattern","key":"짧은키","insight":"교훈 내용","confidence":8,"relevant_agents":["관련 에이전트들"],"retro_ref":"RETRO_ID","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> .claude/company/shared-knowledge.jsonl
+```
+**판단 기준**: QA→엔지니어, 엔지니어→QA, 디자이너→프론트엔드 등 핸드오프 관계의 에이전트에게 공유.
 
 ---
 
@@ -308,7 +370,28 @@ fi
 1. `.claude/agents/<agent-id>.md`의 전체 내용
 2. `{{project_context}}` → config.json의 tech_stack 값으로 치환
 3. `{{agent_memory}}` → `.claude/company/agent-memory/<agent-id>.md` 내용으로 치환 (비어있으면 "(아직 없음)")
-4. 구체적 태스크 지시
+4. **팀 공유 지식 주입** (있으면):
+   `.claude/company/shared-knowledge.jsonl`에서 `relevant_agents`에 현재 agent-id가 포함된 항목을 confidence 내림차순으로 최대 5건 읽어서 다음 섹션 추가:
+   ```
+   ## 팀 공유 지식
+   - [pitfall] 동적 콘텐츠에 escapeHtml 필수 (by fe-qa, confidence:9)
+   - [pattern] API contract validation before impl (by be-qa, confidence:8)
+   ```
+5. **도구 사용 가이드 주입** (있으면):
+   `.claude/company/tool-profiles.json`에서 해당 agent-id의 프로필을 읽어서:
+   ```
+   ## 도구 사용 가이드
+   - 우선 사용: Read, Write, Edit, Bash, chrome-devtools
+   - 사용 금지: WebSearch
+   - 참고: 브라우저 테스트 시 chrome-devtools MCP 사용
+   ```
+6. **최근 개선 사항 주입** (있으면):
+   `.claude/company/improvements/` 최신 JSON에서 해당 agent-id 관련 findings를 읽어서:
+   ```
+   ## 최근 개선 사항
+   - [2026-04-11] 빈 상태(empty) 처리를 매번 자가 점검할 것
+   ```
+7. 구체적 태스크 지시
 
 ---
 
