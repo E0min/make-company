@@ -36,6 +36,7 @@ claude -company
 - [Intelligence System](#intelligence-system)
 - [Skills](#skills)
 - [Web Terminal](#web-terminal)
+- [Harness Engineering](#harness-engineering)
 - [Commands](#commands)
 - [Existing Project Migration](#existing-project-migration)
 - [Architecture](#architecture)
@@ -91,6 +92,7 @@ Each agent runs as an independent `claude --agent` session in its own tmux windo
 - **Self-Improvement Loop** -- Retrospectives generate action items that feed back into agent behavior
 - **Multi-Project** -- Discord-style project switching, run multiple companies simultaneously
 - **Zero Dependencies** -- Python stdlib server serves both API and static dashboard (no Node.js at runtime)
+- **Harness Engineering** -- Code-enforced guardrails: auto-logging, session boot sequence, output validation, drift detection
 - **Auto-Upgrade** -- gstack-style version checking across all projects
 
 ---
@@ -376,6 +378,60 @@ Skill usage is tracked per agent per task, enabling the system to recommend skil
 
 ---
 
+## Harness Engineering
+
+Prompts are guides. Harnesses are guarantees.
+
+A prompt says "log this to JSONL." A harness **makes it happen** whether the model follows instructions or not. Based on patterns from [Anthropic](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) and [Phil Schmid](https://www.philschmid.de/agent-harness-2026).
+
+### Three Harness Layers
+
+```
+Prompt Layer (skill.md)        -- Guide (CEO is expected to follow)
+     |
+Code Layer (hooks)             -- Enforced (100% execution guaranteed)
+     |  |-- agent-harness.sh   -- Auto JSONL logging on every Agent tool call
+     |  |-- session-boot.sh    -- State restoration + health check on session start
+     |  |-- auto-retro.sh      -- Retrospective reminder if CEO forgets
+     |
+Server Layer (server.py)       -- Validation + Analytics (API)
+     |-- harness/health        -- Environment health score (0-100)
+     |-- harness/progress      -- Auto-generated progress summary
+     |-- harness/checklist     -- Incomplete task detection
+     |-- harness/drift         -- Model drift detection (50+ events)
+     |-- harness/validate      -- Agent output quality gate
+```
+
+### Hooks (Code-Enforced)
+
+| Hook | Trigger | What it does |
+|------|---------|-------------|
+| `agent-harness.sh` | PostToolUse | Auto-logs Agent calls to JSONL, tracks file changes, suggests checkpoints every 10 edits, detects destructive commands |
+| `session-boot.sh` | UserPromptSubmit | On `/company run`: restores last session state, injects retro action items, shows health score, auto-creates missing directories |
+| `auto-retro.sh` | PostToolUse | Detects task_end without retro_saved, reminds CEO to run retrospective |
+
+### Server APIs (Validation + Analytics)
+
+| Endpoint | What it does |
+|----------|-------------|
+| `GET harness/health` | 7-point environment check: tmux, config, agents, dirs, memory, retros. Returns 0-100 score |
+| `GET harness/progress` | Auto-generates progress summary from activity.jsonl (Anthropic's claude-progress.txt pattern) |
+| `GET harness/checklist` | Finds started-but-incomplete tasks + completed-without-retro tasks |
+| `GET harness/drift` | Detects agent behavior changes: 50%+ duration increase or 20%+ quality decline |
+| `POST harness/validate` | Output quality gate: rejects too-short output, detects error patterns, flags unresolved TODOs |
+
+### Why Not Just Prompts?
+
+```
+Prompt: "Please log JSONL after each agent call"
+  -> Model busy? Skipped. Context full? Forgotten. New session? Lost.
+
+Harness: PostToolUse hook runs on every Agent tool call
+  -> Always executes. No exceptions. Data guaranteed.
+```
+
+---
+
 ## Commands
 
 | Command | Description |
@@ -442,7 +498,8 @@ make-company/
 │   ├── skill/                     # /company skill definition
 │   ├── dashboard/
 │   │   └── server.py              # Python stdlib API server (zero deps)
-│   └── dashboard-next-v2/         # Next.js dashboard source
+│   ├── dashboard-next-v2/         # Next.js dashboard source
+│   └── hooks/                    # Harness hooks (agent-harness, session-boot, auto-retro)
 │       ├── app/                   # App Router
 │       ├── components/dashboard/  # 12+ tab components
 │       └── lib/                   # API client, types, utils
@@ -544,7 +601,7 @@ MIT -- see [LICENSE](LICENSE).
 
 <div align="center">
 
-**v1**: tmux send-keys | **v2**: Claude Code Agent tool | **v2.1**: Intelligence system + web terminal
+**v1**: tmux send-keys | **v2**: Claude Code Agent tool | **v2.1**: Intelligence + harness engineering
 
 Built with Claude Code.
 
