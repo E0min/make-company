@@ -392,32 +392,39 @@ fi
    - [2026-04-11] 빈 상태(empty) 처리를 매번 자가 점검할 것
    ```
 7. **구조화된 워크플로우 강제** (하네스 핵심):
-   모든 에이전트 프롬프트의 마지막에 다음 블록을 반드시 추가:
+   `config.json`의 `agent_role_map`과 `agent_profiles`를 읽어서 에이전트 역할에 맞는 체크포인트를 주입.
+
+   **역할별 체크포인트 (config.json에서 동적 결정):**
+
+   - **engineer** (frontend-engineer, backend-engineer):
+     `[CHECKPOINT:analyze]` → `[CHECKPOINT:plan]` → `[CHECKPOINT:implement]` → `[CHECKPOINT:verify]` → `[CHECKPOINT:complete]`
+
+   - **qa** (fe-qa, be-qa):
+     `[CHECKPOINT:scope]` → `[CHECKPOINT:test]` → `[CHECKPOINT:report]` → `[CHECKPOINT:complete]`
+
+   - **planner** (ceo, product-manager):
+     `[CHECKPOINT:research]` → `[CHECKPOINT:draft]` → `[CHECKPOINT:review]` → `[CHECKPOINT:complete]`
+
+   - **creative** (ui-ux-designer, marketing-strategist):
+     `[CHECKPOINT:research]` → `[CHECKPOINT:draft]` → `[CHECKPOINT:iterate]` → `[CHECKPOINT:complete]`
+
+   에이전트 프롬프트에 해당 역할의 체크포인트를 주입:
    ```
    ## 필수 워크플로우 (반드시 이 순서대로 실행하세요)
-
-   Step 1 — 현재 상태 파악:
-   관련 파일을 Read로 읽고 현재 상태를 파악하세요.
-   완료 후 반드시 이 형식으로 출력:
-   [CHECKPOINT:analyze] 파악한 파일 N개, 현재 상태 요약
-
-   Step 2 — 계획:
-   구체적으로 무엇을 변경할지 계획하세요. 코드 작성 전에 계획을 먼저 출력하세요.
-   [CHECKPOINT:plan] 변경할 파일: file1, file2 | 변경 내용: 요약
-
-   Step 3 — 실행:
-   계획대로 구현하세요.
-   [CHECKPOINT:implement] 수정한 파일 N개
-
-   Step 4 — 자기 검증:
-   변경 사항이 올바른지 확인하세요. (빌드 확인, 에러 체크, 빈 상태 처리 등)
-   [CHECKPOINT:verify] 검증 결과: PASS 또는 이슈 목록
-
-   Step 5 — 최종 보고:
-   [CHECKPOINT:complete] 품질자가평가: N/10 | 요약: 한 줄 설명
+   각 단계 완료 후 [CHECKPOINT:step_name] 형식으로 보고하세요.
+   마지막 단계에서 반드시 품질자가평가: N/10을 포함하세요.
    ```
+   구체적 스텝 설명은 역할에 맞게 CEO가 구성한다.
+
+   **프로젝트별 커스텀**: config.json의 `agent_profiles`에 새 역할 타입을 추가하면 하네스가 자동 적응.
+   예: data-engineer → `{"role_type": "data", "checkpoints": ["ingest", "transform", "validate", "complete"], "quality_gate": 8}`
+
+   **동적 에이전트 추가**: config.json의 `agents` 배열에 새 에이전트 ID 추가 + `agent_role_map`에 매핑 추가 → 즉시 적용.
+   에이전트 .md 파일만 `.claude/agents/`에 생성하면 됨.
+
    **CEO는 에이전트 출력에서 `[CHECKPOINT:...]` 패턴을 파싱하여 모든 스텝이 완료되었는지 확인한다.**
    누락된 체크포인트가 있으면 → 해당 스텝을 다시 요청한다.
+   (이 검증은 agent-harness.sh PostToolUse hook이 코드 레벨로도 강제한다.)
 
 8. 구체적 태스크 지시
 
