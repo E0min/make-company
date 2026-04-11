@@ -95,6 +95,22 @@ if findings:
   TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   echo "{\"event\":\"session_boot\",\"ts\":\"$TS\",\"source\":\"harness\"}" >> "$COMPANY_DIR/activity.jsonl" 2>/dev/null
 
+  # 7. 서버가 떠있으면 harness/health API로 종합 건강 체크
+  HEALTH=$(curl -s --max-time 2 "http://localhost:7777/api/${PROJECT_NAME:-unknown}/harness/health" 2>/dev/null)
+  if [ -n "$HEALTH" ]; then
+    SCORE=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin).get('health_score',0))" 2>/dev/null || echo "0")
+    MISSING=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); m=d.get('missing_dirs',[]); print(', '.join(m) if m else 'none')" 2>/dev/null || echo "")
+    BOOT_MSG="${BOOT_MSG}[하네스 부팅] 시스템 건강 점수: ${SCORE}/100"
+    if [ "$MISSING" != "none" ] && [ -n "$MISSING" ]; then
+      BOOT_MSG="${BOOT_MSG} (누락 디렉토리: ${MISSING})"
+      # 코드 강제: 누락 디렉토리 자동 생성
+      for d in retrospectives analytics improvements; do
+        mkdir -p "$COMPANY_DIR/$d" 2>/dev/null
+      done
+    fi
+    BOOT_MSG="${BOOT_MSG}\n"
+  fi
+
   # 부팅 메시지 출력 (Claude에게 주입됨)
   if [ -n "$BOOT_MSG" ]; then
     echo -e "$BOOT_MSG"

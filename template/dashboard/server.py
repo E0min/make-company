@@ -808,6 +808,294 @@ def _read_improvements(company_dir, limit=10):
     return improvements
 
 
+# ━━━ 코드 레벨 하네스 (Anthropic 패턴) ━━━
+
+def _harness_health_check(company_dir, project_id):
+    """프로젝트 건강 체크 — 에이전트가 작업 전 환경 상태를 확인.
+    Anthropic 패턴: init.sh → 기본 테스트 → 작업 시작"""
+    checks = {}
+
+    # 1. tmux 세션 상태
+    checks['tmux_active'] = _check_tmux_session(project_id)
+    if checks['tmux_active']:
+        session_name = f"vc-{project_id}"
+        windows = _get_tmux_windows(session_name)
+        checks['tmux_windows'] = len(windows)
+    else:
+        checks['tmux_windows'] = 0
+
+    # 2. config.json 존재 + 파싱 가능
+    config_path = os.path.join(company_dir, 'config.json')
+    checks['config_valid'] = os.path.exists(config_path)
+    if checks['config_valid']:
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+            checks['project_name'] = config.get('project', '')
+            checks['agent_count'] = len(config.get('agents', []))
+        except (json.JSONDecodeError, OSError):
+            checks['config_valid'] = False
+
+    # 3. 에이전트 .md 파일 존재
+    agents_dir = os.path.join(os.path.dirname(company_dir), 'agents')
+    if os.path.isdir(agents_dir):
+        agent_files = [f for f in os.listdir(agents_dir) if f.endswith('.md')]
+        checks['agent_files'] = len(agent_files)
+    else:
+        checks['agent_files'] = 0
+
+    # 4. 디렉토리 구조 완전성
+    required_dirs = ['agent-memory', 'agent-output', 'retrospectives', 'analytics', 'improvements']
+    missing = [d for d in required_dirs if not os.path.isdir(os.path.join(company_dir, d))]
+    checks['missing_dirs'] = missing
+
+    # 5. 최근 활동 (마지막 이벤트 시간)
+    jsonl_path = os.path.join(company_dir, 'activity.jsonl')
+    if os.path.exists(jsonl_path):
+        try:
+            with open(jsonl_path) as f:
+                lines = f.readlines()
+            if lines:
+                last = json.loads(lines[-1].strip())
+                checks['last_event'] = last.get('event', '')
+                checks['last_event_ts'] = last.get('ts', '')
+                checks['total_events'] = len(lines)
+            else:
+                checks['total_events'] = 0
+        except Exception:
+            checks['total_events'] = 0
+    else:
+        checks['total_events'] = 0
+
+    # 6. 메모리 상태 (비어있지 않은 에이전트 수)
+    mem_dir = os.path.join(company_dir, 'agent-memory')
+    active_memories = 0
+    if os.path.isdir(mem_dir):
+        for f in os.listdir(mem_dir):
+            fp = os.path.join(mem_dir, f)
+            if f.endswith('.md') and os.path.getsize(fp) > 0:
+                active_memories += 1
+    checks['agents_with_memory'] = active_memories
+
+    # 7. 회고 수
+    retro_dir = os.path.join(company_dir, 'retrospectives')
+    retro_count = 0
+    if os.path.isdir(retro_dir):
+        retro_count = len([f for f in os.listdir(retro_dir) if f.endswith('.json')])
+    checks['retrospective_count'] = retro_count
+
+    # 종합 점수 (0~100)
+    score = 0
+    if checks['config_valid']: score += 20
+    if checks['agent_files'] > 0: score += 20
+    if checks['tmux_active']: score += 20
+    if not checks['missing_dirs']: score += 15
+    if checks['agents_with_memory'] > 0: score += 15
+    if checks['retrospective_count'] > 0: score += 10
+    checks['health_score'] = score
+
+    return checks
+
+
+def _harness_generate_progress(company_dir):
+    """진행 파일 자동 생성 — Anthropic의 claude-progress.txt 패턴.
+    activity.jsonl에서 자동으로 현재 상태 요약을 생성."""
+    entries = _read_activity_jsonl(company_dir, limit=500)
+    if not entries:
+        return {"summary": "아직 활동 기록 없음", "tasks": [], "agents": {}}
+
+    # 태스크별 그룹핑
+    tasks = {}
+    for e in entries:
+        tid = e.get('task_id')
+        if not tid:
+            continue
+        if tid not in tasks:
+            tasks[tid] = {'id': tid, 'events': [], 'status': 'unknown', 'agents': set()}
+        tasks[tid]['events'].append(e)
+        if e.get('agent'):
+            tasks[tid]['agents'].add(e['agent'])
+        if e.get('event') == 'task_end':
+            tasks[tid]['status'] = 'completed'
+        elif e.get('event') == 'task_start':
+            tasks[tid]['status'] = 'in_progress'
+
+    # 에이전트별 통계
+    agent_stats = {}
+    for e in entries:
+        aid = e.get('agent')
+        if not aid:
+            continue
+        if aid not in agent_stats:
+            agent_stats[aid] = {'calls': 0, 'last_ts': '', 'last_event': ''}
+        agent_stats[aid]['calls'] += 1
+        agent_stats[aid]['last_ts'] = e.get('ts', '')
+        agent_stats[aid]['last_event'] = e.get('event', '')
+
+    # 최근 태스크 요약
+    task_list = []
+    for tid, data in sorted(tasks.items(), key=lambda x: x[1]['events'][-1].get('ts', ''), reverse=True)[:10]:
+        task_list.append({
+            'id': tid,
+            'status': data['status'],
+            'agents': list(data['agents']),
+            'event_count': len(data['events']),
+        })
+
+    # 마지막 활동
+    last = entries[-1] if entries else {}
+
+    return {
+        "summary": f"총 {len(entries)}개 이벤트, {len(tasks)}개 태스크, {len(agent_stats)}개 에이전트 활동",
+        "last_activity": {"event": last.get('event', ''), "ts": last.get('ts', ''), "agent": last.get('agent', '')},
+        "tasks": task_list,
+        "agents": {k: v for k, v in agent_stats.items()},
+    }
+
+
+def _harness_task_checklist(company_dir):
+    """미완료 태스크 체크리스트 — Anthropic의 feature_list.json 패턴.
+    activity.jsonl에서 시작됐지만 완료 안 된 태스크 감지."""
+    entries = _read_activity_jsonl(company_dir, limit=1000)
+
+    started = {}   # task_id → start event
+    ended = set()  # task_id set
+
+    for e in entries:
+        tid = e.get('task_id')
+        if not tid:
+            continue
+        if e.get('event') == 'task_start':
+            started[tid] = e
+        elif e.get('event') == 'task_end':
+            ended.add(tid)
+
+    # 시작됐지만 끝나지 않은 태스크
+    incomplete = []
+    for tid, start_event in started.items():
+        if tid not in ended:
+            incomplete.append({
+                'task_id': tid,
+                'started_at': start_event.get('ts', ''),
+                'task': start_event.get('task', tid),
+                'status': 'incomplete',
+            })
+
+    # retro가 누락된 완료 태스크
+    retro_saved = set()
+    for e in entries:
+        if e.get('event') == 'retro_saved':
+            retro_saved.add(e.get('task_id', ''))
+
+    missing_retro = []
+    for tid in ended:
+        if tid not in retro_saved:
+            missing_retro.append(tid)
+
+    return {
+        "incomplete_tasks": incomplete,
+        "completed_without_retro": missing_retro,
+        "total_started": len(started),
+        "total_completed": len(ended),
+        "total_retros": len(retro_saved),
+    }
+
+
+def _harness_validate_output(company_dir, agent_id, output_text):
+    """에이전트 출력 자동 검증 — 기본 품질 게이트.
+    출력이 너무 짧거나 에러 패턴을 포함하면 경고."""
+    issues = []
+
+    if not output_text or len(output_text.strip()) < 20:
+        issues.append({"type": "too_short", "severity": "high",
+                       "message": f"{agent_id} 출력이 너무 짧음 ({len(output_text.strip())} chars)"})
+
+    # 에러 패턴 감지
+    error_patterns = ['Error:', 'Traceback', 'FAILED', 'undefined', 'null reference']
+    for pattern in error_patterns:
+        if pattern.lower() in output_text.lower():
+            issues.append({"type": "error_pattern", "severity": "medium",
+                           "message": f"{agent_id} 출력에 에러 패턴 '{pattern}' 감지"})
+            break
+
+    # TODO/FIXME 미해결 감지
+    todo_count = output_text.lower().count('todo') + output_text.lower().count('fixme')
+    if todo_count > 3:
+        issues.append({"type": "unresolved_todos", "severity": "low",
+                       "message": f"{agent_id} 출력에 TODO/FIXME {todo_count}건 — 미해결 작업 있음"})
+
+    return {
+        "valid": len([i for i in issues if i['severity'] == 'high']) == 0,
+        "issues": issues,
+        "char_count": len(output_text.strip()),
+    }
+
+
+def _harness_drift_check(company_dir):
+    """모델 드리프트 감지 — Phil Schmid 패턴.
+    50+ 이벤트 후 에이전트 행동 패턴 변화를 감지."""
+    entries = _read_activity_jsonl(company_dir, limit=2000)
+    if len(entries) < 20:
+        return {"status": "insufficient_data", "events": len(entries)}
+
+    # 에이전트별 시간대별 품질 분석
+    agent_quality = {}
+    for e in entries:
+        if e.get('event') != 'agent_end' and e.get('event') != 'agent_end_harness':
+            continue
+        aid = e.get('agent', '')
+        if not aid:
+            continue
+        if aid not in agent_quality:
+            agent_quality[aid] = []
+        agent_quality[aid].append({
+            'ts': e.get('ts', ''),
+            'duration': e.get('duration_sec', 0),
+            'quality': e.get('quality_self', 0),
+        })
+
+    drifts = []
+    for aid, records in agent_quality.items():
+        if len(records) < 6:
+            continue
+        mid = len(records) // 2
+        first_half = records[:mid]
+        second_half = records[mid:]
+
+        # 평균 duration 비교 (50% 이상 증가 = 드리프트)
+        avg_dur_1 = sum(r['duration'] for r in first_half if r['duration']) / max(len([r for r in first_half if r['duration']]), 1)
+        avg_dur_2 = sum(r['duration'] for r in second_half if r['duration']) / max(len([r for r in second_half if r['duration']]), 1)
+
+        if avg_dur_1 > 0 and avg_dur_2 > avg_dur_1 * 1.5:
+            drifts.append({
+                "agent": aid,
+                "type": "duration_increase",
+                "message": f"{aid} 평균 소요시간 {avg_dur_1:.0f}s → {avg_dur_2:.0f}s ({((avg_dur_2/avg_dur_1)-1)*100:.0f}% 증가)",
+                "severity": "medium",
+            })
+
+        # 품질 하락 감지
+        quals_1 = [r['quality'] for r in first_half if r['quality']]
+        quals_2 = [r['quality'] for r in second_half if r['quality']]
+        if quals_1 and quals_2:
+            avg_q1 = sum(quals_1) / len(quals_1)
+            avg_q2 = sum(quals_2) / len(quals_2)
+            if avg_q1 > 0 and avg_q2 < avg_q1 * 0.8:
+                drifts.append({
+                    "agent": aid,
+                    "type": "quality_decline",
+                    "message": f"{aid} 품질 점수 {avg_q1:.1f} → {avg_q2:.1f} (하락)",
+                    "severity": "high",
+                })
+
+    return {
+        "status": "drift_detected" if drifts else "stable",
+        "drifts": drifts,
+        "total_events": len(entries),
+        "agents_analyzed": len(agent_quality),
+    }
+
+
 def _read_agent_states_for_project(company_dir, agents_dir=None):
     """지정된 디렉토리에서 에이전트별 최신 상태 추출."""
     if agents_dir is None:
@@ -1608,6 +1896,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             improvements = _read_improvements(company_dir)
             self.send_json({"improvements": improvements})
 
+        # ━━━ 코드 레벨 하네스 API ━━━
+
+        elif sub_path == 'harness/health':
+            checks = _harness_health_check(company_dir, project_id)
+            self.send_json(checks)
+
+        elif sub_path == 'harness/progress':
+            progress = _harness_generate_progress(company_dir)
+            self.send_json(progress)
+
+        elif sub_path == 'harness/checklist':
+            checklist = _harness_task_checklist(company_dir)
+            self.send_json(checklist)
+
+        elif sub_path == 'harness/drift':
+            drift = _harness_drift_check(company_dir)
+            self.send_json(drift)
+
+
         elif sub_path == 'sse':
             agent_output_dir = os.path.join(company_dir, 'agent-output')
             self._handle_sse_for_dirs(company_dir, agent_output_dir)
@@ -2259,6 +2566,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             profiles = body.get('profiles', {})
             _write_tool_profiles(company_dir, profiles)
             self.send_json({"ok": True})
+
+        # ━━━ 코드 레벨 하네스 POST API ━━━
+
+        elif sub_path == 'harness/validate':
+            agent_id = body.get('agent', '')
+            output_text = body.get('output', '')
+            if not agent_id or not output_text:
+                self.send_json({"ok": False, "error": "agent + output 필요"}, 400)
+                return
+            result = _harness_validate_output(company_dir, agent_id, output_text)
+            self.send_json({"ok": True, **result})
+
+        elif sub_path == 'harness/ensure-dirs':
+            # 코드 강제: 필요한 디렉토리 전부 생성
+            for d in ['agent-memory', 'agent-output', 'retrospectives', 'analytics', 'improvements']:
+                os.makedirs(os.path.join(company_dir, d), exist_ok=True)
+            self.send_json({"ok": True, "created": True})
 
         else:
             self.send_json({"error": f"unknown POST sub-path: {sub_path}"}, 404)
