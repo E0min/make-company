@@ -417,6 +417,397 @@ def read_activity(lines=50, company_dir=None):
     """activity.log에서 최근 N줄 + 파싱 (호환성: company_dir=None → 기본 COMPANY_DIR)."""
     return _read_activity_for_project(company_dir or COMPANY_DIR, lines)
 
+
+# ━━━ JSONL 활동 로그 (Phase 1A: 구조화된 이벤트) ━━━
+
+def _append_activity_jsonl(company_dir, event):
+    """구조화된 이벤트를 activity.jsonl에 추가."""
+    jsonl_path = os.path.join(company_dir, 'activity.jsonl')
+    if 'ts' not in event:
+        event['ts'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    with open(jsonl_path, 'a') as f:
+        f.write(json.dumps(event, ensure_ascii=False) + '\n')
+
+def _read_activity_jsonl(company_dir, limit=200, event_type=None, agent=None):
+    """activity.jsonl에서 구조화된 이벤트 읽기 (필터 + 최근 N건)."""
+    jsonl_path = os.path.join(company_dir, 'activity.jsonl')
+    if not os.path.exists(jsonl_path):
+        return []
+    entries = []
+    with open(jsonl_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event_type and entry.get('event') != event_type:
+                continue
+            if agent and entry.get('agent') != agent:
+                continue
+            entries.append(entry)
+    return entries[-limit:]
+
+
+# ━━━ 에이전트 메모리 구조화 (Phase 1B) ━━━
+
+def _parse_structured_memory(memory_text):
+    """에이전트 메모리 .md를 섹션별로 파싱."""
+    sections = {'learnings': [], 'patterns': [], 'self_assessment': {}, 'project_specific': [], 'raw': ''}
+    if not memory_text or not memory_text.strip():
+        return sections
+    sections['raw'] = memory_text
+
+    current_section = None
+    for line in memory_text.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('## Learnings'):
+            current_section = 'learnings'
+        elif stripped.startswith('## Patterns'):
+            current_section = 'patterns'
+        elif stripped.startswith('## Self-Assessment'):
+            current_section = 'self_assessment_lines'
+        elif stripped.startswith('## Project-Specific'):
+            current_section = 'project_specific'
+        elif stripped.startswith('## '):
+            current_section = None
+        elif stripped.startswith('- ') and current_section in ('learnings', 'patterns', 'project_specific'):
+            sections[current_section].append(stripped[2:])
+        elif stripped.startswith('- ') and current_section == 'self_assessment_lines':
+            key_val = stripped[2:].split(':', 1)
+            if len(key_val) == 2:
+                sections['self_assessment'][key_val[0].strip()] = key_val[1].strip()
+
+    if 'self_assessment_lines' in sections:
+        del sections['self_assessment_lines']
+    return sections
+
+def _append_agent_memory(company_dir, agent_id, section, entry):
+    """에이전트 메모리 파일의 특정 섹션에 항목 추가."""
+    memory_dir = os.path.join(company_dir, 'agent-memory')
+    os.makedirs(memory_dir, exist_ok=True)
+    memory_path = os.path.join(memory_dir, f'{agent_id}.md')
+
+    # 기존 내용 읽기
+    content = ''
+    if os.path.exists(memory_path):
+        with open(memory_path) as f:
+            content = f.read()
+
+    section_header = f'## {section}'
+    if section_header not in content:
+        # 섹션이 없으면 파일 끝에 추가
+        content = content.rstrip('\n') + f'\n\n{section_header}\n- {entry}\n'
+    else:
+        # 섹션이 있으면 해당 섹션 끝에 추가
+        lines = content.split('\n')
+        result = []
+        in_section = False
+        inserted = False
+        for i, line in enumerate(lines):
+            if line.strip() == section_header:
+                in_section = True
+                result.append(line)
+                continue
+            if in_section and line.strip().startswith('## '):
+                # 다음 섹션 시작 → 현재 섹션 끝에 삽입
+                result.append(f'- {entry}')
+                in_section = False
+                inserted = True
+            result.append(line)
+        if in_section and not inserted:
+            # 파일 끝까지 현재 섹션이면 마지막에 추가
+            result.append(f'- {entry}')
+        content = '\n'.join(result)
+
+    with open(memory_path, 'w') as f:
+        f.write(content)
+
+
+# ━━━ 공유 지식 베이스 (Phase 1C) ━━━
+
+def _read_shared_knowledge(company_dir, agent_id=None, limit=10):
+    """공유 지식 읽기 (agent_id로 필터 시 relevant_agents에 포함된 것만)."""
+    kb_path = os.path.join(company_dir, 'shared-knowledge.jsonl')
+    if not os.path.exists(kb_path):
+        return []
+    entries = []
+    with open(kb_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if agent_id and agent_id not in entry.get('relevant_agents', []):
+                continue
+            entries.append(entry)
+    # confidence 내림차순 정렬 후 limit 적용
+    entries.sort(key=lambda e: e.get('confidence', 0), reverse=True)
+    return entries[:limit]
+
+def _append_shared_knowledge(company_dir, entry):
+    """공유 지식 추가."""
+    kb_path = os.path.join(company_dir, 'shared-knowledge.jsonl')
+    if 'ts' not in entry:
+        entry['ts'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    with open(kb_path, 'a') as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+
+# ━━━ 성능 분석 (Phase 2) ━━━
+
+def _compute_agent_scores(company_dir):
+    """activity.jsonl에서 에이전트별 성과 스코어 계산."""
+    entries = _read_activity_jsonl(company_dir, limit=1000)
+    agents = {}
+    for e in entries:
+        aid = e.get('agent')
+        if not aid:
+            continue
+        if aid not in agents:
+            agents[aid] = {'total_tasks': 0, 'durations': [], 'errors': 0, 'quality_scores': []}
+
+        if e.get('event') == 'agent_end':
+            agents[aid]['total_tasks'] += 1
+            if 'duration_sec' in e:
+                agents[aid]['durations'].append(e['duration_sec'])
+            if 'quality_self' in e:
+                agents[aid]['quality_scores'].append(e['quality_self'])
+        elif e.get('event') == 'agent_error':
+            agents[aid]['errors'] += 1
+
+    result = {}
+    for aid, data in agents.items():
+        total = data['total_tasks']
+        result[aid] = {
+            'total_tasks': total,
+            'avg_duration_sec': round(sum(data['durations']) / len(data['durations']), 1) if data['durations'] else 0,
+            'error_rate': round(data['errors'] / max(total, 1), 2),
+            'avg_quality': round(sum(data['quality_scores']) / len(data['quality_scores']), 1) if data['quality_scores'] else 0,
+            'trend': _compute_trend(data['quality_scores']),
+        }
+    return result
+
+def _compute_trend(scores):
+    """최근 5건 vs 이전 5건 비교로 트렌드 판단."""
+    if len(scores) < 4:
+        return 'insufficient_data'
+    mid = len(scores) // 2
+    old_avg = sum(scores[:mid]) / mid
+    new_avg = sum(scores[mid:]) / (len(scores) - mid)
+    if new_avg > old_avg + 0.3:
+        return 'improving'
+    elif new_avg < old_avg - 0.3:
+        return 'declining'
+    return 'stable'
+
+def _compute_workflow_analysis(company_dir):
+    """activity.jsonl에서 워크플로우별 병목 분석."""
+    entries = _read_activity_jsonl(company_dir, limit=2000, event_type=None)
+    workflows = {}
+    # 워크플로우 실행 그룹핑
+    for e in entries:
+        wf = e.get('workflow')
+        if not wf:
+            continue
+        if wf not in workflows:
+            workflows[wf] = {'run_count': 0, 'steps': {}}
+        if e.get('event') == 'workflow_end':
+            workflows[wf]['run_count'] += 1
+        if e.get('event') == 'agent_end' and e.get('step'):
+            step = e['step']
+            if step not in workflows[wf]['steps']:
+                workflows[wf]['steps'][step] = []
+            if 'duration_sec' in e:
+                workflows[wf]['steps'][step].append(e['duration_sec'])
+
+    result = {}
+    for wf_name, data in workflows.items():
+        avg_steps = {}
+        bottleneck_step = None
+        max_duration = 0
+        for step, durations in data['steps'].items():
+            avg = round(sum(durations) / len(durations), 1) if durations else 0
+            avg_steps[step] = avg
+            if avg > max_duration:
+                max_duration = avg
+                bottleneck_step = step
+        result[wf_name] = {
+            'run_count': max(data['run_count'], 1),
+            'bottleneck_step': bottleneck_step,
+            'avg_step_durations': avg_steps,
+        }
+    return result
+
+
+# ━━━ 스킬 관리 (Phase 3) ━━━
+
+GLOBAL_SKILLS_DIR = os.path.expanduser('~/.claude/skills')
+
+def _scan_installed_skills():
+    """~/.claude/skills/ 에서 설치된 스킬 목록 스캔."""
+    skills = []
+    if not os.path.isdir(GLOBAL_SKILLS_DIR):
+        return skills
+    for name in sorted(os.listdir(GLOBAL_SKILLS_DIR)):
+        skill_dir = os.path.join(GLOBAL_SKILLS_DIR, name)
+        # SKILL.md 찾기 (직접 또는 서브디렉토리)
+        skill_md = None
+        if os.path.isfile(skill_dir):
+            # symlink to SKILL.md
+            if name.endswith('.md') or os.path.islink(skill_dir):
+                skill_md = skill_dir
+                name = name.replace('.md', '').replace('SKILL', '')
+        elif os.path.isdir(skill_dir):
+            candidate = os.path.join(skill_dir, 'SKILL.md')
+            if os.path.exists(candidate):
+                skill_md = candidate
+
+        if not skill_md or not os.path.exists(skill_md):
+            continue
+
+        # 프론트매터 파싱
+        meta = {'name': name, 'description': '', 'category': 'general'}
+        try:
+            with open(skill_md) as f:
+                content = f.read(2000)  # 프론트매터만 읽기
+            if content.startswith('---'):
+                end = content.find('---', 3)
+                if end > 0:
+                    fm = content[3:end]
+                    for line in fm.split('\n'):
+                        if ':' in line:
+                            k, v = line.split(':', 1)
+                            k, v = k.strip(), v.strip().strip('"').strip("'")
+                            if k == 'name':
+                                meta['name'] = v
+                            elif k == 'description':
+                                meta['description'] = v[:200]
+                            elif k == 'category':
+                                meta['category'] = v
+        except Exception:
+            pass
+
+        meta['path'] = skill_md
+        meta['is_symlink'] = os.path.islink(skill_dir) or os.path.islink(skill_md)
+        skills.append(meta)
+    return skills
+
+def _read_skill_usage(company_dir, limit=500):
+    """skill-usage.jsonl 읽기."""
+    path = os.path.join(company_dir, 'analytics', 'skill-usage.jsonl')
+    if not os.path.exists(path):
+        return []
+    entries = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return entries[-limit:]
+
+def _append_skill_usage(company_dir, entry):
+    """스킬 사용 기록 추가."""
+    analytics_dir = os.path.join(company_dir, 'analytics')
+    os.makedirs(analytics_dir, exist_ok=True)
+    path = os.path.join(analytics_dir, 'skill-usage.jsonl')
+    if 'ts' not in entry:
+        entry['ts'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    with open(path, 'a') as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+
+# ━━━ 도구 프로필 (Phase 4) ━━━
+
+def _read_tool_profiles(company_dir):
+    """에이전트별 도구 프로필 읽기."""
+    path = os.path.join(company_dir, 'tool-profiles.json')
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+def _write_tool_profiles(company_dir, profiles):
+    """에이전트별 도구 프로필 저장."""
+    path = os.path.join(company_dir, 'tool-profiles.json')
+    with open(path, 'w') as f:
+        json.dump(profiles, f, indent=2, ensure_ascii=False)
+
+
+# ━━━ 스킬 개인화 (Phase 5C-4) ━━━
+
+def _read_skill_overrides(company_dir):
+    """프로젝트별 스킬 오버라이드 설정 읽기."""
+    path = os.path.join(company_dir, 'skill-overrides.json')
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+def _write_skill_overrides(company_dir, overrides):
+    """프로젝트별 스킬 오버라이드 저장."""
+    path = os.path.join(company_dir, 'skill-overrides.json')
+    with open(path, 'w') as f:
+        json.dump(overrides, f, indent=2, ensure_ascii=False)
+
+
+# ━━━ 회고 (Phase 1B) ━━━
+
+def _read_retrospectives(company_dir, limit=20):
+    """회고 JSON 파일 목록 읽기."""
+    retro_dir = os.path.join(company_dir, 'retrospectives')
+    if not os.path.isdir(retro_dir):
+        return []
+    retros = []
+    for fname in sorted(os.listdir(retro_dir), reverse=True):
+        if not fname.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(retro_dir, fname)) as f:
+                retros.append(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if len(retros) >= limit:
+            break
+    return retros
+
+
+# ━━━ 자기개선 (Phase 6) ━━━
+
+def _read_improvements(company_dir, limit=10):
+    """개선 권고 JSON 파일 목록 읽기."""
+    imp_dir = os.path.join(company_dir, 'improvements')
+    if not os.path.isdir(imp_dir):
+        return []
+    improvements = []
+    for fname in sorted(os.listdir(imp_dir), reverse=True):
+        if not fname.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(imp_dir, fname)) as f:
+                improvements.append(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if len(improvements) >= limit:
+            break
+    return improvements
+
+
 def _read_agent_states_for_project(company_dir, agents_dir=None):
     """지정된 디렉토리에서 에이전트별 최신 상태 추출."""
     if agents_dir is None:
@@ -1107,6 +1498,116 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 data = dict(RUNNING_PROC)
             self.send_json(data)
 
+        # ━━━ Analytics API (Phase 1-6) ━━━
+
+        elif sub_path == 'analytics/activity':
+            query = urlparse(self.path).query
+            params = parse_qs(query)
+            limit = int(params.get('limit', ['200'])[0])
+            event_type = params.get('event', [None])[0]
+            agent = params.get('agent', [None])[0]
+            entries = _read_activity_jsonl(company_dir, limit=limit, event_type=event_type, agent=agent)
+            self.send_json({"entries": entries})
+
+        elif sub_path == 'analytics/scores':
+            scores = cached(f"{project_id}:agent_scores", 10,
+                            lambda: _compute_agent_scores(company_dir))
+            self.send_json({"agents": scores})
+
+        elif sub_path == 'analytics/workflows':
+            analysis = cached(f"{project_id}:workflow_analysis", 10,
+                              lambda: _compute_workflow_analysis(company_dir))
+            self.send_json({"workflows": analysis})
+
+        elif sub_path == 'shared-knowledge':
+            query = urlparse(self.path).query
+            params = parse_qs(query)
+            agent = params.get('agent', [None])[0]
+            limit = int(params.get('limit', ['10'])[0])
+            entries = _read_shared_knowledge(company_dir, agent_id=agent, limit=limit)
+            self.send_json({"entries": entries})
+
+        elif sub_path.startswith('agent/') and '/memory/structured' in sub_path:
+            agent_id = sub_path.split('/')[1]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"error": "invalid agent id"}, 400)
+                return
+            raw = _read_agent_memory_for_project(agent_id, company_dir)
+            structured = _parse_structured_memory(raw)
+            self.send_json({"agent": agent_id, "memory": structured})
+
+        elif sub_path.startswith('agent/') and '/profile' in sub_path:
+            agent_id = sub_path.split('/')[1]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"error": "invalid agent id"}, 400)
+                return
+            # 에이전트 프로필 통합: 메모리 + 스코어 + 스킬 + 도구
+            raw_mem = _read_agent_memory_for_project(agent_id, company_dir)
+            memory = _parse_structured_memory(raw_mem)
+            scores = _compute_agent_scores(company_dir).get(agent_id, {})
+            tool_profiles = _read_tool_profiles(company_dir).get(agent_id, {})
+            # 에이전트 정보
+            agents_list = _read_agents_full_for_project(agents_dir)
+            agent_info = next((a for a in agents_list if a['id'] == agent_id), {'id': agent_id})
+            self.send_json({
+                "agent": agent_info,
+                "memory": memory,
+                "scores": scores,
+                "tools": tool_profiles,
+            })
+
+        elif sub_path == 'skills/installed':
+            skills = cached("global:skills_installed", 30, _scan_installed_skills)
+            self.send_json({"skills": skills})
+
+        elif sub_path == 'skills/usage':
+            usage = _read_skill_usage(company_dir)
+            # 집계
+            agg = {}
+            for entry in usage:
+                sk = entry.get('skill', '')
+                if sk not in agg:
+                    agg[sk] = {'count': 0, 'success': 0, 'agents': set()}
+                agg[sk]['count'] += 1
+                if entry.get('outcome') == 'success':
+                    agg[sk]['success'] += 1
+                agg[sk]['agents'].add(entry.get('agent', ''))
+            for sk in agg:
+                total = agg[sk]['count']
+                agg[sk]['success_rate'] = round(agg[sk]['success'] / max(total, 1), 2)
+                agg[sk]['agents'] = list(agg[sk]['agents'])
+            self.send_json({"usage": agg})
+
+        elif sub_path == 'skills/candidates':
+            path = os.path.join(company_dir, 'skill-candidates.jsonl')
+            candidates = []
+            if os.path.exists(path):
+                with open(path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                candidates.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                pass
+            self.send_json({"candidates": candidates})
+
+        elif sub_path.startswith('skills/') and '/config' in sub_path:
+            skill_name = sub_path.split('/')[1]
+            overrides = _read_skill_overrides(company_dir)
+            self.send_json({
+                "skill": skill_name,
+                "overrides": overrides.get(skill_name, {}),
+            })
+
+        elif sub_path == 'tools/profiles':
+            profiles = _read_tool_profiles(company_dir)
+            self.send_json({"profiles": profiles})
+
+        elif sub_path == 'improvements':
+            improvements = _read_improvements(company_dir)
+            self.send_json({"improvements": improvements})
+
         elif sub_path == 'sse':
             agent_output_dir = os.path.join(company_dir, 'agent-output')
             self._handle_sse_for_dirs(company_dir, agent_output_dir)
@@ -1706,6 +2207,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "unknown terminal action"}, 404)
             else:
                 self.send_json({"ok": False, "error": "invalid terminal path"}, 400)
+
+        # ━━━ Analytics POST API (Phase 1-6) ━━━
+
+        elif sub_path == 'analytics/event':
+            # JSONL 이벤트 기록
+            event = body.get('event')
+            if not event or not isinstance(event, dict):
+                self.send_json({"ok": False, "error": "event 필드 필요"}, 400)
+                return
+            _append_activity_jsonl(company_dir, event)
+            self.send_json({"ok": True})
+
+        elif sub_path.startswith('agent/') and sub_path.endswith('/memory/append'):
+            agent_id = sub_path.split('/')[1]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"error": "invalid agent id"}, 400)
+                return
+            section = body.get('section', 'Learnings')
+            entry = body.get('entry', '').strip()
+            if not entry:
+                self.send_json({"ok": False, "error": "entry 필드 필요"}, 400)
+                return
+            _append_agent_memory(company_dir, agent_id, section, entry)
+            self.send_json({"ok": True})
+
+        elif sub_path == 'shared-knowledge/append':
+            entry = body.get('entry')
+            if not entry or not isinstance(entry, dict):
+                self.send_json({"ok": False, "error": "entry 필드 필요"}, 400)
+                return
+            _append_shared_knowledge(company_dir, entry)
+            self.send_json({"ok": True})
+
+        elif sub_path == 'skills/usage/append':
+            entry = body.get('entry')
+            if not entry or not isinstance(entry, dict):
+                self.send_json({"ok": False, "error": "entry 필드 필요"}, 400)
+                return
+            _append_skill_usage(company_dir, entry)
+            self.send_json({"ok": True})
+
+        elif sub_path.startswith('skills/') and sub_path.endswith('/config'):
+            skill_name = sub_path.split('/')[1]
+            overrides = _read_skill_overrides(company_dir)
+            overrides[skill_name] = body.get('config', {})
+            _write_skill_overrides(company_dir, overrides)
+            self.send_json({"ok": True})
+
+        elif sub_path == 'tools/profiles':
+            profiles = body.get('profiles', {})
+            _write_tool_profiles(company_dir, profiles)
+            self.send_json({"ok": True})
 
         else:
             self.send_json({"error": f"unknown POST sub-path: {sub_path}"}, 404)

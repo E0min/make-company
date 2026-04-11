@@ -257,4 +257,74 @@ export const api = {
   /** 터미널에 입력 전송 */
   terminalWrite: (agent: string, input: string) =>
     postJSON<{ ok: boolean }>(`${apiBase()}/terminal/${agent}/write`, { input }),
+
+  // ━━━ Analytics API ━━━
+
+  analyticsActivity: (limit = 200, event?: string, agent?: string) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (event) params.set("event", event);
+    if (agent) params.set("agent", agent);
+    return getJSON<{ entries: import("./types").ActivityEvent[] }>(`${apiBase()}/analytics/activity?${params}`);
+  },
+
+  analyticsScores: () =>
+    getJSON<{ agents: Record<string, import("./types").AgentScores> }>(`${apiBase()}/analytics/scores`),
+
+  analyticsWorkflows: () =>
+    getJSON<{ workflows: Record<string, import("./types").WorkflowAnalysis> }>(`${apiBase()}/analytics/workflows`),
+
+  // ━━━ Agent Profile API ━━━
+
+  agentProfile: (agent: string) =>
+    getJSON<import("./types").AgentProfile>(`${apiBase()}/agent/${agent}/profile`),
+
+  agentMemoryStructured: (agent: string) =>
+    getJSON<{ agent: string; memory: import("./types").StructuredMemory }>(`${apiBase()}/agent/${agent}/memory/structured`),
+
+  agentMemoryAppend: (agent: string, section: string, entry: string) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/agent/${agent}/memory/append`, { section, entry }),
+
+  // ━━━ Shared Knowledge API ━━━
+
+  sharedKnowledge: (agent?: string, limit = 10) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (agent) params.set("agent", agent);
+    return getJSON<{ entries: import("./types").SharedKnowledge[] }>(`${apiBase()}/shared-knowledge?${params}`);
+  },
+
+  sharedKnowledgeAppend: (entry: import("./types").SharedKnowledge) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/shared-knowledge/append`, { entry }),
+
+  // ━━━ Skills API ━━━
+
+  skillsInstalled: () =>
+    getJSON<{ skills: import("./types").InstalledSkill[] }>(`${apiBase()}/skills/installed`),
+
+  skillsUsage: () =>
+    getJSON<{ usage: Record<string, import("./types").SkillUsageAgg> }>(`${apiBase()}/skills/usage`),
+
+  skillsCandidates: () =>
+    getJSON<{ candidates: import("./types").SkillCandidate[] }>(`${apiBase()}/skills/candidates`),
+
+  skillConfig: (skill: string) =>
+    getJSON<{ skill: string; overrides: Record<string, unknown> }>(`${apiBase()}/skills/${skill}/config`),
+
+  skillConfigSave: (skill: string, config: Record<string, unknown>) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/skills/${skill}/config`, { config }),
+
+  // ━━━ Tools API ━━━
+
+  toolProfiles: () =>
+    getJSON<{ profiles: Record<string, import("./types").ToolProfile> }>(`${apiBase()}/tools/profiles`),
+
+  toolProfilesSave: (profiles: Record<string, import("./types").ToolProfile>) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/tools/profiles`, { profiles }),
+
+  // ━━━ Retrospectives & Improvements ━━━
+
+  retrospectives: () =>
+    getJSON<{ retrospectives: import("./types").Retrospective[] }>(`${apiBase()}/retrospectives`),
+
+  improvements: () =>
+    getJSON<{ improvements: import("./types").Improvement[] }>(`${apiBase()}/improvements`),
 };

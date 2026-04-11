@@ -149,6 +149,136 @@ export const AVAILABLE_AGENTS = [
 
 export type AgentId = (typeof AVAILABLE_AGENTS)[number];
 
+// ━━━ Analytics & Intelligence Types (Phase 1-6) ━━━
+
+/** JSONL 활동 이벤트 */
+export interface ActivityEvent {
+  ts: string;
+  event: "task_start" | "task_end" | "agent_start" | "agent_end" | "agent_error" | "retro_saved" | "skill_used" | "memory_updated" | "workflow_start" | "workflow_end";
+  agent?: string;
+  task_id?: string;
+  workflow?: string;
+  step?: string;
+  duration_sec?: number;
+  quality_self?: number;
+  meta?: Record<string, unknown>;
+}
+
+/** 구조화된 에이전트 메모리 */
+export interface StructuredMemory {
+  learnings: string[];
+  patterns: string[];
+  self_assessment: Record<string, string>;
+  project_specific: string[];
+  raw: string;
+}
+
+/** 에이전트 성과 스코어 */
+export interface AgentScores {
+  total_tasks: number;
+  avg_duration_sec: number;
+  error_rate: number;
+  avg_quality: number;
+  trend: "improving" | "declining" | "stable" | "insufficient_data";
+}
+
+/** 워크플로우 분석 */
+export interface WorkflowAnalysis {
+  run_count: number;
+  bottleneck_step: string | null;
+  avg_step_durations: Record<string, number>;
+}
+
+/** 설치된 스킬 */
+export interface InstalledSkill {
+  name: string;
+  description: string;
+  category: string;
+  path: string;
+  is_symlink: boolean;
+}
+
+/** 스킬 사용 집계 */
+export interface SkillUsageAgg {
+  count: number;
+  success: number;
+  success_rate: number;
+  agents: string[];
+}
+
+/** 도구 프로필 */
+export interface ToolProfile {
+  preferred: string[];
+  avoid: string[];
+  instructions: string;
+}
+
+/** 공유 지식 */
+export interface SharedKnowledge {
+  ts: string;
+  author: string;
+  type: "pitfall" | "pattern" | "preference" | "architecture";
+  key: string;
+  insight: string;
+  confidence: number;
+  relevant_agents: string[];
+  retro_ref?: string;
+}
+
+/** 스킬 후보 */
+export interface SkillCandidate {
+  ts: string;
+  agent: string;
+  pattern: string;
+  frequency: number;
+  promoted: boolean;
+}
+
+/** 자기개선 권고 */
+export interface ImprovementFinding {
+  type: "bottleneck" | "quality_decline" | "skill_gap" | "tool_mismatch";
+  agent?: string;
+  description: string;
+  severity: "low" | "medium" | "high";
+  suggestion: string;
+}
+
+export interface Improvement {
+  id: string;
+  generated_at: string;
+  trigger: string;
+  findings: ImprovementFinding[];
+  auto_applied: string[];
+}
+
+/** 에이전트 프로필 (통합) */
+export interface AgentProfile {
+  agent: AgentFull;
+  memory: StructuredMemory;
+  scores: AgentScores;
+  tools: ToolProfile;
+}
+
+/** 회고 */
+export interface RetroFeedback {
+  agent_id: string;
+  went_well: string;
+  went_wrong: string;
+  action_item: string;
+}
+
+export interface Retrospective {
+  id: string;
+  project: string;
+  task: string;
+  completed_at: string;
+  duration_seconds: number;
+  participants: { agent_id: string; role: string }[];
+  feedback: RetroFeedback[];
+  summary: string;
+  tags: string[];
+}
+
 // ━━━ v1 호환 타입 (다른 컴포넌트 마이그레이션 전까지 유지) ━━━
 // TODO: 각 컴포넌트를 v2 타입으로 전환한 뒤 아래 블록 삭제
 

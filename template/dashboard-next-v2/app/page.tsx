@@ -13,6 +13,10 @@ import { ActivityTab } from "@/components/dashboard/ActivityTab";
 import { AgentsTab } from "@/components/dashboard/AgentsTab";
 import { ProjectBar } from "@/components/dashboard/ProjectBar";
 import { TerminalPanel } from "@/components/dashboard/TerminalPanel";
+import { SkillsTab } from "@/components/dashboard/SkillsTab";
+import { HealthTab } from "@/components/dashboard/HealthTab";
+import { RetroTab } from "@/components/dashboard/RetroTab";
+import { AgentProfileTab } from "@/components/dashboard/AgentProfileTab";
 import {
   LayoutDashboard,
   GitBranch,
@@ -22,6 +26,10 @@ import {
   Play,
   Terminal,
   AlertTriangle,
+  Package,
+  Activity,
+  History,
+  UserCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -32,6 +40,10 @@ const NAV_ITEMS = [
   { key: "run", label: "Workflows", icon: GitBranch, shortcut: "g r" },
   { key: "activity", label: "Activity", icon: ScrollText, shortcut: "g a" },
   { key: "agents", label: "Agents", icon: Users, shortcut: "g g" },
+  { key: "skills", label: "Skills", icon: Package, shortcut: "g s" },
+  { key: "health", label: "Health", icon: Activity, shortcut: "g h" },
+  { key: "retro", label: "Retro", icon: History, shortcut: "g t" },
+  { key: "profile", label: "Profile", icon: UserCircle, shortcut: "g p" },
 ] as const;
 
 type ViewKey = (typeof NAV_ITEMS)[number]["key"];
@@ -367,6 +379,10 @@ export default function DashboardPage() {
           {view === "agents" && (
             <AgentsTab state={stateQ.data} agents={agentsQ.data} onRefetch={refetchAll} onOpenTerminal={openTerminal} />
           )}
+          {view === "skills" && <SkillsTab />}
+          {view === "health" && <HealthTab />}
+          {view === "retro" && <RetroTab />}
+          {view === "profile" && <AgentProfileTab agents={agentsQ.data?.agents ?? null} />}
         </main>
 
         {/* 시작 모달 */}
