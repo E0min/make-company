@@ -2,163 +2,113 @@
 
 # make-company
 
-### One command. Eight AI agents. Ship faster.
+### The self-improving multi-agent system built on Claude Code
 
-**한 마디로 기획 → 디자인 → 구현 → QA까지.**
+One command turns Claude Code into an 8-person AI team that plans, builds, tests, and learns from every task.
 
 ```bash
 claude -company
-> "할일 앱 만들어줘"
-# → PM이 기획 → Designer가 디자인 → Frontend가 구현 → QA가 검증
+> "Build a todo app"
+# CEO delegates -> PM writes PRD -> Designer + Backend work in parallel -> Frontend builds -> QA verifies
 ```
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-v2.1+-5e6ad2)](https://docs.anthropic.com/en/docs/claude-code)
 [![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Bash](https://img.shields.io/badge/Bash-3.x%2B-1f425f?logo=gnu-bash)](https://www.gnu.org/software/bash/)
+[![Version](https://img.shields.io/badge/version-2.1.0-blue)](https://github.com/E0min/make-company/releases)
 
 </div>
 
 ---
 
-## What is this?
+<p align="center">
+  <img src="docs/screenshots/overview.png" alt="make-company Dashboard" width="800" />
+</p>
 
-`make-company` turns your Claude Code into an **8-person AI team**.
+## Table of Contents
 
-Claude Code = one brilliant developer.
-make-company = that developer leading a full team of specialists.
+- [What is make-company?](#what-is-make-company)
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Dashboard](#dashboard)
+- [Two Modes](#two-modes)
+- [Agents](#agents)
+- [Intelligence System](#intelligence-system)
+- [Skills](#skills)
+- [Web Terminal](#web-terminal)
+- [Commands](#commands)
+- [Existing Project Migration](#existing-project-migration)
+- [Architecture](#architecture)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## What is make-company?
+
+Claude Code is one brilliant developer. `make-company` is that developer leading a full team of specialists.
 
 ```
 You: "Build a todo app"
 
-  CEO     → analyzes, delegates
-  PM      → writes PRD
-  Designer ─┐
-  Backend  ─┤ work in parallel
-  Frontend ← takes both outputs, builds
-  QA      → tests everything
+  CEO     -> analyzes, delegates
+  PM      -> writes PRD
+  Designer -+
+  Backend  -+ work in parallel
+  Frontend <- takes both outputs, builds
+  QA      -> tests everything
 ```
 
 Each agent runs as an independent `claude --agent` session in its own tmux window. Talk to any of them directly, or let the CEO orchestrate everything.
 
-### Why make-company? (기본 Claude Code와 뭐가 다른가)
+### Why make-company?
 
-Claude Code는 이미 훌륭한 AI 코딩 도구입니다. make-company는 그 위에 **조직**을 얹습니다.
-
-| | 기본 Claude Code | make-company |
+| | Claude Code | make-company |
 |---|---|---|
-| **역할** | 하나의 범용 AI | CEO, PM, Designer, FE, BE, QA, Marketing **7가지 전문 역할** |
-| **지시 방식** | 사용자가 매번 직접 지시 | "할일 앱 만들어" 한 마디 → **CEO가 알아서 팀 분배** |
-| **기획 → 구현** | 한 맥락에서 전부 처리 | PM이 PRD 작성 → Designer가 스펙 → **FE가 구현 → QA가 검증** |
-| **병렬 처리** | 순차 실행 | Designer + Backend **동시 호출**, 시간 절반 |
-| **품질 검증** | 사용자가 직접 리뷰 | **FE-QA / BE-QA가 자동 검증** 후 이슈 리포트 |
-| **누적 학습** | 대화 끝나면 리셋 | 에이전트별 **메모리가 누적** — 다음 대화에서도 프로젝트 이해 |
-| **워크플로우** | 없음 | YAML로 파이프라인 정의, **반복 실행** 가능 |
-| **모니터링** | 터미널 출력만 | **웹 대시보드** (실시간 SSE) + tmux 대시보드 |
-| **에이전트 커스텀** | 시스템 프롬프트 수정 | 에이전트 .md 편집, **AI 생성**, 색상, 글로벌/로컬 관리 |
-| **자기 보완** | 불가능 | QA 에이전트가 시스템 자체를 검증하고 **엔지니어가 수정** |
-
-요약하면:
-
-> **Claude Code** = 뛰어난 개발자 1명
-> **make-company** = 그 개발자가 이끄는 **8명짜리 전문 팀**
-
-```
-기본 Claude Code:
-  사용자 → Claude → 결과
-
-make-company:
-  사용자 → CEO(Claude) → PM → Designer ─┐
-                         → Backend  ─────┤→ Frontend → QA → 결과
-```
-
-### v1 → v2 변경점
-
-| | v1 (tmux 기반) | v2 (Agent tool 기반) |
-|---|---|---|
-| 에이전트 실행 | tmux 윈도우마다 독립 claude CLI | Claude Code 네이티브 Agent tool |
-| 통신 | 파일 기반 inbox/outbox + router.sh | Agent tool 직접 호출 + 결과 반환 |
-| 비용 | 에이전트 수 x 상시 실행 | 필요할 때만 spawn |
-| 안정성 | tmux send-keys, pane ID 이슈 | 네이티브 API, 안정적 |
-| 모니터링 | tmux + Next.js 대시보드 | tmux 대시보드 + **SSE 웹 대시보드** |
-| 워크플로우 | JSON DAG | **YAML 파이프라인** + CEO 자율 모드 |
+| **Roles** | One general-purpose AI | CEO, PM, Designer, FE, BE, QA, Marketing -- **7 specialist roles** |
+| **Command** | You direct every step | Say "build a todo app" -- **CEO delegates automatically** |
+| **Pipeline** | Single context does everything | PM writes PRD -> Designer specs -> **FE implements -> QA verifies** |
+| **Parallelism** | Sequential execution | Designer + Backend **run simultaneously** |
+| **Quality** | You review manually | **FE-QA + BE-QA auto-verify** and file bug reports |
+| **Learning** | Resets after each session | Agents **accumulate memory** across sessions |
+| **Workflows** | None | YAML pipelines with **dependency resolution** |
+| **Monitoring** | Terminal output only | **Web dashboard** (real-time SSE) + tmux + web terminal |
+| **Self-improvement** | Not possible | System detects bottlenecks and **evolves autonomously** |
 
 ---
 
-## Prerequisites (전제 조건)
+## Features
 
-### 필수
-
-| 도구 | 최소 버전 | 설치 방법 | 확인 명령 |
-|---|---|---|---|
-| **macOS** 또는 **Linux** | macOS 12+ / Ubuntu 20+ | — | `uname -s` |
-| **Bash** | 3.x+ | OS 내장 | `bash --version` |
-| **Python 3** | 3.8+ | OS 내장 또는 `brew install python3` | `python3 --version` |
-| **tmux** | 3.0+ | `brew install tmux` (macOS) / `sudo apt install tmux` (Linux) | `tmux -V` |
-| **Claude Code CLI** | 2.1+ | `npm install -g @anthropic-ai/claude-code` | `claude --version` |
-| **Node.js** | 18+ | Claude Code CLI 설치에 필요 | `node --version` |
-| **npm** | 8+ | Node.js와 함께 설치됨 | `npm --version` |
-| **Anthropic API 키** 또는 **Claude Pro/Max** | — | Claude Code 로그인 필요 | `claude` 실행 후 로그인 |
-
-### 선택
-
-| 도구 | 용도 | 설치 방법 |
-|---|---|---|
-| **Gemini CLI** | Gemini 에이전트 (외부 자문) | `npm install -g @anthropic-ai/gemini-cli` |
-| **Git** | 프로젝트 관리 | OS 내장 또는 `brew install git` |
-
-### 전제 조건 한 번에 설치 (macOS)
-
-```bash
-# Homebrew가 없으면 먼저 설치
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# 필수 도구 설치
-brew install python3 tmux node
-
-# Claude Code CLI 설치
-npm install -g @anthropic-ai/claude-code
-
-# 설치 확인
-python3 --version   # 3.8+
-tmux -V             # tmux 3.0+
-node --version      # v18+
-claude --version    # 2.1+
-```
-
-### 전제 조건 한 번에 설치 (Ubuntu/Debian)
-
-```bash
-sudo apt update && sudo apt install -y python3 tmux curl git
-
-# Node.js 18+ (NodeSource)
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# Claude Code CLI
-npm install -g @anthropic-ai/claude-code
-
-# Claude Code 로그인
-claude
-```
+- **8 Specialist Agents** -- CEO, PM, Designer, Frontend, Backend, FE-QA, BE-QA, Marketing
+- **Two Orchestration Modes** -- CEO autonomous mode (`/company run`) + YAML pipeline mode (`/company workflow`)
+- **Web Dashboard** -- Next.js + shadcn/ui with real-time monitoring, multi-project support
+- **Web Terminal** -- xterm.js v6 with direct keyboard input, full-width responsive, ANSI color support
+- **Agent Memory** -- Structured learnings, patterns, and self-assessment that persist across sessions
+- **Shared Knowledge** -- Cross-agent learning (what QA discovers informs the engineer next time)
+- **Performance Analytics** -- Agent scoring, workflow bottleneck detection, trend analysis
+- **Skill Management** -- 50+ skills browseable, per-agent assignment, usage tracking, personalization
+- **Self-Improvement Loop** -- Retrospectives generate action items that feed back into agent behavior
+- **Multi-Project** -- Discord-style project switching, run multiple companies simultaneously
+- **Zero Dependencies** -- Python stdlib server serves both API and static dashboard (no Node.js at runtime)
+- **Auto-Upgrade** -- gstack-style version checking across all projects
 
 ---
 
 ## Quick Start
 
-### 1. 클론 + 설치 (한 번만)
+### 1. Clone & Install
 
 ```bash
-# 클론
 git clone https://github.com/E0min/make-company.git ~/make-company
 
-# 에이전트 + 워크플로우 + 스킬 설치
+# Install agents, workflows, and skill
 mkdir -p ~/.claude/agents ~/.claude/workflows ~/.claude/skills/company
 cp ~/make-company/template/agents-v2/*.md ~/.claude/agents/
 cp ~/make-company/template/workflows/*.yml ~/.claude/workflows/
 cp ~/make-company/template/skill/skill.md ~/.claude/skills/company/
 
-# zsh에 런처 등록
+# Register the launcher
 cat >> ~/.zshrc << 'ZSHRC'
 export VC_TEMPLATE="$HOME/make-company"
 claude() {
@@ -172,21 +122,21 @@ ZSHRC
 source ~/.zshrc
 ```
 
-### 2. 회사 시작
+### 2. Start
 
 ```bash
 cd ~/your-project
 claude -company
 ```
 
-처음 실행하면 에이전트 선택 화면이 나타납니다:
+First run shows agent selection:
 
 ```
-🏢 Virtual Company v2
-프로젝트: my-project
+Virtual Company v2.1
+Project: my-project
 
-사용 가능한 에이전트:
-  1. CEO / Orchestrator (필수)
+Available agents:
+  1. CEO / Orchestrator (required)
   2. Product Manager
   3. UI/UX Designer
   4. Frontend Engineer
@@ -195,497 +145,407 @@ claude -company
   7. Backend QA
   8. Marketing Strategist
 
-활성화할 에이전트 번호를 선택하세요 (예: 1,2,4,5 또는 all):
+Select agents (e.g., 1,2,4,5 or all):
 ```
 
-선택하면 tmux 세션이 열립니다:
+### 3. Use
 
+**CEO mode** (window 0):
 ```
-┌─────────────────────────────────────────────────┐
-│ 0: claude              ← 메인 (CEO 모드)         │
-│ 1: Monitor             ← activity.log 실시간     │
-│ 2: PM                  ← claude --agent pm       │
-│ 3: Designer            ← claude --agent designer │
-│ 4: Frontend            ← claude --agent frontend │
-│ 5: Backend             ← claude --agent backend  │
-│ 6: FE-QA               ← claude --agent fe-qa   │
-│ 7: BE-QA               ← claude --agent be-qa   │
-│ 8: Marketing           ← claude --agent marketing│
-└─────────────────────────────────────────────────┘
+/company run Build a todo app with priorities and filters
 ```
 
-### 3. 사용법
-
-**방법 A: CEO 모드 (윈도우 0에서)**
+**Direct agent chat** (switch windows):
 ```
-/company run 할일 앱 만들어줘
-```
-CEO가 자동으로 PM → Designer → FE → QA 순서로 팀을 분배합니다.
-
-**방법 B: 에이전트한테 직접 말 걸기**
-```
-Ctrl+B → 4    (Frontend 윈도우로 이동)
-> 이 컴포넌트 반응형으로 바꿔줘
-
-Ctrl+B → 2    (PM 윈도우로 이동)
-> PRD에 비용 분석 섹션 추가해줘
-
-Ctrl+B → 0    (메인으로 돌아감)
+Ctrl+B -> 4    # Go to Frontend window
+> Make this component responsive
 ```
 
-**방법 C: YAML 워크플로우 실행**
+**YAML workflow**:
 ```
-/company workflow new-feature "검색 기능 추가"
+/company workflow new-feature "Add search functionality"
 ```
 
-### 조작법
+### Prerequisites
 
-| 키 | 동작 |
-|---|---|
-| `Ctrl+B → 0~8` | 윈도우 전환 |
-| `Ctrl+B → d` | detach (세션 유지, 터미널 복귀) |
-| `claude -company` | 다시 attach (기존 세션 재연결) |
-| `Ctrl+B → &` | 현재 윈도우 종료 |
+| Tool | Min Version | Install |
+|------|-------------|---------|
+| macOS / Linux | macOS 12+ / Ubuntu 20+ | -- |
+| Python 3 | 3.8+ | `brew install python3` |
+| tmux | 3.0+ | `brew install tmux` |
+| Claude Code CLI | 2.1+ | `npm install -g @anthropic-ai/claude-code` |
+| Node.js | 18+ | Required for Claude Code CLI |
 
 ---
 
-## Existing Project Migration (기존 프로젝트에 적용하기)
-
-이미 `.claude/agents/`에 커스텀 에이전트가 있는 프로젝트에도 바로 사용할 수 있습니다.
-
-### 자동 감지
-
-`/company setup`을 실행하면 기존 에이전트를 자동으로 감지합니다:
-
-```
-기존 프로젝트 에이전트 감지됨:
-  ✅ data-engineer.md      — v2 호환 (플레이스홀더 있음)
-  ⚠️  my-custom-agent.md   — 마이그레이션 필요 (플레이스홀더 없음)
-  ✅ devops.md             — v2 호환
-
-기존 에이전트를 v2 형식으로 업그레이드하시겠습니까? (y/n)
-```
-
-### v2 호환이란?
-
-에이전트 `.md` 파일에 다음 두 플레이스홀더가 있으면 v2 호환입니다:
-
-```markdown
-## 프로젝트 컨텍스트
-{{project_context}}
-
-## 누적 기억
-{{agent_memory}}
-```
-
-- `{{project_context}}` → 실행 시 config.json의 tech_stack으로 자동 치환
-- `{{agent_memory}}` → 실행 시 에이전트 메모리 파일 내용으로 자동 치환
-
-### 마이그레이션 (자동)
-
-`y`를 선택하면 기존 에이전트 파일에 **플레이스홀더만 추가**합니다. 기존 내용은 절대 삭제하지 않습니다.
-
-### 마이그레이션 (수동)
-
-직접 하려면 에이전트 `.md` 파일의 Role 설명 바로 뒤에 다음을 추가하면 됩니다:
-
-```markdown
-## 프로젝트 컨텍스트
-{{project_context}}
-
-## 누적 기억
-{{agent_memory}}
-```
-
-### 기존 에이전트 + 글로벌 에이전트 혼합
-
-setup 시 기존 에이전트는 그대로 유지하고, 글로벌 에이전트(CEO, PM, QA 등)를 **추가로** 선택할 수 있습니다. 이미 프로젝트에 있는 동명 에이전트는 덮어쓰지 않습니다.
-
-```
-글로벌 에이전트:
-  1. ceo — 오케스트레이터
-  2. product-manager (이미 설치됨)
-  3. frontend-engineer — 프론트엔드
-  ...
-
-추가할 번호를 선택하세요 (1,3,5 / all / skip):
-```
-
-결과적으로 프로젝트에는 **기존 커스텀 에이전트 + 선택한 글로벌 에이전트**가 함께 동작합니다.
-
----
-
-## Two Modes (두 가지 모드)
-
-### 멀티에이전트 모드 — `/company run <태스크>`
-
-메인 Claude가 **CEO 역할**을 수행하며 팀원을 자율적으로 호출합니다.
-
-```
-/company run "음악 추천 SaaS를 기획부터 구현까지"
-```
-
-흐름:
-```
-메인 Claude (CEO 모드)
-  ├→ PM에게 기획 요청 (Agent tool)
-  │   └→ PRD 반환
-  ├→ Designer + Backend 병렬 호출
-  │   ├→ 디자인 스펙 반환
-  │   └→ API 설계 반환
-  ├→ Frontend에게 구현 요청
-  │   └→ 코드 반환
-  └→ QA에게 검증 요청
-      └→ 이슈 리포트 반환
-```
-
-CEO가 상황에 따라 **동적으로** 판단합니다:
-- 신규 기능 → PM 먼저
-- UI 변경 → Designer 직접
-- 버그 → QA 먼저
-- 병렬 가능한 작업은 동시 호출
-
-### 서브에이전트 모드 — `/company workflow <name> [input]`
-
-YAML 파이프라인을 **정해진 순서대로** 실행합니다.
-
-```
-/company workflow new-feature "검색 기능 추가"
-```
-
-기본 워크플로우 4종:
-
-| 이름 | 흐름 |
-|---|---|
-| `new-feature` | CEO → PM → (Designer ∥ Backend) → Frontend → (FE-QA ∥ BE-QA) |
-| `bug-fix` | FE-QA 진단 → FE 수정 → FE-QA 검증 |
-| `design-only` | PM → Designer → Frontend |
-| `marketing-launch` | PM → (Marketing ∥ Designer) → CEO 검토 |
-
-커스텀 워크플로우는 `.claude/workflows/`에 YAML로 작성:
-
-```yaml
-name: 내 워크플로우
-description: PM → Designer → Frontend
-steps:
-  - id: spec
-    agent: product-manager
-    prompt: "{{input}} 에 대한 요구사항 정리"
-    output: spec
-  - id: design
-    agent: ui-ux-designer
-    prompt: "{{steps.spec.output}} 기반 디자인"
-    depends_on: [spec]
-    output: design
-  - id: code
-    agent: frontend-engineer
-    prompt: "{{steps.design.output}} 구현"
-    depends_on: [design]
-```
-
----
-
-## Agents (에이전트 8종)
-
-| ID | 역할 | 하는 일 |
-|---|---|---|
-| `ceo` | CEO / Orchestrator | 태스크 분석, 팀원 배정, 병렬/순차 결정, 최종 정리 |
-| `product-manager` | Product Manager | Discovery, PRD, Features, IA, User Flow |
-| `ui-ux-designer` | UI/UX Designer | 와이어프레임, 디자인 시스템, 컴포넌트 스펙 |
-| `frontend-engineer` | Frontend Engineer | 디자인 스펙 → 코드 구현 |
-| `backend-engineer` | Backend Engineer | API/DB 설계 및 구현 |
-| `fe-qa` | Frontend QA | UI/UX/접근성/반응형 검증 |
-| `be-qa` | Backend QA | API 계약/통합/성능/보안 검증 |
-| `marketing-strategist` | Marketing Strategist | 포지셔닝/메시징/채널 전략/카피 |
-
-에이전트는 `~/.claude/agents/`(글로벌) 또는 `.claude/agents/`(프로젝트)에 `.md` 파일로 정의됩니다. 각 에이전트는 프로젝트 컨텍스트와 누적 메모리를 런타임에 주입받습니다.
-
----
-
-## Dashboard (대시보드)
+## Dashboard
 
 ```
 /company dashboard
 ```
 
-자동으로 빈 포트를 찾아 웹 대시보드를 실행하고 브라우저를 엽니다.
+Auto-finds an open port and launches the web dashboard.
 
-```
-🌐 대시보드: http://localhost:7777
-```
+<p align="center">
+  <img src="docs/screenshots/overview.png" alt="Overview - Agent status grid with KPI cards" width="800" />
+</p>
 
-| 탭 | 기능 |
-|---|---|
-| **Overview** | KPI (총원/작업중/완료/대기), 에이전트 상태 그리드 + 터미널 버튼 |
-| **Workflows** | React Flow 시각적 워크플로우 빌더 + 자연어 생성 + 실행 |
-| **Activity** | SSE 실시간 활동 로그 |
-| **Agents** | 에이전트 CRUD, AI 생성, 색상 선택, 글로벌 가져오기 |
+### Tabs
 
-- **기술**: Next.js 16 + shadcn/ui + React Flow + xterm.js v6 (static export → Python 서버가 서빙)
-- **디자인**: Discord 스타일 프로젝트 바 + 사이드바 레이아웃, 다크 전용, Geist 폰트
-- **보안**: 인증 토큰, Path Traversal 방지, Request Body Limit, Agent ID 검증
-- **런타임**: `python3 server.py` 하나로 API + 대시보드 동시 서빙 (Node.js 불필요)
+| Tab | Description |
+|-----|-------------|
+| **Overview** | KPI cards (total/working/done/idle), agent status grid with terminal buttons |
+| **Workflows** | React Flow visual workflow builder + natural language generation + execution |
+| **Activity** | Real-time SSE activity log |
+| **Agents** | Agent CRUD, AI generation, color picker, global import |
+| **Skills** | 50+ skills browseable, search, workflow builder, per-agent customization |
+| **Health** | Bottleneck alerts, agent performance scores, workflow efficiency analysis |
+| **Retro** | Retrospective timeline, team shared knowledge base |
+| **Profile** | Per-agent memory viewer, performance metrics, tool profiles |
 
-### 웹 터미널
+<p align="center">
+  <img src="docs/screenshots/skills.png" alt="Skills - Manage 50+ installed skills" width="800" />
+</p>
 
-에이전트 카드의 터미널 버튼을 클릭하면 **하단에 실제 터미널이 열립니다**.
+### Multi-Project
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ Overview    1 working  2h 30m                            │
-│  ┌──────┐  ┌──────┐  ┌──────┐                           │
-│  │ BE   │  │ BQ   │  │ CEO  │  ...                      │
-│  │ done │  │ done │  │ work │                           │
-│  └──────┘  └──────┘  └──────┘                           │
-├─── >_ ceo ● ────────────────────────────── ⬜ ✕ ────────┤
-│ ● ㅎㅎㅎ 뭔가 심심하신가요? 작업 필요하시면 말씀해 주세요!    │
-│ > █                                                      │
-│ leeyoungmin@MacBookPro ~ main± Sonnet 4.6 [ctx: 20%]   │
-└─────────────────────────────────────────────────────────┘
-```
+One dashboard, multiple projects. Discord-style project bar on the left:
 
-- **실제 터미널처럼 동작**: 키보드 입력이 xterm.js → tmux send-keys로 직접 전달
-- **반응형 전폭**: 웹 터미널 열 때 tmux pane이 브라우저 너비에 맞게 자동 리사이즈
-- **스크롤백 유지**: 터미널 닫았다 다시 열어도 이전 기록 보존 (tmux capture-pane)
-- **최대화/최소화**: 헤더 버튼으로 70vh까지 확대 가능
-- **xterm.js v6**: Canvas 렌더러, ANSI 색상, Powerline 글리프 지원
+- Green dot = active (tmux session running)
+- Gray dot = offline
+- Start/Stop from the dashboard
+- Click to switch projects instantly
 
-### 멀티 프로젝트
-
-하나의 대시보드에서 **여러 프로젝트를 Discord 서버처럼** 전환합니다:
-
-```
-┌──┬────────────────────────────────────┐
-│LE│  Overview                          │
-│● │   8 agents, 1 working             │
-│  │                                    │
-│GR│   ┌────┐ ┌────┐ ┌────┐           │
-│  │   │ BE │ │ BQ │ │CEO │           │
-│  │   └────┘ └────┘ └────┘           │
-│+ │                                    │
-└──┴────────────────────────────────────┘
- ↑ 프로젝트 바 (좌측, 활성/비활성 표시)
-```
-
-- 좌측 프로젝트 바에서 클릭으로 전환 (초록 점 = 활성, 회색 = 비활성)
-- 비활성 프로젝트는 모든 에이전트 offline 표시 + Start 버튼
-- 대시보드에서 직접 Start/Stop 가능 (tmux 세션 생성/종료)
+<p align="center">
+  <img src="docs/screenshots/health.png" alt="Health - Performance analytics and bottleneck detection" width="800" />
+</p>
 
 ---
 
-## Agent Memory (에이전트 메모리)
+## Web Terminal
 
-각 에이전트는 작업 후 배운 점을 `.claude/company/agent-memory/{id}.md`에 누적합니다.
+Click any agent's terminal button to open a full terminal in the browser.
 
-```bash
-/company memory                    # 전체 메모리 미리보기
-/company memory frontend-engineer  # 특정 에이전트 메모리 조회
-```
+<p align="center">
+  <img src="docs/screenshots/terminal.png" alt="Web Terminal - Direct keyboard input with xterm.js" width="800" />
+</p>
 
-메모리는 다음 실행 시 에이전트 프롬프트에 자동 주입되어, 프로젝트에 대한 이해도가 점차 높아집니다.
-
----
-
-## Commands Summary
-
-| 명령 | 설명 |
-|---|---|
-| `claude -company` | tmux 세션 시작 (에이전트 선택 + claude + 에이전트 윈도우) |
-| `/company setup` | 에이전트 선택 + 프로젝트 설정 |
-| `/company run <태스크>` | 멀티에이전트 (CEO 자율 모드) |
-| `/company workflow <name> [input]` | 서브에이전트 (YAML 파이프라인) |
-| `/company dashboard` | 웹 대시보드 실행 (자동 포트 + 브라우저 오픈) |
-| `/company memory [agent-id]` | 에이전트 메모리 조회/수정 |
-| `/company retro` | 회고 목록 조회/분석 |
-| `/company upgrade` | 최신 버전으로 업그레이드 (git pull + 파일 복사) |
+- **Direct keyboard input** -- type directly into the terminal, just like a native terminal
+- **Full-width responsive** -- tmux pane auto-resizes to match browser width
+- **ANSI color support** -- Powerline glyphs, Claude Code TUI, everything renders correctly
+- **Scrollback preserved** -- close and reopen, your history is still there
+- **Canvas renderer** -- xterm.js v6 with hardware-accelerated Canvas addon
 
 ---
 
-## Project Structure (설치 후)
+## Two Modes
+
+### CEO Mode -- `/company run <task>`
+
+The main Claude acts as CEO and autonomously orchestrates the team.
 
 ```
-your-project/
-├── .claude/
-│   ├── agents/                    # 프로젝트 에이전트 (.md)
-│   │   ├── ceo.md
-│   │   ├── product-manager.md
-│   │   ├── frontend-engineer.md
-│   │   └── ...
-│   ├── workflows/                 # YAML 워크플로우
-│   │   ├── new-feature.yml
-│   │   ├── bug-fix.yml
-│   │   └── ...
-│   ├── company/
-│   │   ├── config.json            # 프로젝트 설정
-│   │   ├── activity.log           # 활동 로그
-│   │   ├── agent-memory/          # 에이전트별 누적 메모리
-│   │   ├── agent-output/          # 에이전트별 출력 로그
-│   │   ├── retrospectives/        # 자동 회고 JSON
-│   │   ├── dashboard/             # Python API 서버 (server.py)
-│   │   └── dashboard-next-v2/out/ # Next.js static export (대시보드 UI)
-│   └── skills/
-│       └── company/
-│           └── skill.md           # /company 스킬 정의
+/company run "Build a music recommendation SaaS from planning to implementation"
+```
+
+```
+Main Claude (CEO mode)
+  |-> PM: write PRD          (Agent tool)
+  |     -> PRD returned
+  |-> Designer + Backend     (parallel Agent tool calls)
+  |     |-> Design spec returned
+  |     |-> API design returned
+  |-> Frontend: implement    (receives both outputs)
+  |     -> Code returned
+  |-> QA: verify
+  |     -> Issue report returned
+```
+
+CEO decides dynamically:
+- New feature -> PM first
+- UI change -> Designer directly
+- Bug fix -> QA first
+- Independent tasks -> parallel dispatch
+
+### Workflow Mode -- `/company workflow <name> [input]`
+
+YAML pipelines execute in defined order with dependency resolution.
+
+```yaml
+name: new-feature
+steps:
+  - id: spec
+    agent: product-manager
+    prompt: "{{input}} requirements"
+  - id: design
+    agent: ui-ux-designer
+    prompt: "{{steps.spec.output}} based design"
+    depends_on: [spec]
+  - id: code
+    agent: frontend-engineer
+    prompt: "{{steps.design.output}} implement"
+    depends_on: [design]
+```
+
+Built-in workflows: `new-feature`, `bug-fix`, `design-only`, `marketing-launch`
+
+---
+
+## Agents
+
+| ID | Role | Responsibility |
+|----|------|----------------|
+| `ceo` | CEO / Orchestrator | Task analysis, team delegation, parallel/sequential decisions |
+| `product-manager` | Product Manager | Discovery, PRD, Features, IA, User Flow |
+| `ui-ux-designer` | UI/UX Designer | Wireframes, design system, component specs |
+| `frontend-engineer` | Frontend Engineer | Design spec -> code implementation |
+| `backend-engineer` | Backend Engineer | API/DB design and implementation |
+| `fe-qa` | Frontend QA | UI/UX/accessibility/responsive verification |
+| `be-qa` | Backend QA | API contract/integration/performance/security verification |
+| `marketing-strategist` | Marketing Strategist | Positioning/messaging/channel strategy/copy |
+
+Agents are defined as `.md` files in `~/.claude/agents/` (global) or `.claude/agents/` (project). Each agent receives project context and accumulated memory at runtime.
+
+---
+
+## Intelligence System
+
+<p align="center">
+  <img src="docs/screenshots/profile.png" alt="Agent Profile - Memory, performance, and tool management" width="800" />
+</p>
+
+### Agent Memory
+
+Each agent accumulates structured knowledge across sessions:
+
+```markdown
+## Learnings
+- [2026-04-09] Validate API contracts before handoff (confidence:8, source:retro-001)
+
+## Patterns
+- Next.js static export + Python server: same-origin API, no NEXT_PUBLIC needed
+
+## Self-Assessment
+- Avg quality: 7.2/10 (last 5 tasks)
+- Strengths: API contract compliance, type definitions
+- Weaknesses: Empty state handling (3/5 tasks)
+```
+
+### Shared Knowledge
+
+Cross-agent learning -- what FE-QA discovers is available to Frontend Engineer next time:
+
+```json
+{"author":"fe-qa", "type":"pitfall", "key":"xss-escape",
+ "insight":"Apply escapeHtml to all dynamic content",
+ "confidence":9, "relevant_agents":["frontend-engineer","backend-engineer"]}
+```
+
+### Performance Analytics
+
+- **Agent scoring**: tasks completed, quality trend, error rate, duration
+- **Workflow bottleneck detection**: identifies slowest steps, suggests parallelization
+- **Self-improvement loop**: retrospectives generate action items -> agent memory -> behavior improves
+
+### Tool Profiles
+
+Prompt-based per-agent tool management (since Claude Code MCP is global, not per-agent):
+
+```json
+{
+  "frontend-engineer": {
+    "preferred": ["Read", "Write", "Edit", "Bash", "chrome-devtools"],
+    "avoid": ["WebSearch"],
+    "instructions": "Use chrome-devtools MCP for browser testing"
+  }
+}
 ```
 
 ---
 
-## Repository Layout
+## Skills
+
+The dashboard includes a skill management hub with 50+ skills:
+
+- **My Skills** -- browse installed skills, search by name/category, view usage stats
+- **Find Skills** -- discover local and community skills (`clawhub search`)
+- **Skill Workflows** -- compose skills into visual pipelines
+- **Customization** -- per-project overrides, per-agent config, learning-based recommendations
+
+Skill usage is tracked per agent per task, enabling the system to recommend skills based on past success rates.
+
+---
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `claude -company` | Start tmux session (agent selection + all windows) |
+| `/company setup` | Agent selection + project configuration |
+| `/company run <task>` | Multi-agent (CEO autonomous mode) |
+| `/company workflow <name> [input]` | Sub-agent (YAML pipeline) |
+| `/company dashboard` | Web dashboard (auto port + browser open) |
+| `/company memory [agent-id]` | View/edit agent memory |
+| `/company retro` | Retrospective list/analysis |
+| `/company upgrade` | Upgrade to latest version |
+
+### Keyboard Shortcuts (tmux)
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+B -> 0~8` | Switch windows |
+| `Ctrl+B -> d` | Detach (session persists) |
+| `claude -company` | Re-attach |
+| `Ctrl+B -> &` | Close current window |
+
+---
+
+## Existing Project Migration
+
+Already have `.claude/agents/` with custom agents? `/company setup` auto-detects and offers v2 migration:
+
+```
+Existing agents detected:
+  data-engineer.md       -- v2 compatible (placeholders found)
+  my-custom-agent.md     -- migration needed (no placeholders)
+
+Upgrade existing agents to v2 format? (y/n)
+```
+
+Migration adds two placeholders without modifying existing content:
+
+```markdown
+## Project Context
+{{project_context}}
+
+## Accumulated Memory
+{{agent_memory}}
+```
+
+Custom agents and global agents work side by side.
+
+---
+
+## Architecture
 
 ```
 make-company/
-├── README.md
-├── LICENSE
-├── VERSION                        # 현재 버전 (자동 업데이트 체크용)
-├── LAUNCH.md                      # HN/X 론칭 초안
-├── vc-launch.sh                   # claude -company 런처
+├── vc-launch.sh                   # claude -company launcher
+├── VERSION                        # Version (auto-upgrade check)
 ├── bin/
-│   ├── vc-update-check            # 자동 버전 체크 (gstack 방식)
-│   └── vc-upgrade                 # 업그레이드 스크립트
+│   ├── vc-update-check            # gstack-style version check
+│   ├── vc-upgrade                 # Upgrade script
+│   └── vc-usage-monitor           # Context usage monitor
 ├── template/
-│   ├── agents-v2/                 # v2 에이전트 정의 8종
-│   ├── workflows/                 # YAML 워크플로우 4종
-│   ├── skill/                     # /company 스킬 정의
-│   ├── handoff-schemas.json       # 에이전트 간 핸드오프 스키마
-│   ├── dashboard/                 # Python API 서버
-│   │   └── server.py              # SSE + 터미널 API + Next.js static export 서빙
-│   ├── dashboard-next-v2/         # Next.js 대시보드 소스
-│   │   ├── app/                   # App Router (page.tsx)
-│   │   ├── components/dashboard/  # TerminalPanel, OverviewTab, WorkflowEditor 등
-│   │   └── lib/                   # api.ts, types.ts, format.ts
-│   └── ...
-├── CLAUDE.md
-└── DESIGN.md
+│   ├── agents-v2/                 # 8 agent definitions (.md)
+│   ├── workflows/                 # 4 YAML workflows
+│   ├── skill/                     # /company skill definition
+│   ├── dashboard/
+│   │   └── server.py              # Python stdlib API server (zero deps)
+│   └── dashboard-next-v2/         # Next.js dashboard source
+│       ├── app/                   # App Router
+│       ├── components/dashboard/  # 12+ tab components
+│       └── lib/                   # API client, types, utils
 ```
+
+### Data Files (per project)
+
+```
+.claude/company/
+├── config.json              # Project + agent configuration
+├── activity.log             # Human-readable activity log
+├── activity.jsonl           # Machine-readable structured events
+├── shared-knowledge.jsonl   # Cross-agent learnings
+├── agent-memory/            # Per-agent structured memory (.md)
+├── agent-output/            # Per-agent output logs
+├── retrospectives/          # Auto-generated retrospective JSONs
+├── analytics/               # Computed scores, usage, trends
+├── tool-profiles.json       # Per-agent tool preferences
+├── skill-overrides.json     # Per-project skill customization
+├── improvements/            # Self-improvement recommendations
+└── dashboard/               # Server + static dashboard (out/)
+```
+
+### Tech Stack
+
+- **Orchestration**: Claude Code Agent tool (native `subagent_type` mapping)
+- **Sessions**: tmux (one window per agent)
+- **Server**: Python 3 stdlib `ThreadingHTTPServer` (zero dependencies)
+- **Dashboard**: Next.js 16 + shadcn/ui + React Flow + xterm.js v6 (static export)
+- **Terminal**: xterm.js with Canvas addon, tmux pipe-pane + send-keys
+- **Data**: File-based (JSONL for append, JSON for snapshots, Markdown for memory)
 
 ---
 
 ## Troubleshooting
 
-### `claude` 명령을 찾을 수 없음
+<details>
+<summary><code>claude</code> command not found</summary>
+
 ```bash
 npm install -g @anthropic-ai/claude-code
-# 또는 npx로 실행:
-npx @anthropic-ai/claude-code
 ```
+</details>
 
-### `tmux` 명령을 찾을 수 없음
+<details>
+<summary><code>tmux</code> command not found</summary>
+
 ```bash
-# macOS
-brew install tmux
-# Ubuntu/Debian
-sudo apt install tmux
+brew install tmux          # macOS
+sudo apt install tmux      # Ubuntu/Debian
 ```
+</details>
 
-### `python3` 명령을 찾을 수 없음
+<details>
+<summary>Dashboard port conflict</summary>
+
 ```bash
-# macOS
-brew install python3
-# Ubuntu/Debian
-sudo apt install python3
+lsof -ti:7777 | xargs kill   # Kill existing process
+python3 .claude/company/dashboard/server.py 8080   # Use different port
 ```
+</details>
 
-### 대시보드 포트 충돌 (Address already in use)
-```bash
-# 기존 프로세스 확인 및 종료
-lsof -ti:7778 | xargs kill
-# 다른 포트로 시작
-python3 .claude/company/dashboard/server.py 8080
-```
+<details>
+<summary><code>/company</code> skill not recognized</summary>
 
-### `/company` 스킬이 인식되지 않음
 ```bash
-# 스킬 파일이 올바른 위치에 있는지 확인
 ls ~/.claude/skills/company/skill.md
-# 없으면 복사
+# If missing:
 mkdir -p ~/.claude/skills/company
 cp ~/make-company/template/skill/skill.md ~/.claude/skills/company/
 ```
+</details>
 
-### 에이전트가 응답하지 않음
-- Claude Code CLI 로그인 상태 확인: `claude` 실행
-- Anthropic API 키 또는 Claude Pro/Max 구독 확인
-- 네트워크 연결 확인
+<details>
+<summary>Agent not responding</summary>
 
----
-
-## Examples — Built with make-company
-
-### Example 1: "할일 앱 만들어줘" (15분)
-
-```
-/company run 할일 앱 만들어줘
-```
-
-```
-[00:00] CEO    → 태스크 분석, PM에게 기획 요청
-[01:30] PM     → PRD 작성 (CRUD + 우선순위 + 필터)
-[03:00] Designer + Backend 병렬 시작
-[05:00] Backend → API 설계 완료 (REST 5개 엔드포인트)
-[06:30] Designer → 디자인 스펙 완료 (3개 화면)
-[07:00] Frontend → 구현 시작 (디자인 + API 기반)
-[12:00] Frontend → 컴포넌트 8개 구현 완료
-[13:00] FE-QA  → 검증 (이슈 2건 발견)
-[14:00] Frontend → 이슈 수정
-[15:00] CEO    → 최종 정리, 완료
-```
-
-산출물: PRD, 디자인 스펙, API 설계, 프론트엔드 코드, QA 리포트
-
-### Example 2: 시스템 자기 보완 (20분)
-
-```
-/company run 이 시스템의 코드를 QA 테스트하고 버그를 수정해줘
-```
-
-```
-라운드 1: FE-QA + BE-QA 병렬 → 34건 발견
-          Frontend + Backend 병렬 → 14건 수정 (Critical/High)
-
-라운드 2: 재검증 → 13/14 PASS + 신규 11건 발견
-          수정 → 6건 추가 수정
-
-라운드 3: 최종 검증 → 6/6 PASS + 9건 추가 수정
-
-총 수정: 29건 (보안 7, 기능 9, 성능 5, 안정성 5, UX 3)
-```
-
-### Example 3: 에이전트 직접 대화
-
-```bash
-Ctrl+B → 4   # Frontend 윈도우로 이동
-
-> 이 컴포넌트에 다크모드 지원 추가해줘
-# Frontend 에이전트가 프로젝트 컨텍스트를 알고 있는 상태에서 바로 작업
-
-Ctrl+B → 2   # PM 윈도우로 이동
-
-> PRD에 경쟁사 분석 섹션 추가해줘
-# PM이 독립적으로 작업
-```
+- Verify Claude Code login: run `claude`
+- Check Anthropic API key or Claude Pro/Max subscription
+- Check network connection
+</details>
 
 ---
 
 ## Contributing
 
-PR 환영합니다.
+PRs welcome.
 
-- **새 에이전트**: `template/agents-v2/`에 `.md` 파일 추가
-- **새 워크플로우**: `template/workflows/`에 `.yml` 파일 추가
-- **대시보드 UI**: [DESIGN.md](DESIGN.md) 참고 — Linear 스타일, 다크 우선, 단일 보라 액센트
+- **New agents**: Add `.md` files to `template/agents-v2/`
+- **New workflows**: Add `.yml` files to `template/workflows/`
+- **Dashboard UI**: See [DESIGN.md](DESIGN.md) -- dark-first, single indigo accent, Geist font
 
 ---
 
 ## License
 
-MIT — [LICENSE](LICENSE) 참고.
+MIT -- see [LICENSE](LICENSE).
 
 ---
 
 <div align="center">
 
-**v1: Made with tmux send-keys**
-**v2: Made with Claude Code Agent tool**
-**v2.1: Web terminal + multi-project dashboard**
+**v1**: tmux send-keys | **v2**: Claude Code Agent tool | **v2.1**: Intelligence system + web terminal
+
+Built with Claude Code.
 
 </div>
