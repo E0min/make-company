@@ -81,3 +81,31 @@ Always read `DESIGN.md` before any visual/UI work on `template/dashboard/`. Toke
 - Requires: `tmux`, `claude` CLI, `gemini` CLI (optional), `python3`
 - macOS or Linux
 - Documentation and UI strings are in Korean
+
+## Agent Common Rules (모든 에이전트 서브프로세스 자동 적용)
+
+### 체크포인트 (필수)
+각 단계 완료 후 `[CHECKPOINT:step]` 형식으로 보고. 마지막에 `품질자가평가: N/10` 포함.
+- engineer: `[CHECKPOINT:analyze]` → `plan` → `implement` → `verify` → `complete` (품질기준: 7)
+- qa: `[CHECKPOINT:scope]` → `test` → `report` → `complete` (품질기준: 6)
+- planner: `[CHECKPOINT:research]` → `draft` → `review` → `complete` (품질기준: 6)
+- creative: `[CHECKPOINT:research]` → `draft` → `iterate` → `complete` (품질기준: 5)
+
+### 스킬 사용 추적 (필수)
+- 스킬 사용 시: `[SKILL_USED:스킬명]`
+- 스킬 완료 시: `[SKILL_DONE:스킬명]`
+- 스킬 파이프라인이 지정되면 순서를 건너뛸 수 없음
+
+### 커밋 태그 (필수)
+git commit 시 메시지에 `[agent:에이전트-id]` 태그 포함.
+예: `git commit -m "[agent:frontend-engineer] feat: 로그인 폼 구현"`
+
+### 코드 작성 규칙
+- Read/Write/Edit 도구로 실제 파일 수정. 가짜 코드/예시 금지.
+- 기존 파일 수정 우선, 새 파일은 최소화.
+- 변경 파일 목록을 반드시 명시.
+- 결과 위주 응답. "해보겠습니다" 대신 "3 파일 수정 완료".
+
+### 스킬 오버라이드
+`.claude/company/skill-overrides.json`에 프로젝트별 스킬 설정이 있으면 따를 것.
+원본 스킬 파일은 절대 수정하지 않음.
