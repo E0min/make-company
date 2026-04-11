@@ -65,6 +65,47 @@ except:
   fi
 fi
 
+# ━━━ 1b. Agent tool 완료 시 체크포인트 검증 ━━━
+if [ "$TOOL_NAME" = "Agent" ] && [ "$HAS_OUTPUT" = "yes" ]; then
+  # 에이전트 출력에서 CHECKPOINT 패턴 파싱
+  OUTPUT_TEXT=$(echo "$INPUT" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    out = str(d.get('tool_output', ''))[:5000]
+    print(out)
+except:
+    print('')
+" 2>/dev/null || echo "")
+
+  if [ -n "$OUTPUT_TEXT" ]; then
+    CHECKPOINTS=$(echo "$OUTPUT_TEXT" | grep -o '\[CHECKPOINT:[a-z]*\]' | sort -u | tr '\n' ',' | sed 's/,$//')
+    EXPECTED="[CHECKPOINT:analyze],[CHECKPOINT:complete],[CHECKPOINT:implement],[CHECKPOINT:plan],[CHECKPOINT:verify]"
+
+    if [ -n "$CHECKPOINTS" ]; then
+      # 체크포인트가 있으면 누락 검사
+      MISSING=""
+      for cp in analyze plan implement verify complete; do
+        if ! echo "$CHECKPOINTS" | grep -q "$cp"; then
+          MISSING="${MISSING}${cp}, "
+        fi
+      done
+
+      if [ -n "$MISSING" ]; then
+        echo "[하네스] 에이전트 출력에 누락된 체크포인트: ${MISSING%,*}— 해당 스텝을 다시 요청하세요."
+        echo "{\"event\":\"checkpoint_missing\",\"agent\":\"$AGENT_TYPE\",\"missing\":\"${MISSING%,*}\",\"ts\":\"$TS\",\"source\":\"harness\"}" >> "$JSONL_FILE" 2>/dev/null
+      fi
+
+      # 품질 점수 추출
+      QUALITY=$(echo "$OUTPUT_TEXT" | grep -o '품질자가평가: [0-9]*/10' | grep -o '[0-9]*' | head -1)
+      if [ -n "$QUALITY" ] && [ "$QUALITY" -lt 6 ] 2>/dev/null; then
+        echo "[하네스] 에이전트 품질 자가평가 ${QUALITY}/10 — 기준 미달(6). 재작업을 요청하세요."
+        echo "{\"event\":\"quality_gate_fail\",\"agent\":\"$AGENT_TYPE\",\"quality\":$QUALITY,\"ts\":\"$TS\",\"source\":\"harness\"}" >> "$JSONL_FILE" 2>/dev/null
+      fi
+    fi
+  fi
+fi
+
 # ━━━ 2. Write/Edit 후 자동 체크포인트 ━━━
 if [ "$TOOL_NAME" = "Write" ] || [ "$TOOL_NAME" = "Edit" ]; then
   # 수정된 파일 경로 추출

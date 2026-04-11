@@ -391,7 +391,76 @@ fi
    ## 최근 개선 사항
    - [2026-04-11] 빈 상태(empty) 처리를 매번 자가 점검할 것
    ```
-7. 구체적 태스크 지시
+7. **구조화된 워크플로우 강제** (하네스 핵심):
+   모든 에이전트 프롬프트의 마지막에 다음 블록을 반드시 추가:
+   ```
+   ## 필수 워크플로우 (반드시 이 순서대로 실행하세요)
+
+   Step 1 — 현재 상태 파악:
+   관련 파일을 Read로 읽고 현재 상태를 파악하세요.
+   완료 후 반드시 이 형식으로 출력:
+   [CHECKPOINT:analyze] 파악한 파일 N개, 현재 상태 요약
+
+   Step 2 — 계획:
+   구체적으로 무엇을 변경할지 계획하세요. 코드 작성 전에 계획을 먼저 출력하세요.
+   [CHECKPOINT:plan] 변경할 파일: file1, file2 | 변경 내용: 요약
+
+   Step 3 — 실행:
+   계획대로 구현하세요.
+   [CHECKPOINT:implement] 수정한 파일 N개
+
+   Step 4 — 자기 검증:
+   변경 사항이 올바른지 확인하세요. (빌드 확인, 에러 체크, 빈 상태 처리 등)
+   [CHECKPOINT:verify] 검증 결과: PASS 또는 이슈 목록
+
+   Step 5 — 최종 보고:
+   [CHECKPOINT:complete] 품질자가평가: N/10 | 요약: 한 줄 설명
+   ```
+   **CEO는 에이전트 출력에서 `[CHECKPOINT:...]` 패턴을 파싱하여 모든 스텝이 완료되었는지 확인한다.**
+   누락된 체크포인트가 있으면 → 해당 스텝을 다시 요청한다.
+
+8. 구체적 태스크 지시
+
+---
+
+## 경계 하네스: 호출 후 검증 (CEO가 실행)
+
+에이전트 출력을 받은 후, CEO는 **반드시** 다음 검증을 수행한다:
+
+### a) 체크포인트 완전성 검증
+에이전트 출력에서 `[CHECKPOINT:analyze]`, `[CHECKPOINT:plan]`, `[CHECKPOINT:implement]`, `[CHECKPOINT:verify]`, `[CHECKPOINT:complete]` 5개가 모두 있는지 확인.
+
+누락 시:
+```
+에이전트에게 재요청: "Step N이 누락되었습니다. 해당 스텝을 실행하고 [CHECKPOINT:step_name] 형식으로 보고하세요."
+```
+
+### b) 품질 게이트
+`[CHECKPOINT:complete]` 에서 `품질자가평가`가 6 미만이면:
+- 에이전트에게 재작업 요청: "품질 점수가 N/10으로 낮습니다. 개선 후 다시 보고하세요."
+
+### c) 출력 검증 API 호출
+서버의 `POST harness/validate`를 호출하여 출력 품질을 기계적으로 검증:
+- 너무 짧은 출력 → 재작업
+- 에러 패턴 감지 → 수정 요청
+- TODO 과다 → 미해결 작업 처리 요청
+
+### d) 멀티콜 분해 (복잡한 태스크)
+태스크가 복잡하면 한 번에 전부 시키지 말고, **스텝별로 나눠 호출**:
+
+```
+Call 1: Agent(frontend-engineer, "Step 1-2만: 분석 + 계획 수립. [CHECKPOINT:analyze]와 [CHECKPOINT:plan]을 출력하세요.")
+  → CEO가 계획을 검토
+  → 문제 있으면 수정 요청
+
+Call 2: Agent(frontend-engineer, "이 계획대로 구현하세요: {plan}. [CHECKPOINT:implement]와 [CHECKPOINT:verify]를 출력하세요.")
+  → CEO가 결과 검증
+  → Bash로 빌드/테스트 실행
+
+Call 3 (필요 시): Agent(frontend-engineer, "이 이슈를 수정하세요: {issues}")
+```
+
+이 패턴은 에이전트 내부를 통제할 수 없는 한계를 **호출 경계에서의 반복 검증**으로 보완한다.
 
 ---
 
