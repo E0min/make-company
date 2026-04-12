@@ -21,6 +21,9 @@ import {
   Rows3,
   GitBranch,
   Network,
+  Download,
+  Ticket,
+  Play,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LiveFlowGraph } from "./LiveFlowGraph";
@@ -116,10 +119,32 @@ export function OverviewTab({ state, agents, activityEntries, onOpenTerminal, pr
       )}
 
       {/* 그리드 / 팀별 뷰 */}
-      {viewMode !== "flow" && agentStatuses.length === 0 ? (
-        <Card>
-          <CardContent className="p-8 text-center text-sm text-muted-foreground">
-            활성 에이전트가 없습니다. Agents 탭에서 에이전트를 추가하세요.
+      {viewMode !== "flow" && viewMode !== "org" && agentStatuses.length === 0 ? (
+        <Card className="border-dashed">
+          <CardContent className="p-8 space-y-6">
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-semibold">시작 가이드</h3>
+              <p className="text-sm text-muted-foreground">4단계로 Virtual Company를 시작하세요</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {([
+                { step: 1, icon: <Users className="size-5 text-violet-400" />, title: "팀 만들기", desc: "Agents 탭에서 팀을 구성하세요" },
+                { step: 2, icon: <Download className="size-5 text-emerald-400" />, title: "에이전트 추가", desc: "Import Global로 에이전트를 추가하세요" },
+                { step: 3, icon: <Ticket className="size-5 text-amber-400" />, title: "첫 티켓 생성", desc: "Tickets 탭에서 첫 번째 티켓을 만드세요" },
+                { step: 4, icon: <Play className="size-5 text-indigo-400" />, title: "태스크 시작", desc: "kickoff.sh로 태스크를 실행하세요" },
+              ] as const).map((item) => (
+                <div key={item.step} className="flex flex-col items-center text-center p-4 rounded-lg border border-border/50 bg-muted/10 space-y-2">
+                  <div className="flex items-center justify-center size-10 rounded-full border border-border bg-muted/30">
+                    {item.icon}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-mono text-muted-foreground">{item.step}.</span>
+                    <span className="text-sm font-semibold">{item.title}</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">{item.desc}</p>
+                </div>
+              ))}
+            </div>
           </CardContent>
         </Card>
       ) : viewMode !== "flow" && teamGroups ? (

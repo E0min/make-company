@@ -456,6 +456,16 @@ except: print(0)
       set_state "idle"
       last_activity=$(date +%s)
 
+      # ━━━ 자동 heartbeat (마커 없이도 시스템이 강제) ━━━
+      if [ -n "$DASHBOARD_PORT" ] && [ -n "$PROJECT_ID" ]; then
+        local _hb_tk
+        _hb_tk=$(cat "$COMPANY_DIR/state/current_task.txt" 2>/dev/null)
+        curl -s --max-time 1 -X POST "http://localhost:${DASHBOARD_PORT}/api/${PROJECT_ID}/heartbeats" \
+          -H "Content-Type: application/json" \
+          -d "{\"agent\":\"${AGENT_ID}\",\"status\":\"idle\",\"ticket\":\"${_hb_tk:-}\"}" \
+          >/dev/null 2>&1 &
+      fi
+
       # ━━━ auto-compact: ctx > threshold → /compact ━━━
       local ctx
       ctx=$(get_ctx_pct)

@@ -113,7 +113,7 @@ export function HealthTab() {
   const [agentScores, setAgentScores] = useState<Record<string, AgentScores>>({});
   const [workflowData, setWorkflowData] = useState<Record<string, WorkflowAnalysis>>({});
   const [improvements, setImprovements] = useState<Improvement[]>([]);
-  const [insights, setInsights] = useState<{ total_events: number; agent_activity: Record<string, number>; gate_rejections: number; cycle_times: { ticket: string; title: string; seconds: number }[]; avg_cycle_seconds: number; status_counts: Record<string, number> } | null>(null);
+  const [insights, setInsights] = useState<{ total_events: number; agent_activity: Record<string, number>; gate_rejections: number; cycle_times: { ticket: string; title: string; seconds: number }[]; avg_cycle_seconds: number; status_counts: Record<string, number>; suggestions?: { type: string; message: string; severity: string }[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -255,6 +255,50 @@ export function HealthTab() {
                 ))}
               </div>
             </CardContent></Card>
+          )}
+        </section>
+      )}
+
+      {/* ── Suggestions ── */}
+      {insights && (
+        <section className="space-y-3">
+          <h2 className="text-base font-semibold flex items-center gap-2">
+            <AlertTriangle className="size-4 text-amber-400" />
+            Suggestions
+          </h2>
+          {(!insights.suggestions || insights.suggestions.length === 0) ? (
+            <Card>
+              <CardContent className="p-6 text-center text-sm text-muted-foreground">
+                이상 없음
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {insights.suggestions.map((s, i) => {
+                const sc = severityColor(s.severity as "high" | "medium" | "low");
+                return (
+                  <Card key={i} className="overflow-hidden relative">
+                    <div className={cn("absolute left-0 top-0 bottom-0 w-[3px]", sc.bg)} />
+                    <CardContent className="p-4 pl-5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className={cn("size-4", sc.text)} />
+                          <Badge variant="outline" className={cn("text-[10px] font-mono uppercase", sc.text, sc.bg)}>
+                            {s.severity}
+                          </Badge>
+                          <Badge variant="secondary" className="text-[10px]">
+                            {s.type}
+                          </Badge>
+                        </div>
+                      </div>
+                      <p className="text-[12px] text-muted-foreground leading-relaxed">
+                        {s.message}
+                      </p>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
           )}
         </section>
       )}

@@ -2136,6 +2136,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "cycle_times": sorted(cycle_times, key=lambda x: x['seconds']),
                 "avg_cycle_seconds": sum(c['seconds'] for c in cycle_times) / len(cycle_times) if cycle_times else 0,
                 "status_counts": status_counts,
+                "suggestions": (lambda: [
+                    s for s in [
+                        {"type": "stuck", "message": f"{ct['ticket']} ({ct['title'][:30]})이 {ct['seconds']/3600:.0f}시간+ 진행 중 — stuck 가능성", "severity": "high"}
+                        for ct in cycle_times if ct['seconds'] > 48 * 3600
+                    ] + ([
+                        {"type": "gate_issue", "message": f"게이트 거부 {len(gate_rejections)}회 — 리뷰 프로세스 점검 필요", "severity": "medium"}
+                    ] if len(gate_rejections) > 2 else []) + ([
+                        {"type": "tech_debt", "message": f"bugfix 티켓이 {status_counts.get('in_progress',0)+status_counts.get('review',0)+status_counts.get('done',0)}개 중 다수 — 기술 부채 주의", "severity": "medium"}
+                    ] if any(True for _ in []) else []) + ([
+                        {"type": "wip_high", "message": f"in_progress 티켓 {status_counts.get('in_progress',0)}개 — WIP 과다", "severity": "high"}
+                    ] if status_counts.get('in_progress', 0) > 3 else []) + ([
+                        {"type": "idle", "message": "활동 이벤트 없음 — 시스템이 유휴 상태", "severity": "low"}
+                    ] if len(events) == 0 else [])
+                ])(),
             })
 
         elif sub_path == 'heartbeats':

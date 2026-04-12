@@ -15,7 +15,7 @@ import {
 import {
   Plus, X, Loader2, ChevronRight, Clock, AlertCircle,
   Circle, CheckCircle2, Eye, MessageSquare, Tag,
-  ArrowUp, ArrowDown, Minus, LayoutGrid, List,
+  ArrowUp, ArrowDown, Minus, LayoutGrid, List, Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -72,6 +72,7 @@ export function TicketsTab({ state, agents }: Props) {
   const [detailTicket, setDetailTicket] = useState<Ticket | null>(null);
   const [viewMode, setViewMode] = useState<"board" | "list">("board");
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
   const teams = state?.teams ?? {};
   const agentList = agents?.agents ?? [];
@@ -88,11 +89,24 @@ export function TicketsTab({ state, agents }: Props) {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // 검색 필터링
+  const filteredTickets = search.trim()
+    ? tickets.filter((t) => {
+        const q = search.toLowerCase();
+        return (
+          t.title.toLowerCase().includes(q) ||
+          t.id.toLowerCase().includes(q) ||
+          t.labels.some((l) => l.toLowerCase().includes(q)) ||
+          (t.assignee?.toLowerCase().includes(q) ?? false)
+        );
+      })
+    : tickets;
+
   // 상태별 그룹핑
   const grouped: Record<TicketStatus, Ticket[]> = {
     backlog: [], todo: [], in_progress: [], review: [], done: [],
   };
-  for (const t of tickets) {
+  for (const t of filteredTickets) {
     (grouped[t.status] ??= []).push(t);
   }
 
@@ -138,7 +152,16 @@ export function TicketsTab({ state, agents }: Props) {
           <h2 className="text-base font-semibold">Tickets</h2>
           <Badge variant="secondary" className="text-[10px]">{tickets.length}</Badge>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search tickets..."
+              className="h-7 w-48 pl-7 text-xs"
+            />
+          </div>
           <div className="flex border border-border rounded-md">
             <Button variant={viewMode === "board" ? "secondary" : "ghost"} size="sm" className="rounded-r-none h-7" onClick={() => setViewMode("board")}>
               <LayoutGrid className="size-3" />
@@ -205,9 +228,9 @@ export function TicketsTab({ state, agents }: Props) {
               </tr>
             </thead>
             <tbody>
-              {tickets.length === 0 ? (
-                <tr><td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">티켓이 없습니다</td></tr>
-              ) : tickets.map((t) => {
+              {filteredTickets.length === 0 ? (
+                <tr><td colSpan={7} className="px-3 py-8 text-center text-muted-foreground">{search ? "검색 결과가 없습니다" : "티켓이 없습니다"}</td></tr>
+              ) : filteredTickets.map((t) => {
                 const p = PRIORITY_STYLE[t.priority];
                 return (
                   <tr key={t.id} className="border-b border-border last:border-0 hover:bg-muted/20 cursor-pointer" onClick={() => setDetailTicket(t)}>
@@ -340,6 +363,11 @@ function TicketCard({
           )}
           {ticket.acceptance_criteria.length > 0 && (
             <span className="flex items-center gap-0.5"><CheckCircle2 className="size-2.5" />{ticket.acceptance_criteria.length}</span>
+          )}
+          {ticket.children && ticket.children.length > 0 && (
+            <span className="flex items-center gap-0.5 text-indigo-400">
+              <ChevronRight className="size-2.5" />{ticket.children.length} subtasks
+            </span>
           )}
         </div>
       </CardContent>

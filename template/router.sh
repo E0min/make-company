@@ -248,6 +248,8 @@ except: print('')
         printf '\n[TEAM-MSG from:%s time:%s]\n%s\n' "$sender" "$ts" "$content" >> "$_target"
         release_lock "$_target"
         log "  $sender -> @$recipient"
+        # SSE 실시간 이벤트 기록 (activity.jsonl)
+        echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"event\":\"message_routed\",\"agent\":\"$sender\",\"data\":{\"to\":\"$recipient\"}}" >> "$COMPANY_DIR/activity.jsonl" 2>/dev/null
         # 태스크 status 갱신: → routed (current_task.txt 기반)
         _current_task=$(cat "$COMPANY_DIR/state/current_task.txt" 2>/dev/null)
         _task_file="$COMPANY_DIR/state/tasks/${_current_task}.json"
