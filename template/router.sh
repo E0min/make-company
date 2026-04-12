@@ -168,6 +168,58 @@ with open(sys.argv[1], 'w') as f:
     fi
     # 유효한 에이전트인지 확인
     if echo "$AGENTS" | tr ' ' '\n' | grep -qx "$recipient"; then
+      # ━━━ Reporting 강제: 보고선 위반 시 상위자에게 에스컬레이션 ━━━
+      if ! echo "$content" | grep -qE '\[CRITIC-(REVIEW|RESPONSE)|ESCALATED'; then
+        _reporting_action=$(python3 -c "
+import json, sys
+try:
+    c = json.load(open(sys.argv[1]))
+    reporting = c.get('reporting', {})
+    sender = sys.argv[2]
+    recipient = sys.argv[3]
+    s_info = reporting.get(sender, {})
+    r_info = reporting.get(recipient, {})
+    # 허용: sender가 recipient의 상위자 (approves에 포함)
+    if recipient in s_info.get('approves', []):
+        print('allow')
+    # 허용: sender가 recipient에게 보고 (reports_to)
+    elif s_info.get('reports_to') == recipient:
+        print('allow')
+    # 허용: 같은 상위자 (같은 팀 동료)
+    elif s_info.get('reports_to') and s_info.get('reports_to') == r_info.get('reports_to'):
+        print('allow')
+    # 허용: recipient가 sender의 상위자
+    elif r_info.get('approves') and sender in r_info.get('approves', []):
+        print('allow')
+    # 허용: reporting 설정 없음 (자유 라우팅)
+    elif not reporting:
+        print('allow')
+    # 허용: sender 또는 recipient가 reporting에 없음
+    elif sender not in reporting or recipient not in reporting:
+        print('allow')
+    else:
+        # 에스컬레이션: sender의 상위자에게 위임
+        boss = s_info.get('reports_to', '')
+        print(f'escalate:{boss}' if boss else 'allow')
+except:
+    print('allow')
+" "$CONFIG" "$sender" "$recipient" 2>/dev/null || echo "allow")
+
+        if echo "$_reporting_action" | grep -q '^escalate:'; then
+          _escalate_to=$(echo "$_reporting_action" | sed 's/escalate://')
+          if [ -n "$_escalate_to" ] && echo "$AGENTS" | tr ' ' '\n' | grep -qx "$_escalate_to"; then
+            _etarget="$INBOX_DIR/${_escalate_to}.md"
+            if acquire_lock "$_etarget"; then
+              printf '\n[ESCALATED from:%s for:%s time:%s reason:reporting_violation]\n%s에게 보내려는 메시지를 검토해주세요:\n%s\n' \
+                "$sender" "$recipient" "$ts" "$recipient" "$content" >> "$_etarget"
+              release_lock "$_etarget"
+              log "  ESCALATED: $sender→@$recipient 보고선 위반 → 상위 @$_escalate_to"
+              continue
+            fi
+          fi
+        fi
+      fi
+
       # ━━━ Critic Loop: config 매핑이 있으면 1차 검증 ━━━
       # CRITIC-REVIEW/RESPONSE 메시지는 재귀 방지로 critic 안 거침
       if ! echo "$content" | grep -qE '\[CRITIC-(REVIEW|RESPONSE)'; then

@@ -57,8 +57,44 @@ except: print('')
     echo "[하네스 경고] 파괴적 명령 감지: $CMD"
   fi
 
-  # git commit 감지 → 자동 검증
+  # git commit 감지 → 태그 자동 추가 + 자동 검증
   if echo "$CMD" | grep -qE 'git commit'; then
+    # ━━━ 커밋 태그 자동 추가 ━━━
+    _commit_msg=$(git log -1 --format=%s 2>/dev/null || echo "")
+    if [ -n "$_commit_msg" ]; then
+      _needs_amend=false
+      _new_msg="$_commit_msg"
+
+      # [agent:] 태그 없으면 추가
+      if ! echo "$_commit_msg" | grep -q '\[agent:'; then
+        _agent_id="${CLAUDE_AGENT_ID:-${AGENT_ID:-unknown}}"
+        _new_msg="[agent:${_agent_id}] $_new_msg"
+        _needs_amend=true
+      fi
+
+      # [ticket:] 태그 없으면 현재 진행 중인 티켓에서 추가
+      if ! echo "$_commit_msg" | grep -q '\[ticket:'; then
+        _dash_port=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('dashboard_port',7777))" "$COMPANY_DIR/config.json" 2>/dev/null || echo 7777)
+        _proj_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('project',''))" "$COMPANY_DIR/config.json" 2>/dev/null)
+        _current_ticket=$(curl -s --max-time 1 "http://localhost:${_dash_port}/api/${_proj_id}/tickets?status=in_progress" 2>/dev/null | python3 -c "
+import sys,json
+try:
+    ts = json.load(sys.stdin).get('tickets',[])
+    if ts: print(ts[0]['id'])
+    else: print('')
+except: print('')
+" 2>/dev/null)
+        if [ -n "$_current_ticket" ]; then
+          _new_msg="[ticket:${_current_ticket}] $_new_msg"
+          _needs_amend=true
+        fi
+      fi
+
+      if [ "$_needs_amend" = true ]; then
+        git commit --amend -m "$_new_msg" --no-verify 2>/dev/null
+        echo "[하네스] 커밋 태그 자동 추가: $_new_msg"
+      fi
+    fi
     _av_enabled=$(python3 -c "
 import json, sys
 try:

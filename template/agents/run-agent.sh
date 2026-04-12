@@ -173,6 +173,30 @@ watcher() {
       local skills_hint
       skills_hint=$(bash "$COMPANY_DIR/scripts/suggest-skills.sh" "$AGENT_ID" "$msg" 2>/dev/null)
 
+      # 티켓 기반 필수 스킬 주입 (step_skills)
+      local step_skills_hint=""
+      if echo "$msg" | grep -q '\[TICKET:'; then
+        local _msg_tk_id
+        _msg_tk_id=$(echo "$msg" | grep -oE '\[TICKET:[A-Z]+-[0-9]+' | head -1 | sed 's/\[TICKET://')
+        if [ -n "$_msg_tk_id" ] && [ -n "$DASHBOARD_PORT" ] && [ -n "$PROJECT_ID" ]; then
+          step_skills_hint=$(python3 -c "
+import json, sys, urllib.request
+try:
+    config = json.load(open(sys.argv[1]))
+    step_skills = config.get('step_skills', {})
+    url = f'http://localhost:{sys.argv[2]}/api/{sys.argv[3]}/tickets/{sys.argv[4]}'
+    with urllib.request.urlopen(url, timeout=1) as r:
+        ticket = json.loads(r.read())
+    ttype = ticket.get('type', 'feature')
+    status = ticket.get('status', '')
+    skills = step_skills.get(ttype, {}).get(status, [])
+    if skills:
+        print('[필수 스킬: ' + ', '.join('/' + s for s in skills) + ']')
+except: pass
+" "$COMPANY_DIR/config.json" "$DASHBOARD_PORT" "$PROJECT_ID" "$_msg_tk_id" 2>/dev/null)
+        fi
+      fi
+
       # 고유 메시지 ID 마커 생성 (응답 추출의 정확한 경계 식별용)
       local msg_id="msg_$(date +%s)_$$_${RANDOM}"
       local msg_marker="[MSG:${msg_id}]"
@@ -183,6 +207,7 @@ watcher() {
       flat="${msg_marker} ${flat}"
       if [ -n "$skills_hint" ]; then
         flat="$flat  |  $(printf '%s' "$skills_hint" | tr '\n' ' ')"
+        [ -n "$step_skills_hint" ] && flat="$flat  $step_skills_hint"
       fi
 
       # knowledge/INDEX.md 주입 (KB-INDEX) — 활성화된 경우만

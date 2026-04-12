@@ -70,6 +70,23 @@
     "be-qa": { "reports_to": "backend" },
     "marketing": { "reports_to": "orch" }
   },
+  "step_skills": {
+    "feature": {
+      "spec": ["office-hours", "plan-ceo-review"],
+      "design": ["design-shotgun", "design-html", "plan-design-review"],
+      "in_progress": ["code-review-expert", "careful"],
+      "review": ["qa", "review", "cso"]
+    },
+    "bugfix": {
+      "in_progress": ["investigate", "careful"],
+      "review": ["qa"]
+    },
+    "design": {
+      "research": ["office-hours"],
+      "draft": ["design-shotgun", "design-html", "frontend-design"],
+      "review": ["plan-design-review", "design-review"]
+    }
+  },
   "dashboard_auto_open": true,
   "teams": {
     "dev": {

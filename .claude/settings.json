@@ -6,6 +6,20 @@
           {
             "type": "command",
             "command": "bash .claude/hooks/start-company.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/company/hooks/ticket-context.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/company/hooks/post-tool-use.sh"
           }
         ]
       }
