@@ -141,6 +141,25 @@ with open(sys.argv[1], 'w') as f:
     esac
   fi
 
+  # ━━━ TICKET 마커 처리: 에이전트가 티켓 상태 변경을 요청한 경우 ━━━
+  if echo "$content" | grep -q '\[TICKET:'; then
+    _tk_id=$(echo "$content" | grep -oE '\[TICKET:[A-Z]+-[0-9]+' | head -1 | sed 's/\[TICKET://')
+    _tk_status=$(echo "$content" | grep -oE 'status:[a-z_]+' | head -1 | sed 's/status://')
+    if [ -n "$_tk_id" ] && [ -n "$_tk_status" ]; then
+      _dash_port=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('dashboard_port',7777))" "$CONFIG" 2>/dev/null || echo 7777)
+      _proj_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('project',''))" "$CONFIG" 2>/dev/null)
+      _tk_token=$(curl -s "http://localhost:${_dash_port}/api/token" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+      if [ -n "$_tk_token" ] && [ -n "$_proj_id" ]; then
+        curl -s -X POST "http://localhost:${_dash_port}/api/${_proj_id}/tickets/${_tk_id}/update" \
+          -H "Content-Type: application/json" \
+          -H "X-Token: $_tk_token" \
+          -d "{\"status\":\"${_tk_status}\",\"agent\":\"${sender}\"}" \
+          >/dev/null 2>&1
+        log "  TICKET: $sender → $_tk_id status=$_tk_status"
+      fi
+    fi
+  fi
+
   for recipient in $mentions; do
     # 자기 자신에게 보내는 것 차단 (무한 루프 방지)
     if [ "$recipient" = "$sender" ]; then

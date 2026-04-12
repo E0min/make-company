@@ -113,6 +113,7 @@ export function HealthTab() {
   const [agentScores, setAgentScores] = useState<Record<string, AgentScores>>({});
   const [workflowData, setWorkflowData] = useState<Record<string, WorkflowAnalysis>>({});
   const [improvements, setImprovements] = useState<Improvement[]>([]);
+  const [insights, setInsights] = useState<{ total_events: number; agent_activity: Record<string, number>; gate_rejections: number; cycle_times: { ticket: string; title: string; seconds: number }[]; avg_cycle_seconds: number; status_counts: Record<string, number> } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -130,17 +131,19 @@ export function HealthTab() {
       setError(null);
 
       try {
-        const [scoresRes, workflowsRes, improvementsRes] = await Promise.all([
-          api.analyticsScores(),
-          api.analyticsWorkflows(),
-          api.improvements(),
+        const [scoresRes, workflowsRes, improvementsRes, insightsRes] = await Promise.all([
+          api.analyticsScores().catch(() => ({ agents: {} })),
+          api.analyticsWorkflows().catch(() => ({ workflows: {} })),
+          api.improvements().catch(() => ({ improvements: [] })),
+          api.insights().catch(() => null),
         ]);
 
         if (cancelled) return;
 
-        setAgentScores(scoresRes.agents ?? {});
-        setWorkflowData(workflowsRes.workflows ?? {});
-        setImprovements(improvementsRes.improvements ?? []);
+        setAgentScores((scoresRes as { agents: Record<string, AgentScores> }).agents ?? {});
+        setWorkflowData((workflowsRes as { workflows: Record<string, WorkflowAnalysis> }).workflows ?? {});
+        setImprovements((improvementsRes as { improvements: Improvement[] }).improvements ?? []);
+        if (insightsRes) setInsights(insightsRes);
       } catch (e) {
         if (!cancelled) {
           setError(String(e));
@@ -176,6 +179,86 @@ export function HealthTab() {
 
   return (
     <div className="space-y-8">
+      {/* ── Section 0: Insights KPI ── */}
+      {insights && (
+        <section className="space-y-3">
+          <h2 className="text-base font-semibold flex items-center gap-2">
+            <BarChart3 className="size-4 text-indigo-400" />
+            프로젝트 인사이트
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Card><CardContent className="p-4 text-center">
+              <div className="text-2xl font-bold tabular-nums">{insights.total_events}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">총 이벤트</div>
+            </CardContent></Card>
+            <Card><CardContent className="p-4 text-center">
+              <div className="text-2xl font-bold tabular-nums text-red-400">{insights.gate_rejections}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">게이트 거부</div>
+            </CardContent></Card>
+            <Card><CardContent className="p-4 text-center">
+              <div className="text-2xl font-bold tabular-nums">{insights.avg_cycle_seconds > 0 ? `${(insights.avg_cycle_seconds / 3600).toFixed(1)}h` : "—"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">평균 사이클 타임</div>
+            </CardContent></Card>
+            <Card><CardContent className="p-4 text-center">
+              <div className="text-2xl font-bold tabular-nums">{Object.values(insights.status_counts).reduce((a, b) => a + b, 0)}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">총 티켓</div>
+            </CardContent></Card>
+          </div>
+
+          {/* 상태별 분포 + 에이전트 활동 */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Card><CardContent className="p-4">
+              <h3 className="text-xs font-semibold text-muted-foreground mb-3">상태별 티켓</h3>
+              <div className="space-y-2">
+                {Object.entries(insights.status_counts).map(([s, c]) => (
+                  <div key={s} className="flex items-center gap-2 text-xs">
+                    <span className="w-20 text-muted-foreground">{s}</span>
+                    <div className="flex-1 h-2 rounded bg-zinc-800">
+                      <div className="h-full rounded bg-indigo-500/70" style={{ width: `${Math.min((c / Math.max(...Object.values(insights.status_counts), 1)) * 100, 100)}%` }} />
+                    </div>
+                    <span className="w-6 text-right tabular-nums">{c}</span>
+                  </div>
+                ))}
+              </div>
+            </CardContent></Card>
+            <Card><CardContent className="p-4">
+              <h3 className="text-xs font-semibold text-muted-foreground mb-3">에이전트 활동</h3>
+              <div className="space-y-2">
+                {Object.entries(insights.agent_activity).sort(([,a],[,b]) => b - a).slice(0, 6).map(([agent, count]) => (
+                  <div key={agent} className="flex items-center gap-2 text-xs">
+                    <span className="w-24 truncate text-muted-foreground">{agent}</span>
+                    <div className="flex-1 h-2 rounded bg-zinc-800">
+                      <div className="h-full rounded bg-emerald-500/70" style={{ width: `${Math.min((count / Math.max(...Object.values(insights.agent_activity), 1)) * 100, 100)}%` }} />
+                    </div>
+                    <span className="w-6 text-right tabular-nums">{count}</span>
+                  </div>
+                ))}
+              </div>
+            </CardContent></Card>
+          </div>
+
+          {/* 사이클 타임 */}
+          {insights.cycle_times.length > 0 && (
+            <Card><CardContent className="p-4">
+              <h3 className="text-xs font-semibold text-muted-foreground mb-3">사이클 타임 (완료된 티켓)</h3>
+              <div className="space-y-1.5">
+                {insights.cycle_times.slice(0, 8).map((ct) => (
+                  <div key={ct.ticket} className="flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-2 min-w-0">
+                      <span className="font-mono text-muted-foreground">{ct.ticket}</span>
+                      <span className="truncate">{ct.title}</span>
+                    </span>
+                    <span className="shrink-0 tabular-nums font-mono text-muted-foreground">
+                      {ct.seconds < 3600 ? `${Math.round(ct.seconds / 60)}m` : `${(ct.seconds / 3600).toFixed(1)}h`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </CardContent></Card>
+          )}
+        </section>
+      )}
+
       {/* ── Section 1: Bottleneck Alerts ── */}
       <section className="space-y-3">
         <h2 className="text-base font-semibold flex items-center gap-2">

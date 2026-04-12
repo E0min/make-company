@@ -22,6 +22,8 @@ print(c.get('compact_threshold', 50))
 print(str(agent.get('protected', False)) if agent else 'False')
 print(c.get('agent_idle_timeout', 180))
 print(agent.get('team', '') or '' if agent else '')
+print(c.get('dashboard_port', 7777))
+print(c.get('project', ''))
 " "$COMPANY_DIR/config.json" "$AGENT_ID" 2>/dev/null)
 
 CLAUDE_AGENT=$(echo "$_agent_config" | sed -n '1p')
@@ -29,6 +31,9 @@ COMPACT_THRESHOLD=$(echo "$_agent_config" | sed -n '2p')
 IS_PROTECTED=$(echo "$_agent_config" | sed -n '3p')
 IDLE_TIMEOUT=$(echo "$_agent_config" | sed -n '4p')
 AGENT_TEAM=$(echo "$_agent_config" | sed -n '5p')
+DASHBOARD_PORT=$(echo "$_agent_config" | sed -n '6p')
+PROJECT_ID=$(echo "$_agent_config" | sed -n '7p')
+DASHBOARD_PORT="${DASHBOARD_PORT:-7777}"
 
 CLAUDE_AGENT="${CLAUDE_AGENT:-$AGENT_ID}"
 COMPACT_THRESHOLD="${COMPACT_THRESHOLD:-50}"
@@ -315,6 +320,45 @@ watcher() {
           # INDEX 재생성
           bash "$COMPANY_DIR/scripts/update-knowledge-index.sh" "$COMPANY_DIR/knowledge" 2>/dev/null &
           printf '[%s] knowledge 저장: %s\n' "$(get_ts)" "$_kw_target" >> "$LOG_DIR/knowledge.log"
+        fi
+      fi
+
+      # ━━━ HEARTBEAT 마커 처리 — 에이전트 자기점검 보고 ━━━
+      if [ -n "$response" ] && echo "$response" | grep -q '\[HEARTBEAT'; then
+        local _hb_ticket _hb_status _hb_next _hb_goal _hb_quality
+        _hb_ticket=$(echo "$response" | grep -oE 'ticket:[A-Z]+-[0-9]+' | head -1 | sed 's/ticket://')
+        _hb_status=$(echo "$response" | grep -oE 'status:[^ ]*' | head -1 | sed 's/status://' | tr -d ']')
+        _hb_goal=$(echo "$response" | grep -oE 'goal:[A-Z]+-[0-9]+' | head -1 | sed 's/goal://')
+        _hb_quality=$(echo "$response" | grep -oE 'quality:[0-9]+' | head -1 | sed 's/quality://')
+        # API로 heartbeat 보고 (비동기)
+        local _hb_token
+        _hb_token=$(curl -s "http://localhost:${DASHBOARD_PORT}/api/token" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+        if [ -n "$_hb_token" ] && [ -n "$PROJECT_ID" ]; then
+          curl -s -X POST "http://localhost:${DASHBOARD_PORT}/api/${PROJECT_ID}/heartbeats" \
+            -H "Content-Type: application/json" \
+            -H "X-Token: $_hb_token" \
+            -d "{\"agent\":\"${AGENT_ID}\",\"ticket\":\"${_hb_ticket}\",\"status\":\"${_hb_status}\",\"goal\":\"${_hb_goal}\",\"quality\":${_hb_quality:-0}}" \
+            >/dev/null 2>&1 &
+          printf '[%s] HEARTBEAT: %s ticket=%s status=%s\n' "$(get_ts)" "$AGENT_ID" "$_hb_ticket" "$_hb_status"
+        fi
+      fi
+
+      # ━━━ TICKET 마커 처리 — 에이전트가 티켓 상태 변경 요청 ━━━
+      if [ -n "$response" ] && echo "$response" | grep -q '\[TICKET:'; then
+        local _tk_id _tk_status
+        _tk_id=$(echo "$response" | grep -oE '\[TICKET:[A-Z]+-[0-9]+' | head -1 | sed 's/\[TICKET://')
+        _tk_status=$(echo "$response" | grep -oE 'status:[a-z_]+' | head -1 | sed 's/status://')
+        if [ -n "$_tk_id" ] && [ -n "$_tk_status" ]; then
+          local _tk_token
+          _tk_token=$(curl -s "http://localhost:${DASHBOARD_PORT}/api/token" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+          if [ -n "$_tk_token" ] && [ -n "$PROJECT_ID" ]; then
+            curl -s -X POST "http://localhost:${DASHBOARD_PORT}/api/${PROJECT_ID}/tickets/${_tk_id}/update" \
+              -H "Content-Type: application/json" \
+              -H "X-Token: $_tk_token" \
+              -d "{\"status\":\"${_tk_status}\",\"agent\":\"${AGENT_ID}\"}" \
+              >/dev/null 2>&1 &
+            printf '[%s] TICKET: %s → %s status=%s\n' "$(get_ts)" "$AGENT_ID" "$_tk_id" "$_tk_status"
+          fi
         fi
       fi
 

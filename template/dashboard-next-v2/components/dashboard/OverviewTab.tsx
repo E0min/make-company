@@ -20,9 +20,11 @@ import {
   LayoutGrid,
   Rows3,
   GitBranch,
+  Network,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LiveFlowGraph } from "./LiveFlowGraph";
+import { OrgChartView } from "./OrgChartView";
 
 interface Props {
   state: StateResponse | null;
@@ -32,7 +34,7 @@ interface Props {
   projectActive?: boolean;
 }
 
-type ViewMode = "flat" | "team" | "flow";
+type ViewMode = "flat" | "team" | "flow" | "org";
 
 export function OverviewTab({ state, agents, activityEntries, onOpenTerminal, projectActive = true }: Props) {
   const [viewMode, setViewMode] = useState<ViewMode>("flat");
@@ -85,6 +87,7 @@ export function OverviewTab({ state, agents, activityEntries, onOpenTerminal, pr
               { mode: "flat" as const, icon: <LayoutGrid className="size-3" />, label: "그리드" },
               { mode: "team" as const, icon: <Rows3 className="size-3" />, label: "팀별" },
               { mode: "flow" as const, icon: <GitBranch className="size-3" />, label: "흐름" },
+              { mode: "org" as const, icon: <Network className="size-3" />, label: "조직도" },
             ]).map((v) => (
               <Button
                 key={v.mode}
@@ -105,6 +108,11 @@ export function OverviewTab({ state, agents, activityEntries, onOpenTerminal, pr
       {/* 흐름 뷰 */}
       {viewMode === "flow" && (
         <LiveFlowGraph teams={teams} pollInterval={5000} />
+      )}
+
+      {/* 조직도 뷰 */}
+      {viewMode === "org" && (
+        <OrgChartView />
       )}
 
       {/* 그리드 / 팀별 뷰 */}

@@ -484,6 +484,11 @@ function TicketDetailPanel({
   onUpdated: () => Promise<void>;
 }) {
   const p = PRIORITY_STYLE[ticket.priority];
+  const [commits, setCommits] = useState<Array<{ hash: string; short_hash: string; author: string; date: string; message: string; agent: string | null }>>([]);
+
+  useEffect(() => {
+    api.gitLog({ ticket: ticket.id, limit: 20 }).then((r) => setCommits(r.commits ?? [])).catch(() => setCommits([]));
+  }, [ticket.id]);
 
   const handleStatusChange = async (newStatus: TicketStatus) => {
     const r = await api.ticketUpdate(ticket.id, { status: newStatus });
@@ -562,6 +567,22 @@ function TicketDetailPanel({
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+
+          {/* Git Commits */}
+          {commits.length > 0 && (
+            <div>
+              <h3 className="text-xs font-semibold text-muted-foreground mb-2">Git Commits</h3>
+              <div className="space-y-1.5">
+                {commits.map((c) => (
+                  <div key={c.hash} className="flex items-start gap-2 text-xs">
+                    <span className="font-mono text-indigo-400 shrink-0">{c.short_hash}</span>
+                    {c.agent && <Badge variant="outline" className="text-[8px] h-4 shrink-0">{c.agent}</Badge>}
+                    <span className="text-foreground/80 truncate">{c.message}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
