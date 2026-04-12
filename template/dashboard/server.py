@@ -1096,18 +1096,82 @@ def _harness_drift_check(company_dir):
     }
 
 
+def _parse_config_agents(config):
+    """config.json의 agents[]에서 ID 목록과 team 매핑을 추출. string/dict 배열 모두 처리."""
+    agents_raw = config.get('agents', [])
+    ids = []
+    team_map = {}
+    for a in agents_raw:
+        if isinstance(a, dict):
+            aid = a.get('id', '')
+            if aid:
+                ids.append(aid)
+                team_map[aid] = a.get('team')
+        else:
+            aid = str(a)
+            if aid:
+                ids.append(aid)
+    return ids, team_map
+
+def _config_agents_contains(agents_raw, agent_id):
+    """config.json agents[]에 해당 ID가 있는지 확인 (string/dict 모두 처리)."""
+    for a in agents_raw:
+        if isinstance(a, dict) and a.get('id') == agent_id:
+            return True
+        elif not isinstance(a, dict) and str(a) == agent_id:
+            return True
+    return False
+
+def _config_agents_add(agents_raw, agent_id, team=None):
+    """config.json agents[]에 structured object로 추가/업데이트. string 항목은 dict로 승격."""
+    if _config_agents_contains(agents_raw, agent_id):
+        for i, a in enumerate(agents_raw):
+            if isinstance(a, dict) and a.get('id') == agent_id:
+                if team is not None:
+                    agents_raw[i]['team'] = team
+                return agents_raw
+            elif not isinstance(a, dict) and str(a) == agent_id:
+                # string → dict 승격
+                agents_raw[i] = {
+                    "id": agent_id,
+                    "engine": "claude",
+                    "agent_file": agent_id,
+                    "label": agent_id.replace('-', ' ').title(),
+                    "team": team,
+                    "protected": agent_id in ('ceo', 'orch'),
+                    "assigned_skills": []
+                }
+                return agents_raw
+        return agents_raw
+    agents_raw.append({
+        "id": agent_id,
+        "engine": "claude",
+        "agent_file": agent_id,
+        "label": agent_id.replace('-', ' ').title(),
+        "team": team,
+        "protected": False,
+        "assigned_skills": []
+    })
+    return agents_raw
+
+def _config_agents_remove(agents_raw, agent_id):
+    """config.json agents[]에서 제거 (string/dict 모두 처리)."""
+    return [a for a in agents_raw
+            if not (isinstance(a, dict) and a.get('id') == agent_id)
+            and not (not isinstance(a, dict) and str(a) == agent_id)]
+
 def _read_agent_states_for_project(company_dir, agents_dir=None):
-    """지정된 디렉토리에서 에이전트별 최신 상태 추출."""
+    """지정된 디렉토리에서 에이전트별 최신 상태 추출. config.json agents[] 기준."""
     if agents_dir is None:
         agents_dir = os.path.join(os.path.dirname(company_dir), 'agents')
-    if os.path.isdir(agents_dir):
-        agents = [os.path.splitext(f)[0] for f in sorted(os.listdir(agents_dir)) if f.endswith('.md')]
-    else:
-        config = _read_config_for_project(company_dir)
-        agents = config.get('agents', [])
+    config = _read_config_for_project(company_dir)
+    agent_ids, team_map = _parse_config_agents(config)
+    # config에 에이전트가 없으면 디렉토리 폴백
+    if not agent_ids and os.path.isdir(agents_dir):
+        agent_ids = [os.path.splitext(f)[0] for f in sorted(os.listdir(agents_dir)) if f.endswith('.md')]
     states = {}
-    for aid in agents:
-        states[aid] = {"id": aid, "state": "idle", "last_message": "", "timestamp": ""}
+    for aid in agent_ids:
+        states[aid] = {"id": aid, "state": "idle", "last_message": "", "timestamp": "", "team": team_map.get(aid)}
 
     # 1. activity.log 기반 상태
     activity_log = os.path.join(company_dir, 'activity.log')
@@ -1129,13 +1193,12 @@ def _read_agent_states_for_project(company_dir, agents_dir=None):
                         states[aid]["last_message"] = line
 
     # 2. tmux 세션 기반 상태 보강 (activity.log가 비어있어도 세션이 있으면 active)
-    config = _read_config_for_project(company_dir)
     project_id = config.get("project", "")
     if project_id and _check_tmux_session(project_id):
         windows = _get_tmux_windows(f"vc-{project_id}")
         # 윈도우 이름 → agent_id 역매핑
         label_to_id = {}
-        for aid in agents:
+        for aid in agent_ids:
             label_to_id[_agent_short_label(aid)] = aid
         for w in windows:
             parts = w.split(':')
@@ -1185,40 +1248,53 @@ def read_agent_memory(agent_id, company_dir=None):
 
 # ━━━ SSE watchers ━━━
 
-def _read_agents_full_for_project(agents_dir):
-    """지정된 agents_dir의 에이전트 .md 파일 목록 (frontmatter + 본문)."""
+def _parse_agent_md(path):
+    """에이전트 .md 파일에서 frontmatter + 본문 파싱."""
+    try:
+        with open(path) as fh:
+            content = fh.read()
+        meta = {}
+        if content.startswith('---'):
+            end = content.find('---', 3)
+            if end != -1:
+                fm = content[3:end].strip()
+                for line in fm.split('\n'):
+                    if ':' in line and not line.startswith(' '):
+                        k, _, v = line.partition(':')
+                        meta[k.strip()] = v.strip()
+        return content, meta
+    except Exception:
+        return None, {}
+
+def _read_agents_full_for_project(agents_dir, company_dir=None):
+    """config.json에 등록된 에이전트만 반환 (활성 에이전트). .md 파일에서 상세 정보 로드."""
     agents = []
-    if not agents_dir or not os.path.isdir(agents_dir):
+    if not agents_dir:
         return agents
-    for f in sorted(os.listdir(agents_dir)):
-        if not f.endswith('.md'):
-            continue
-        aid = os.path.splitext(f)[0]
-        path = os.path.join(agents_dir, f)
-        try:
-            with open(path) as fh:
-                content = fh.read()
-            meta = {}
-            body = content
-            if content.startswith('---'):
-                end = content.find('---', 3)
-                if end != -1:
-                    fm = content[3:end].strip()
-                    body = content[end+3:].strip()
-                    for line in fm.split('\n'):
-                        if ':' in line and not line.startswith(' '):
-                            k, _, v = line.partition(':')
-                            meta[k.strip()] = v.strip()
-            agents.append({
-                "id": aid,
-                "name": meta.get('name', aid),
-                "description": meta.get('description', ''),
-                "category": meta.get('category', ''),
-                "color": meta.get('color', ''),
-                "content": content,
-                "is_global": os.path.exists(os.path.join(GLOBAL_AGENTS_DIR, f)),
-            })
-        except Exception: pass
+    # config 기준: 등록된 에이전트 ID + team 매핑
+    config_ids = []
+    team_map = {}
+    if company_dir:
+        config = _read_config_for_project(company_dir)
+        config_ids, team_map = _parse_config_agents(config)
+    # config에 에이전트가 없으면 디렉토리 폴백 (하위 호환)
+    if not config_ids and os.path.isdir(agents_dir):
+        config_ids = [os.path.splitext(f)[0] for f in sorted(os.listdir(agents_dir)) if f.endswith('.md')]
+    for aid in config_ids:
+        md_path = os.path.join(agents_dir, f"{aid}.md") if os.path.isdir(agents_dir) else None
+        content, meta = (None, {})
+        if md_path and os.path.exists(md_path):
+            content, meta = _parse_agent_md(md_path)
+        agents.append({
+            "id": aid,
+            "name": meta.get('name', aid),
+            "description": meta.get('description', ''),
+            "category": meta.get('category', ''),
+            "color": meta.get('color', ''),
+            "content": content or '',
+            "is_global": os.path.exists(os.path.join(GLOBAL_AGENTS_DIR, f"{aid}.md")) if GLOBAL_AGENTS_DIR else False,
+            "team": team_map.get(aid),
+        })
     return agents
 
 def _read_agents_full_raw():
@@ -1264,14 +1340,13 @@ def read_global_agents():
         except Exception: pass
     return agents
 
-def save_agent(agent_id, content, scope='local', color=None):
+def save_agent(agent_id, content, scope='local', color=None, team=None):
     """에이전트 .md 파일 저장 (local=프로젝트, global=글로벌)"""
     # 색상이 있으면 frontmatter에 주입
     if color and '---' in content:
         end = content.find('---', 3)
         if end != -1:
             fm = content[3:end].strip()
-            # 기존 color 제거
             fm_lines = [l for l in fm.split('\n') if not l.startswith('color:')]
             fm_lines.append(f'color: {color}')
             content = '---\n' + '\n'.join(fm_lines) + '\n---' + content[end+3:]
@@ -1289,15 +1364,14 @@ def save_agent(agent_id, content, scope='local', color=None):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
-    # config.json에 에이전트 추가 (race condition 방지)
+    # config.json에 structured object로 추가 (race condition 방지)
     with CONFIG_LOCK:
         config = read_config()
         agents = config.get('agents', [])
-        if agent_id not in agents:
-            agents.append(agent_id)
-            config['agents'] = agents
-            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
+        agents = _config_agents_add(agents, agent_id, team)
+        config['agents'] = agents
+        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
     # 메모리 + 출력 파일 생성
     os.makedirs(AGENT_MEMORY_DIR, exist_ok=True)
     os.makedirs(AGENT_OUTPUT_DIR, exist_ok=True)
@@ -1409,15 +1483,13 @@ def delete_agent(agent_id):
     path = os.path.join(AGENTS_DIR, f"{agent_id}.md")
     if os.path.exists(path):
         os.remove(path)
-    # config.json에서 제거 (race condition 방지)
+    # config.json에서 제거 (structured array 처리)
     with CONFIG_LOCK:
         config = read_config()
         agents = config.get('agents', [])
-        if agent_id in agents:
-            agents.remove(agent_id)
-            config['agents'] = agents
-            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
+        config['agents'] = _config_agents_remove(agents, agent_id)
+        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
     return True
 
 def import_global_agent(agent_id):
@@ -1608,7 +1680,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             project_id = project_match.group(1)
             sub_path = project_match.group(2)
             # 예약된 레거시 경로 제외 (agent/, workflow/ 등은 기존 라우트)
-            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop'):
+            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company'):
                 company_dir = get_project_company_dir(project_id)
                 if not company_dir:
                     self.send_json({"error": f"project '{project_id}' not found"}, 404)
@@ -1624,6 +1696,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "project": config.get("project", "Company"),
                 "tech_stack": config.get("tech_stack", ""),
                 "agents": agents,
+                "teams": config.get("teams", {}),
                 "now": int(time.time()),
             })
         elif path == '/api/activity':
@@ -1701,7 +1774,96 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "project": config.get("project", "Company"),
                 "tech_stack": config.get("tech_stack", ""),
                 "agents": agents,
+                "teams": config.get("teams", {}),
                 "now": int(time.time()),
+            })
+
+        elif sub_path == 'teams':
+            config = cached(f"{project_id}:config", 2,
+                            lambda: _read_config_for_project(company_dir))
+            self.send_json({"teams": config.get("teams", {})})
+
+        elif sub_path == 'flow':
+            # 실시간 작업 흐름 DAG: channel/general.md에서 에이전트 간 메시지 흐름 추출
+            channel_path = os.path.join(company_dir, 'channel', 'general.md')
+            config = cached(f"{project_id}:config", 2,
+                            lambda: _read_config_for_project(company_dir))
+            config_ids, team_map = _parse_config_agents(config)
+            agent_set = set(config_ids)
+            teams_config = config.get('teams', {})
+
+            nodes = {}  # agent_id → {id, team, state, label}
+            edges = []  # [{source, target, timestamp, label}]
+            agent_states = {}
+
+            # activity.log에서 상태 추출
+            activity_log = os.path.join(company_dir, 'activity.log')
+            if os.path.exists(activity_log):
+                with open(activity_log) as f:
+                    for line in f:
+                        for aid in agent_set:
+                            if f'[{aid}]' in line:
+                                if '🟢' in line: agent_states[aid] = 'working'
+                                elif '✅' in line: agent_states[aid] = 'done'
+                                elif '❌' in line: agent_states[aid] = 'error'
+
+            # channel/general.md에서 sender→@mention 흐름 추출
+            if os.path.exists(channel_path):
+                with open(channel_path) as f:
+                    content = f.read()
+                current_sender = None
+                current_ts = None
+                for line in content.split('\n'):
+                    # 헤더: --- [HH:MM:SS] SENDER ---
+                    header = re.match(r'^---\s*\[(\d{2}:\d{2}:\d{2})\]\s+(\S+)\s*---', line)
+                    if header:
+                        current_ts = header.group(1)
+                        current_sender = header.group(2).lower()
+                        if current_sender in agent_set:
+                            nodes[current_sender] = True
+                        continue
+                    # @mention 추출
+                    if current_sender:
+                        mentions = re.findall(r'@([a-z][a-z0-9_-]*)', line.lower())
+                        for m in mentions:
+                            if m in agent_set and m != current_sender:
+                                nodes[current_sender] = True
+                                nodes[m] = True
+                                edges.append({
+                                    "source": current_sender,
+                                    "target": m,
+                                    "timestamp": current_ts or "",
+                                })
+
+            # 노드 데이터 구성
+            node_list = []
+            for aid in nodes:
+                team = team_map.get(aid)
+                team_label = teams_config.get(team, {}).get('label', '') if team else ''
+                # config에서 label 찾기
+                label = aid
+                for a in config.get('agents', []):
+                    if isinstance(a, dict) and a.get('id') == aid:
+                        label = a.get('label', aid)
+                        break
+                node_list.append({
+                    "id": aid,
+                    "label": label,
+                    "team": team,
+                    "teamLabel": team_label,
+                    "state": agent_states.get(aid, "idle"),
+                })
+
+            # 중복 엣지 제거 (같은 source→target은 마지막 timestamp만)
+            seen = {}
+            for e in edges:
+                key = f"{e['source']}→{e['target']}"
+                seen[key] = e
+            unique_edges = list(seen.values())
+
+            self.send_json({
+                "nodes": node_list,
+                "edges": unique_edges,
             })
 
         elif sub_path == 'activity':
@@ -1710,7 +1872,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif sub_path == 'agents':
             agents = cached(f"{project_id}:agents_full", 5,
-                            lambda: _read_agents_full_for_project(agents_dir))
+                            lambda: _read_agents_full_for_project(agents_dir, company_dir))
             self.send_json({"agents": agents})
 
         elif sub_path == 'agents/global':
@@ -1763,7 +1925,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
                 self.send_json({"error": "invalid agent id"}, 400)
                 return
-            agents = _read_agents_full_for_project(agents_dir)
+            agents = _read_agents_full_for_project(agents_dir, company_dir)
             agent = next((a for a in agents if a['id'] == agent_id), None)
             self.send_json(agent or {"error": "not found"})
 
@@ -1835,7 +1997,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             scores = _compute_agent_scores(company_dir).get(agent_id, {})
             tool_profiles = _read_tool_profiles(company_dir).get(agent_id, {})
             # 에이전트 정보
-            agents_list = _read_agents_full_for_project(agents_dir)
+            agents_list = _read_agents_full_for_project(agents_dir, company_dir)
             agent_info = next((a for a in agents_list if a['id'] == agent_id), {'id': agent_id})
             self.send_json({
                 "agent": agent_info,
@@ -2065,7 +2227,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             project_id = project_match.group(1)
             sub_path = project_match.group(2)
             # 예약된 레거시 경로 제외
-            if project_id not in ('run', 'workflow', 'workflows', 'agents', 'retrospectives', 'stop', 'projects'):
+            if project_id not in ('run', 'workflow', 'workflows', 'agents', 'retrospectives', 'stop', 'projects', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company'):
                 company_dir = get_project_company_dir(project_id)
                 if not company_dir:
                     self.send_json({"error": f"project '{project_id}' not found"}, 404)
@@ -2304,6 +2466,66 @@ class DashboardHandler(BaseHTTPRequestHandler):
             invalidate_cache(f"{project_id}:workflows")
             self.send_json({"ok": True})
 
+        elif sub_path == 'teams/save':
+            team_id = body.get('id', '').strip()
+            label = body.get('label', '').strip()
+            description = body.get('description', '').strip()
+            if not team_id:
+                self.send_json({"ok": False, "error": "팀 ID 필요"}, 400)
+                return
+            if not re.match(r'^[a-z][a-z0-9-]*$', team_id):
+                self.send_json({"ok": False, "error": "ID는 영문 소문자, 숫자, 하이픈만 허용"}, 400)
+                return
+            config_path = os.path.join(company_dir, 'config.json')
+            with CONFIG_LOCK:
+                config = _read_config_for_project(company_dir)
+                teams = config.get('teams', {})
+                teams[team_id] = {"label": label or team_id, "description": description}
+                config['teams'] = teams
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
+            # 팀 디렉토리 + CLAUDE.md 자동 생성
+            project_root = os.path.dirname(os.path.dirname(company_dir))
+            team_dir = os.path.join(project_root, 'teams', team_id)
+            os.makedirs(os.path.join(team_dir, 'docs'), exist_ok=True)
+            team_claude = os.path.join(team_dir, 'CLAUDE.md')
+            if not os.path.exists(team_claude):
+                with open(team_claude, 'w') as f:
+                    f.write(f'# {label or team_id}\n\n{description}\n\n## 팀 컨텍스트\n\n')
+            # .claude/rules/teams/{team}.md 자동 생성
+            rules_dir = os.path.join(project_root, '.claude', 'rules', 'teams')
+            os.makedirs(rules_dir, exist_ok=True)
+            rule_file = os.path.join(rules_dir, f'{team_id}.md')
+            if not os.path.exists(rule_file):
+                with open(rule_file, 'w') as f:
+                    f.write(f'---\npaths:\n  - "teams/{team_id}/**"\n---\n\n# {label or team_id} 규칙\n\n')
+            invalidate_cache(f"{project_id}:config")
+            invalidate_cache(f"{project_id}:states")
+            self.send_json({"ok": True, "id": team_id})
+
+        elif sub_path == 'teams/delete':
+            team_id = body.get('id', '').strip()
+            if not team_id:
+                self.send_json({"ok": False, "error": "팀 ID 필요"}, 400)
+                return
+            config_path = os.path.join(company_dir, 'config.json')
+            with CONFIG_LOCK:
+                config = _read_config_for_project(company_dir)
+                teams = config.get('teams', {})
+                if team_id in teams:
+                    del teams[team_id]
+                    config['teams'] = teams
+                    # 소속 에이전트의 team을 null로
+                    for a in config.get('agents', []):
+                        if isinstance(a, dict) and a.get('team') == team_id:
+                            a['team'] = None
+                    with open(config_path, 'w', encoding='utf-8') as f:
+                        json.dump(config, f, ensure_ascii=False, indent=2)
+            invalidate_cache(f"{project_id}:config")
+            invalidate_cache(f"{project_id}:states")
+            invalidate_cache(f"{project_id}:agents_full")
+            self.send_json({"ok": True})
+
         elif sub_path == 'agents/save':
             aid = body.get('id', '').strip()
             content = body.get('content', '').strip()
@@ -2332,18 +2554,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
             path = os.path.join(target_agents_dir, f"{aid}.md")
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            # config.json 업데이트
+            # config.json 업데이트 (structured object + team)
+            team = body.get('team')
             config_path = os.path.join(company_dir, 'config.json')
             with CONFIG_LOCK:
                 config = _read_config_for_project(company_dir)
                 agents_list = config.get('agents', [])
-                if aid not in agents_list:
-                    agents_list.append(aid)
-                    config['agents'] = agents_list
-                    with open(config_path, 'w', encoding='utf-8') as f:
-                        json.dump(config, f, ensure_ascii=False, indent=2)
+                agents_list = _config_agents_add(agents_list, aid, team)
+                config['agents'] = agents_list
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
+            # 팀 디렉토리 자동 생성
+            if team:
+                project_root = os.path.dirname(os.path.dirname(company_dir))
+                team_dir = os.path.join(project_root, 'teams', team)
+                os.makedirs(os.path.join(team_dir, 'docs'), exist_ok=True)
+                team_claude = os.path.join(team_dir, 'CLAUDE.md')
+                if not os.path.exists(team_claude):
+                    teams_config = config.get('teams', {})
+                    label = teams_config.get(team, {}).get('label', team)
+                    with open(team_claude, 'w') as f:
+                        f.write(f'# {label}\n\n## 팀 컨텍스트\n\n')
             invalidate_cache(f"{project_id}:agents_full")
             invalidate_cache(f"{project_id}:config")
+            invalidate_cache(f"{project_id}:states")
             self.send_json({"ok": True, "id": aid})
 
         elif sub_path == 'agents/delete':
@@ -2365,13 +2599,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             with CONFIG_LOCK:
                 config = _read_config_for_project(company_dir)
                 agents_list = config.get('agents', [])
-                if aid in agents_list:
-                    agents_list.remove(aid)
-                    config['agents'] = agents_list
-                    with open(config_path, 'w', encoding='utf-8') as f:
-                        json.dump(config, f, ensure_ascii=False, indent=2)
+                config['agents'] = _config_agents_remove(agents_list, aid)
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
             invalidate_cache(f"{project_id}:agents_full")
             invalidate_cache(f"{project_id}:config")
+            invalidate_cache(f"{project_id}:states")
             self.send_json({"ok": True})
 
         elif sub_path == 'agents/import':

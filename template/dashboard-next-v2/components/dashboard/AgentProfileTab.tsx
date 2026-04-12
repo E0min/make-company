@@ -18,7 +18,9 @@ import {
   Activity,
   ChevronDown,
   ChevronRight,
+  Terminal,
 } from "lucide-react";
+import { JsonRenderBlock } from "./JsonRenderBlock";
 
 // ━━━ Props ━━━
 
@@ -126,9 +128,16 @@ export function AgentProfileTab({ agents }: Props) {
       {selectedId && !loading && !error && profile && (
         <div className="space-y-4">
           <IdentityHeader agent={profile.agent} />
-          <PerformanceSummary scores={profile.scores} />
-          <MemoryViewer memory={profile.memory} />
-          <ToolProfileSection tools={profile.tools} />
+          {profile.scores?.trend && (
+            <PerformanceSummary scores={profile.scores} />
+          )}
+          <AgentOutputSection agentId={selectedId} />
+          {profile.memory?.raw !== undefined && (
+            <MemoryViewer memory={profile.memory} />
+          )}
+          {(profile.tools?.preferred?.length > 0 || profile.tools?.avoid?.length > 0 || profile.tools?.instructions) && (
+            <ToolProfileSection tools={profile.tools} />
+          )}
         </div>
       )}
     </div>
@@ -405,6 +414,70 @@ function CollapsibleSection({
 function EmptyPlaceholder() {
   return (
     <p className="text-xs text-muted-foreground italic">아직 기록 없음</p>
+  );
+}
+
+// ━━━ Section 3.5: Agent Output (json-render) ━━━
+
+function AgentOutputSection({ agentId }: { agentId: string }) {
+  const [output, setOutput] = useState<string | null>(null);
+  const [loadingOutput, setLoadingOutput] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoadingOutput(true);
+    api
+      .agentOutput(agentId)
+      .then((data) => {
+        if (!cancelled) setOutput(data.output || null);
+      })
+      .catch(() => {
+        if (!cancelled) setOutput(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingOutput(false);
+      });
+    return () => { cancelled = true; };
+  }, [agentId, open]);
+
+  return (
+    <Card>
+      <CardContent className="p-5">
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          className="flex items-center gap-2 w-full text-sm font-semibold text-foreground"
+        >
+          <Terminal className="size-4 text-indigo-400" />
+          최근 출력
+          {open ? (
+            <ChevronDown className="size-3.5 ml-auto text-muted-foreground" />
+          ) : (
+            <ChevronRight className="size-3.5 ml-auto text-muted-foreground" />
+          )}
+        </button>
+
+        {open && (
+          <div className="mt-4">
+            {loadingOutput && (
+              <p className="text-xs text-muted-foreground animate-pulse">
+                출력 로딩 중...
+              </p>
+            )}
+            {!loadingOutput && !output && (
+              <p className="text-xs text-muted-foreground italic">
+                출력 없음
+              </p>
+            )}
+            {!loadingOutput && output && (
+              <JsonRenderBlock text={output} />
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

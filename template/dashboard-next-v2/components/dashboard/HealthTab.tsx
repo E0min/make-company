@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { api } from "@/lib/api";
+import { api, getCurrentProject } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -117,6 +117,12 @@ export function HealthTab() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // 프로젝트 선택 전이면 API 호출 스킵 (라우팅 충돌 방지)
+    if (!getCurrentProject()) {
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
 
     async function fetchAll() {

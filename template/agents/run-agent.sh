@@ -11,16 +11,36 @@ OUTBOX="$COMPANY_DIR/outbox/${AGENT_ID}.md"
 STATE_DIR="$COMPANY_DIR/state"
 LOG_DIR="$COMPANY_DIR/logs"
 
-# compact threshold를 config에서 읽기
-COMPACT_THRESHOLD=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('compact_threshold',50))" "$COMPANY_DIR/config.json" 2>/dev/null || echo 50)
-
-# config.json에서 agent_file 읽기 (하드코딩 제거)
-CLAUDE_AGENT=$(python3 -c "
+# config에서 설정 읽기 (시작 시 1회)
+_agent_config=$(python3 -c "
 import json, sys
-agents = json.load(open(sys.argv[1]))['agents']
+c = json.load(open(sys.argv[1]))
+agents = c['agents']
 agent = next((a for a in agents if a['id'] == sys.argv[2]), None)
 print(agent.get('agent_file', sys.argv[2]) if agent else sys.argv[2])
-" "$COMPANY_DIR/config.json" "$AGENT_ID" 2>/dev/null || echo "$AGENT_ID")
+print(c.get('compact_threshold', 50))
+print(str(agent.get('protected', False)) if agent else 'False')
+print(c.get('agent_idle_timeout', 180))
+print(agent.get('team', '') or '' if agent else '')
+" "$COMPANY_DIR/config.json" "$AGENT_ID" 2>/dev/null)
+
+CLAUDE_AGENT=$(echo "$_agent_config" | sed -n '1p')
+COMPACT_THRESHOLD=$(echo "$_agent_config" | sed -n '2p')
+IS_PROTECTED=$(echo "$_agent_config" | sed -n '3p')
+IDLE_TIMEOUT=$(echo "$_agent_config" | sed -n '4p')
+AGENT_TEAM=$(echo "$_agent_config" | sed -n '5p')
+
+CLAUDE_AGENT="${CLAUDE_AGENT:-$AGENT_ID}"
+COMPACT_THRESHOLD="${COMPACT_THRESHOLD:-50}"
+IS_PROTECTED="${IS_PROTECTED:-False}"
+IDLE_TIMEOUT="${IDLE_TIMEOUT:-180}"
+
+# 팀 workdir 결정: team이 있으면 teams/{team}/, 없으면 프로젝트 루트
+if [ -n "$AGENT_TEAM" ] && [ -d "$PROJECT_DIR/teams/$AGENT_TEAM" ]; then
+  WORK_DIR="$PROJECT_DIR/teams/$AGENT_TEAM"
+else
+  WORK_DIR="$PROJECT_DIR"
+fi
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 touch "$INBOX"
@@ -90,15 +110,33 @@ watcher() {
   sleep 2
 
   set_state "idle"
+  local last_activity
+  last_activity=$(date +%s)
 
   # 메인 루프
   while true; do
     # heartbeat 기록 (모니터의 죽음 감지용)
     date +%s > "$STATE_DIR/${AGENT_ID}.heartbeat" 2>/dev/null
 
+    # ━━━ idle timeout 체크 (protected 에이전트는 제외) ━━━
+    if [ "$IS_PROTECTED" != "True" ] && [ "$IDLE_TIMEOUT" -gt 0 ] 2>/dev/null; then
+      local now_ts
+      now_ts=$(date +%s)
+      local idle_secs=$((now_ts - last_activity))
+      if [ "$idle_secs" -gt "$IDLE_TIMEOUT" ] 2>/dev/null; then
+        printf '[%s] idle timeout (%ss > %ss) — 자동 종료\n' "$(get_ts)" "$idle_secs" "$IDLE_TIMEOUT"
+        set_state "stopped"
+        rm -f "$COMPANY_DIR/state/spawn/${AGENT_ID}.win" 2>/dev/null
+        tmux send-keys -t "$PANE_ID" "/exit" Enter
+        sleep 5
+        return
+      fi
+    fi
+
     # atomic inbox 읽기: mv 기반 TOCTOU 방지
     local _inbox_tmp="${INBOX}.processing.$$"
     if [ -s "$INBOX" ] && mv "$INBOX" "$_inbox_tmp" 2>/dev/null; then
+      last_activity=$(date +%s)
       touch "$INBOX"
       local msg
       msg=$(cat "$_inbox_tmp")
@@ -347,6 +385,7 @@ except: print(0)
       rm -f "$_snap"
 
       set_state "idle"
+      last_activity=$(date +%s)
 
       # ━━━ auto-compact: ctx > threshold → /compact ━━━
       local ctx
@@ -374,8 +413,8 @@ except: print(0)
 
 # ━━━━━━ 메인 ━━━━━━
 clear
-printf '\n  %s (Claude interactive, agent=%s)\n' "$AGENT_UPPER" "$CLAUDE_AGENT"
-printf '  pane: %s\n\n' "$PANE_ID"
+printf '\n  %s (Claude interactive, agent=%s, team=%s)\n' "$AGENT_UPPER" "$CLAUDE_AGENT" "${AGENT_TEAM:-root}"
+printf '  pane: %s  workdir: %s\n\n' "$PANE_ID" "$WORK_DIR"
 
 set_state "booting"
 
@@ -387,5 +426,6 @@ WATCHER_PID=$!
 trap 'kill "$WATCHER_PID" 2>/dev/null; rm -f "$COMPANY_DIR"/.snap_${AGENT_ID}.* "${INBOX}.processing."* "$STATE_DIR/${AGENT_ID}.heartbeat"; set_state "stopped"' EXIT INT TERM HUP
 
 # claude 대화형 세션 (포그라운드)
-cd "$PROJECT_DIR"
+# 팀 workdir에서 실행 → Claude Code가 팀 CLAUDE.md + 루트 CLAUDE.md 계층적 로드
+cd "$WORK_DIR"
 claude --agent "$CLAUDE_AGENT"

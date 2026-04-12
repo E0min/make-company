@@ -189,10 +189,47 @@ else
   echo -e "  ${CYAN}기존 config.json 보존${NC}"
 fi
 
+# update.sh + spawn-manager.sh 복사
+cp "$TEMPLATE_DIR/update.sh" "$TARGET_DIR/" 2>/dev/null || true
+cp "$TEMPLATE_DIR/spawn-manager.sh" "$TARGET_DIR/" 2>/dev/null || true
+
+# 버전 기록
+_version=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo "installed-$(date +%Y%m%d)")
+echo "$_version" > "$TARGET_DIR/.version"
+
+# 중앙 레지스트리에 프로젝트 등록 (~/.claude/company-registry.json)
+_abs_target="$(cd "$TARGET_DIR" && pwd)"
+_abs_project="$(cd "$_abs_target/../.." && pwd)"
+_project_name=$(basename "$_abs_project")
+python3 -c "
+import json, os, sys
+registry_path = os.path.expanduser('~/.claude/company-registry.json')
+try:
+    with open(registry_path) as f: reg = json.load(f)
+except: reg = {'projects': []}
+# 중복 방지
+paths = {p['path'] for p in reg['projects']}
+if sys.argv[1] not in paths:
+    reg['projects'].append({
+        'name': sys.argv[2],
+        'path': sys.argv[1],
+        'company_dir': sys.argv[3],
+        'installed_at': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+        'version': sys.argv[4],
+    })
+else:
+    for p in reg['projects']:
+        if p['path'] == sys.argv[1]:
+            p['version'] = sys.argv[4]
+os.makedirs(os.path.dirname(registry_path), exist_ok=True)
+with open(registry_path, 'w') as f:
+    json.dump(reg, f, ensure_ascii=False, indent=2)
+" "$_abs_project" "$_project_name" "$_abs_target" "$_version" 2>/dev/null || true
+
 # 실행 권한
 chmod +x "$TARGET_DIR"/*.sh "$TARGET_DIR/agents/"*.sh "$TARGET_DIR/scripts/"*.sh
 
-echo -e "  ${GREEN}설치 완료: $TARGET_DIR${NC}"
+echo -e "  ${GREEN}설치 완료: $TARGET_DIR (${_version})${NC}"
 echo ""
 
 # setup 실행

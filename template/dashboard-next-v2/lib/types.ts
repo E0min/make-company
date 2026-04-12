@@ -10,13 +10,26 @@ export interface AgentStatus {
   state: AgentState;
   last_message: string;
   timestamp: string;
+  team: string | null;
 }
+
+// --- Teams ---
+
+/** 팀 정의 (config.json teams 항목) */
+export interface TeamDefinition {
+  label: string;
+  description: string;
+}
+
+/** config.json의 teams 맵 */
+export type TeamsMap = Record<string, TeamDefinition>;
 
 /** GET /api/state 응답 전체 */
 export interface StateResponse {
   project: string;
   tech_stack: string;
   agents: AgentStatus[];
+  teams: TeamsMap;
   now: number;
 }
 
@@ -45,6 +58,7 @@ export interface AgentFull {
   color: string;
   content: string;
   is_global: boolean;
+  team: string | null;
 }
 
 export interface AgentsResponse {

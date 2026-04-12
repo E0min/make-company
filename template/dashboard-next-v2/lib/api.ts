@@ -165,6 +165,9 @@ export const api = {
   /** 특정 에이전트 전체 정보 (frontmatter + content) */
   agentContent: (id: string) => getJSON<AgentFull>(`${apiBase()}/agent/${id}/content`),
 
+  /** 실시간 작업 흐름 DAG (에이전트 간 메시지 흐름) */
+  flow: () => getJSON<{ nodes: Array<{ id: string; label: string; team: string | null; teamLabel: string; state: string }>; edges: Array<{ source: string; target: string; timestamp: string }> }>(`${apiBase()}/flow`),
+
   /** 워크플로우 YAML 목록 */
   workflows: () => getJSON<WorkflowsResponse>(`${apiBase()}/workflows`),
 
@@ -192,7 +195,16 @@ export const api = {
     content: string;
     scope?: "local" | "global" | "both";
     color?: string;
+    team?: string | null;
   }) => postJSON(`${apiBase()}/agents/save`, body),
+
+  /** 팀 생성/수정 */
+  teamsSave: (body: { id: string; label: string; description?: string }) =>
+    postJSON(`${apiBase()}/teams/save`, body),
+
+  /** 팀 삭제 (소속 에이전트는 소속 없음으로) */
+  teamsDelete: (id: string) =>
+    postJSON(`${apiBase()}/teams/delete`, { id }),
 
   /** AI로 에이전트 .md 생성 */
   agentsGenerate: (role: string, id?: string) =>

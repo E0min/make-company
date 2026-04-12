@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { api } from "@/lib/api";
+import { api, getCurrentProject } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -91,6 +91,8 @@ export function RetroTab() {
 
   /* ── Fetch data on mount ── */
   useEffect(() => {
+    if (!getCurrentProject()) return;
+
     api.retrospectives()
       .then((res) => setRetros(res.retrospectives ?? []))
       .catch(() => setRetros([]));

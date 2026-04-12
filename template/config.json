@@ -8,13 +8,31 @@
   "knowledge_inject": true,
   "critic_loop": {},
   "dashboard_port": 7777,
+  "lazy_spawn": true,
+  "max_concurrent_agents": 4,
+  "agent_idle_timeout": 180,
   "dashboard_auto_open": true,
+  "teams": {
+    "dev": {
+      "label": "개발팀",
+      "description": "프론트엔드, 백엔드, QA"
+    },
+    "planning": {
+      "label": "기획팀",
+      "description": "제품 기획, 디자인, UX"
+    },
+    "marketing": {
+      "label": "마케팅팀",
+      "description": "마케팅 전략, 브랜딩"
+    }
+  },
   "agents": [
     {
       "id": "orch",
       "engine": "claude",
       "agent_file": "ceo",
       "label": "Orch",
+      "team": null,
       "protected": true,
       "assigned_skills": ["autoplan", "plan-ceo-review", "office-hours", "retro", "ship", "land-and-deploy", "setup-deploy", "checkpoint", "learn", "make-company"]
     },
@@ -23,6 +41,7 @@
       "engine": "claude",
       "agent_file": "product-manager",
       "label": "PM",
+      "team": "planning",
       "assigned_skills": ["plan-ceo-review", "office-hours", "autoplan", "retro", "learn", "document-release", "checkpoint"]
     },
     {
@@ -30,6 +49,7 @@
       "engine": "claude",
       "agent_file": "ui-ux-designer",
       "label": "Design",
+      "team": "planning",
       "assigned_skills": ["design-consultation", "design-shotgun", "design-html", "plan-design-review", "design-review", "frontend-design", "brand-guidelines", "theme-factory", "canvas-design", "algorithmic-art"]
     },
     {
@@ -37,6 +57,7 @@
       "engine": "claude",
       "agent_file": "frontend-engineer",
       "label": "Frontend",
+      "team": "dev",
       "assigned_skills": ["design-html", "design-review", "frontend-design", "browse", "webapp-testing", "connect-chrome", "setup-browser-cookies", "careful", "freeze", "unfreeze", "guard"]
     },
     {
@@ -44,6 +65,7 @@
       "engine": "claude",
       "agent_file": "fe-qa",
       "label": "FE-QA",
+      "team": "dev",
       "assigned_skills": ["qa", "qa-only", "browse", "webapp-testing", "design-review", "canary", "benchmark", "investigate", "connect-chrome"]
     },
     {
@@ -51,6 +73,7 @@
       "engine": "claude",
       "agent_file": "backend-engineer",
       "label": "Backend",
+      "team": "dev",
       "assigned_skills": ["health", "investigate", "review", "code-review-expert", "codex", "benchmark", "setup-deploy", "careful", "freeze", "unfreeze", "guard"]
     },
     {
@@ -58,6 +81,7 @@
       "engine": "claude",
       "agent_file": "be-qa",
       "label": "BE-QA",
+      "team": "dev",
       "assigned_skills": ["qa", "qa-only", "health", "investigate", "review", "cso", "canary", "benchmark", "code-review-expert"]
     },
     {
@@ -65,6 +89,7 @@
       "engine": "claude",
       "agent_file": "marketing-strategist",
       "label": "Marketing",
+      "team": "marketing",
       "assigned_skills": ["brand-guidelines", "office-hours", "learn", "retro", "theme-factory", "canvas-design"]
     },
     {
@@ -72,6 +97,7 @@
       "engine": "gemini",
       "agent_file": "",
       "label": "Gemini",
+      "team": null,
       "assigned_skills": ["codex", "review", "cso", "investigate", "plan-eng-review", "debate", "discussion"]
     }
   ]

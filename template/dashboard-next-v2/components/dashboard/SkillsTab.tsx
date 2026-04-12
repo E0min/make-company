@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { api } from "@/lib/api";
+import { api, getCurrentProject } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -68,6 +68,8 @@ function MySkillsView() {
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
 
   useEffect(() => {
+    if (!getCurrentProject()) { setLoading(false); return; }
+
     setLoading(true);
     Promise.all([api.skillsInstalled(), api.skillsUsage()])
       .then(([skillsRes, usageRes]) => {
