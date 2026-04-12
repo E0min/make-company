@@ -68,7 +68,7 @@ if [ -f "$_version_file" ]; then
 fi
 
 # 런타임 디렉토리 초기화
-mkdir -p "$COMPANY_DIR"/{inbox,outbox,channel,logs,state,scripts,state/tasks}
+mkdir -p "$COMPANY_DIR"/{inbox,outbox,channel,logs,state,scripts,state/tasks,state/tickets,state/workflows}
 
 # 로그 회전: 1MB 초과 시 .archive로 이동
 mkdir -p "$COMPANY_DIR/.archive"

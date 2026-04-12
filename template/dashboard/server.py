@@ -1680,7 +1680,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             project_id = project_match.group(1)
             sub_path = project_match.group(2)
             # 예약된 레거시 경로 제외 (agent/, workflow/ 등은 기존 라우트)
-            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company'):
+            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company', 'tickets'):
                 company_dir = get_project_company_dir(project_id)
                 if not company_dir:
                     self.send_json({"error": f"project '{project_id}' not found"}, 404)
@@ -1782,6 +1782,45 @@ class DashboardHandler(BaseHTTPRequestHandler):
             config = cached(f"{project_id}:config", 2,
                             lambda: _read_config_for_project(company_dir))
             self.send_json({"teams": config.get("teams", {})})
+
+        elif sub_path == 'tickets' or sub_path.startswith('tickets/'):
+            tickets_dir = os.path.join(company_dir, 'state', 'tickets')
+            os.makedirs(tickets_dir, exist_ok=True)
+
+            if sub_path == 'tickets':
+                # GET /api/{project}/tickets — 전체 목록 (필터 지원)
+                qs = dict(parse_qs(parsed.query)) if hasattr(self, '_parsed_qs') else {}
+                # URL 쿼리 파싱
+                from urllib.parse import parse_qs as _pqs
+                _q = _pqs(urlparse(self.path).query)
+                filter_status = _q.get('status', [None])[0]
+                filter_team = _q.get('team', [None])[0]
+                filter_assignee = _q.get('assignee', [None])[0]
+
+                tickets = []
+                for f in sorted(os.listdir(tickets_dir)):
+                    if not f.endswith('.json'): continue
+                    try:
+                        with open(os.path.join(tickets_dir, f)) as fh:
+                            t = json.load(fh)
+                        if filter_status and t.get('status') != filter_status: continue
+                        if filter_team and t.get('team') != filter_team: continue
+                        if filter_assignee and t.get('assignee') != filter_assignee: continue
+                        tickets.append(t)
+                    except: pass
+                # 최신순 정렬
+                tickets.sort(key=lambda t: t.get('updated_at', ''), reverse=True)
+                self.send_json({"tickets": tickets})
+
+            else:
+                # GET /api/{project}/tickets/{id} — 상세
+                ticket_id = sub_path.split('/', 1)[1] if '/' in sub_path else ''
+                ticket_file = os.path.join(tickets_dir, f"{ticket_id}.json")
+                if os.path.exists(ticket_file):
+                    with open(ticket_file) as fh:
+                        self.send_json(json.load(fh))
+                else:
+                    self.send_json({"error": "ticket not found"}, 404)
 
         elif sub_path == 'flow':
             # 실시간 작업 흐름 DAG: channel/general.md에서 에이전트 간 메시지 흐름 추출
@@ -2227,7 +2266,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             project_id = project_match.group(1)
             sub_path = project_match.group(2)
             # 예약된 레거시 경로 제외
-            if project_id not in ('run', 'workflow', 'workflows', 'agents', 'retrospectives', 'stop', 'projects', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company'):
+            if project_id not in ('run', 'workflow', 'workflows', 'agents', 'retrospectives', 'stop', 'projects', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company', 'tickets'):
                 company_dir = get_project_company_dir(project_id)
                 if not company_dir:
                     self.send_json({"error": f"project '{project_id}' not found"}, 404)
@@ -2464,6 +2503,98 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "워크플로우를 찾을 수 없습니다"}, 404)
                 return
             invalidate_cache(f"{project_id}:workflows")
+            self.send_json({"ok": True})
+
+        elif sub_path == 'tickets' or sub_path == 'tickets/create':
+            # POST /api/{project}/tickets — 티켓 생성
+            tickets_dir = os.path.join(company_dir, 'state', 'tickets')
+            os.makedirs(tickets_dir, exist_ok=True)
+            # ID 자동 생성 (TASK-001, TASK-002, ...)
+            existing = [f for f in os.listdir(tickets_dir) if f.startswith('TASK-') and f.endswith('.json')]
+            next_num = max([int(f[5:-5]) for f in existing] + [0]) + 1
+            ticket_id = f"TASK-{next_num:03d}"
+            now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            ticket = {
+                "id": ticket_id,
+                "title": body.get('title', '').strip(),
+                "status": body.get('status', 'backlog'),
+                "priority": body.get('priority', 'medium'),
+                "assignee": body.get('assignee') or None,
+                "team": body.get('team') or None,
+                "parent": body.get('parent') or None,
+                "children": [],
+                "created_at": now,
+                "updated_at": now,
+                "created_by": body.get('created_by', 'user'),
+                "goal": body.get('goal') or None,
+                "labels": body.get('labels', []),
+                "description": body.get('description', ''),
+                "acceptance_criteria": body.get('acceptance_criteria', []),
+                "activity": [{"ts": now, "agent": body.get('created_by', 'user'), "action": "created"}],
+            }
+            if not ticket['title']:
+                self.send_json({"ok": False, "error": "제목을 입력하세요"}, 400)
+                return
+            with open(os.path.join(tickets_dir, f"{ticket_id}.json"), 'w') as f:
+                json.dump(ticket, f, ensure_ascii=False, indent=2)
+            # 부모 티켓에 children 추가
+            if ticket['parent']:
+                parent_file = os.path.join(tickets_dir, f"{ticket['parent']}.json")
+                if os.path.exists(parent_file):
+                    with open(parent_file) as f: pt = json.load(f)
+                    if ticket_id not in pt.get('children', []):
+                        pt.setdefault('children', []).append(ticket_id)
+                        pt['updated_at'] = now
+                        with open(parent_file, 'w') as f: json.dump(pt, f, ensure_ascii=False, indent=2)
+            self.send_json({"ok": True, "id": ticket_id, "ticket": ticket})
+
+        elif sub_path.startswith('tickets/') and sub_path.endswith('/update'):
+            # POST /api/{project}/tickets/{id}/update — 상태/담당자 변경
+            ticket_id = sub_path.split('/')[1]
+            tickets_dir = os.path.join(company_dir, 'state', 'tickets')
+            ticket_file = os.path.join(tickets_dir, f"{ticket_id}.json")
+            if not os.path.exists(ticket_file):
+                self.send_json({"ok": False, "error": "ticket not found"}, 404)
+                return
+            with open(ticket_file) as f: ticket = json.load(f)
+            now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            changed = []
+            for field in ('status', 'priority', 'assignee', 'team', 'title', 'description', 'labels', 'acceptance_criteria', 'goal'):
+                if field in body and body[field] != ticket.get(field):
+                    old_val = ticket.get(field)
+                    ticket[field] = body[field]
+                    changed.append(field)
+                    ticket['activity'].append({
+                        "ts": now,
+                        "agent": body.get('agent', 'user'),
+                        "action": f"{field}_change",
+                        "from": old_val,
+                        "to": body[field],
+                    })
+            ticket['updated_at'] = now
+            with open(ticket_file, 'w') as f:
+                json.dump(ticket, f, ensure_ascii=False, indent=2)
+            self.send_json({"ok": True, "changed": changed, "ticket": ticket})
+
+        elif sub_path.startswith('tickets/') and sub_path.endswith('/comment'):
+            # POST /api/{project}/tickets/{id}/comment — 코멘트 추가
+            ticket_id = sub_path.split('/')[1]
+            tickets_dir = os.path.join(company_dir, 'state', 'tickets')
+            ticket_file = os.path.join(tickets_dir, f"{ticket_id}.json")
+            if not os.path.exists(ticket_file):
+                self.send_json({"ok": False, "error": "ticket not found"}, 404)
+                return
+            with open(ticket_file) as f: ticket = json.load(f)
+            now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            ticket['activity'].append({
+                "ts": now,
+                "agent": body.get('agent', 'user'),
+                "action": "comment",
+                "message": body.get('message', ''),
+            })
+            ticket['updated_at'] = now
+            with open(ticket_file, 'w') as f:
+                json.dump(ticket, f, ensure_ascii=False, indent=2)
             self.send_json({"ok": True})
 
         elif sub_path == 'teams/save':

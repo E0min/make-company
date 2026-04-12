@@ -165,6 +165,44 @@ export const api = {
   /** 특정 에이전트 전체 정보 (frontmatter + content) */
   agentContent: (id: string) => getJSON<AgentFull>(`${apiBase()}/agent/${id}/content`),
 
+  // ── Tickets ──
+
+  /** 티켓 목록 (필터 지원) */
+  tickets: (filters?: { status?: string; team?: string; assignee?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.status) params.set("status", filters.status);
+    if (filters?.team) params.set("team", filters.team);
+    if (filters?.assignee) params.set("assignee", filters.assignee);
+    const qs = params.toString();
+    return getJSON<import("./types").TicketsResponse>(`${apiBase()}/tickets${qs ? `?${qs}` : ""}`);
+  },
+
+  /** 티켓 상세 */
+  ticket: (id: string) =>
+    getJSON<import("./types").Ticket>(`${apiBase()}/tickets/${id}`),
+
+  /** 티켓 생성 */
+  ticketCreate: (body: {
+    title: string;
+    description?: string;
+    status?: string;
+    priority?: string;
+    assignee?: string | null;
+    team?: string | null;
+    parent?: string | null;
+    labels?: string[];
+    acceptance_criteria?: string[];
+    created_by?: string;
+  }) => postJSON<{ ok: boolean; id?: string; ticket?: import("./types").Ticket }>(`${apiBase()}/tickets`, body),
+
+  /** 티켓 업데이트 (상태/담당자/등 변경) */
+  ticketUpdate: (id: string, body: Record<string, unknown>) =>
+    postJSON<{ ok: boolean; changed?: string[]; ticket?: import("./types").Ticket }>(`${apiBase()}/tickets/${id}/update`, body),
+
+  /** 티켓 코멘트 추가 */
+  ticketComment: (id: string, message: string, agent?: string) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/tickets/${id}/comment`, { message, agent: agent ?? "user" }),
+
   /** 실시간 작업 흐름 DAG (에이전트 간 메시지 흐름) */
   flow: () => getJSON<{ nodes: Array<{ id: string; label: string; team: string | null; teamLabel: string; state: string }>; edges: Array<{ source: string; target: string; timestamp: string }> }>(`${apiBase()}/flow`),
 

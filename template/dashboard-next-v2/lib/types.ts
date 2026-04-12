@@ -33,6 +33,45 @@ export interface StateResponse {
   now: number;
 }
 
+// --- Tickets ---
+
+export type TicketStatus = "backlog" | "todo" | "in_progress" | "review" | "done";
+export type TicketPriority = "critical" | "high" | "medium" | "low";
+
+export interface TicketActivity {
+  ts: string;
+  agent: string;
+  action: string;
+  from?: unknown;
+  to?: unknown;
+  message?: string;
+  result?: string;
+  reason?: string;
+}
+
+export interface Ticket {
+  id: string;
+  title: string;
+  status: TicketStatus;
+  priority: TicketPriority;
+  assignee: string | null;
+  team: string | null;
+  parent: string | null;
+  children: string[];
+  created_at: string;
+  updated_at: string;
+  created_by: string;
+  goal: string | null;
+  labels: string[];
+  description: string;
+  acceptance_criteria: string[];
+  activity: TicketActivity[];
+}
+
+export interface TicketsResponse {
+  tickets: Ticket[];
+}
+
 // --- Activity ---
 
 /** GET /api/activity → entries[] 항목 */

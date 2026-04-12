@@ -17,6 +17,7 @@ import { SkillsTab } from "@/components/dashboard/SkillsTab";
 import { HealthTab } from "@/components/dashboard/HealthTab";
 import { RetroTab } from "@/components/dashboard/RetroTab";
 import { AgentProfileTab } from "@/components/dashboard/AgentProfileTab";
+import { TicketsTab } from "@/components/dashboard/TicketsTab";
 import {
   LayoutDashboard,
   GitBranch,
@@ -30,6 +31,7 @@ import {
   Activity,
   History,
   UserCircle,
+  Ticket,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -37,6 +39,7 @@ import type { ActivityEntry } from "@/lib/types";
 
 const NAV_ITEMS = [
   { key: "overview", label: "Overview", icon: LayoutDashboard, shortcut: "g o" },
+  { key: "tickets", label: "Tickets", icon: Ticket, shortcut: "g k" },
   { key: "run", label: "Workflows", icon: GitBranch, shortcut: "g r" },
   { key: "activity", label: "Activity", icon: ScrollText, shortcut: "g a" },
   { key: "agents", label: "Agents", icon: Users, shortcut: "g g" },
@@ -375,6 +378,9 @@ export default function DashboardPage() {
           )}
           {view === "activity" && (
             <ActivityTab entries={activityEntries} onClear={clearActivity} />
+          )}
+          {view === "tickets" && (
+            <TicketsTab state={stateQ.data} agents={agentsQ.data} />
           )}
           {view === "agents" && (
             <AgentsTab state={stateQ.data} agents={agentsQ.data} onRefetch={refetchAll} onOpenTerminal={openTerminal} />
