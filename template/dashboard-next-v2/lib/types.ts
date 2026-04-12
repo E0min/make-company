@@ -89,6 +89,22 @@ export interface GoalsResponse {
   goals: Goal[];
 }
 
+// --- Structured Events (activity.jsonl) ---
+
+export interface StructuredEvent {
+  ts: string;
+  event: string;
+  agent?: string;
+  ticket?: string;
+  team?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface EventsResponse {
+  events: StructuredEvent[];
+  total: number;
+}
+
 // --- Activity ---
 
 /** GET /api/activity → entries[] 항목 */

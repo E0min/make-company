@@ -165,6 +165,35 @@ export const api = {
   /** 특정 에이전트 전체 정보 (frontmatter + content) */
   agentContent: (id: string) => getJSON<AgentFull>(`${apiBase()}/agent/${id}/content`),
 
+  // ── Structured Events ──
+
+  /** 구조화된 이벤트 조회 (activity.jsonl) */
+  events: (filters?: { limit?: number; event?: string; agent?: string; ticket?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.event) params.set("event", filters.event);
+    if (filters?.agent) params.set("agent", filters.agent);
+    if (filters?.ticket) params.set("ticket", filters.ticket);
+    const qs = params.toString();
+    return getJSON<import("./types").EventsResponse>(`${apiBase()}/events${qs ? `?${qs}` : ""}`);
+  },
+
+  /** 이벤트 기록 */
+  eventLog: (event: { event: string; agent?: string; ticket?: string; team?: string; data?: Record<string, unknown> }) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/events`, event),
+
+  // ── Git ──
+
+  /** Git 커밋 로그 (에이전트/티켓 태그 파싱) */
+  gitLog: (filters?: { limit?: number; agent?: string; ticket?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.agent) params.set("agent", filters.agent);
+    if (filters?.ticket) params.set("ticket", filters.ticket);
+    const qs = params.toString();
+    return getJSON<{ commits: Array<{ hash: string; short_hash: string; author: string; date: string; message: string; agent: string | null; ticket: string | null }> }>(`${apiBase()}/git/log${qs ? `?${qs}` : ""}`);
+  },
+
   // ── Goals ──
 
   goals: () => getJSON<import("./types").GoalsResponse>(`${apiBase()}/goals`),

@@ -1680,7 +1680,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             project_id = project_match.group(1)
             sub_path = project_match.group(2)
             # 예약된 레거시 경로 제외 (agent/, workflow/ 등은 기존 라우트)
-            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company', 'tickets', 'goals'):
+            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company', 'tickets', 'goals', 'events', 'git'):
                 company_dir = get_project_company_dir(project_id)
                 if not company_dir:
                     self.send_json({"error": f"project '{project_id}' not found"}, 404)
@@ -1947,6 +1947,79 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif sub_path == 'activity':
             entries = _read_activity_for_project(company_dir)
             self.send_json({"entries": entries})
+
+        elif sub_path == 'events' or sub_path.startswith('events?'):
+            # GET /api/{project}/events — 구조화된 JSONL 이벤트 조회
+            from urllib.parse import parse_qs as _ev_pqs
+            _ev_q = _ev_pqs(urlparse(self.path).query)
+            limit = int(_ev_q.get('limit', ['100'])[0])
+            event_type = _ev_q.get('event', [None])[0]
+            agent_filter = _ev_q.get('agent', [None])[0]
+            ticket_filter = _ev_q.get('ticket', [None])[0]
+
+            jsonl_path = os.path.join(company_dir, 'activity.jsonl')
+            events = []
+            if os.path.exists(jsonl_path):
+                with open(jsonl_path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line: continue
+                        try:
+                            ev = json.loads(line)
+                            if event_type and ev.get('event') != event_type: continue
+                            if agent_filter and ev.get('agent') != agent_filter: continue
+                            if ticket_filter and ev.get('ticket') != ticket_filter: continue
+                            events.append(ev)
+                        except: pass
+            # 최신순, limit 적용
+            events = events[-limit:]
+            events.reverse()
+            self.send_json({"events": events, "total": len(events)})
+
+        elif sub_path == 'git/log' or sub_path.startswith('git/log?'):
+            # GET /api/{project}/git/log — 에이전트/티켓별 커밋 추적
+            from urllib.parse import parse_qs as _git_pqs
+            _git_q = _git_pqs(urlparse(self.path).query)
+            limit = int(_git_q.get('limit', ['50'])[0])
+            agent_filter = _git_q.get('agent', [None])[0]
+            ticket_filter = _git_q.get('ticket', [None])[0]
+
+            project_root = os.path.dirname(os.path.dirname(company_dir))
+            commits = []
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['git', 'log', f'--max-count={limit * 2}', '--format=%H|%h|%an|%ai|%s'],
+                    cwd=project_root, capture_output=True, text=True, timeout=10
+                )
+                for line in result.stdout.strip().split('\n'):
+                    if not line: continue
+                    parts = line.split('|', 4)
+                    if len(parts) < 5: continue
+                    full_hash, short_hash, author, date, message = parts
+
+                    # [agent:xxx] [ticket:TASK-xxx] 태그 파싱
+                    import re as _re
+                    agent_match = _re.search(r'\[agent:([^\]]+)\]', message)
+                    ticket_match = _re.search(r'\[ticket:([^\]]+)\]', message)
+                    agent_tag = agent_match.group(1) if agent_match else None
+                    ticket_tag = ticket_match.group(1) if ticket_match else None
+
+                    if agent_filter and agent_tag != agent_filter: continue
+                    if ticket_filter and ticket_tag != ticket_filter: continue
+
+                    commits.append({
+                        "hash": full_hash,
+                        "short_hash": short_hash,
+                        "author": author,
+                        "date": date,
+                        "message": message,
+                        "agent": agent_tag,
+                        "ticket": ticket_tag,
+                    })
+                    if len(commits) >= limit: break
+            except Exception: pass
+            self.send_json({"commits": commits})
 
         elif sub_path == 'agents':
             agents = cached(f"{project_id}:agents_full", 5,
@@ -2544,6 +2617,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
             invalidate_cache(f"{project_id}:workflows")
             self.send_json({"ok": True})
 
+        elif sub_path == 'events' or sub_path == 'events/log':
+            # POST /api/{project}/events — 구조화된 이벤트 기록
+            jsonl_path = os.path.join(company_dir, 'activity.jsonl')
+            now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            event = {
+                "ts": body.get('ts', now),
+                "event": body.get('event', 'unknown'),
+                "agent": body.get('agent'),
+                "ticket": body.get('ticket'),
+                "team": body.get('team'),
+                "data": body.get('data', {}),
+            }
+            # None 값 제거
+            event = {k: v for k, v in event.items() if v is not None}
+            with open(jsonl_path, 'a') as f:
+                f.write(json.dumps(event, ensure_ascii=False) + '\n')
+            self.send_json({"ok": True})
+
         elif sub_path == 'goals' or sub_path == 'goals/create':
             # POST /api/{project}/goals — 목표 생성
             goals_dir = os.path.join(company_dir, 'state', 'goals')
@@ -2636,6 +2727,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         pt.setdefault('children', []).append(ticket_id)
                         pt['updated_at'] = now
                         with open(parent_file, 'w') as f: json.dump(pt, f, ensure_ascii=False, indent=2)
+            # activity.jsonl에 이벤트 기록
+            _jsonl = os.path.join(company_dir, 'activity.jsonl')
+            with open(_jsonl, 'a') as _jf:
+                _jf.write(json.dumps({"ts": now, "event": "ticket_created", "ticket": ticket_id, "agent": ticket['created_by'], "data": {"title": ticket['title'], "priority": ticket['priority']}}, ensure_ascii=False) + '\n')
             self.send_json({"ok": True, "id": ticket_id, "ticket": ticket})
 
         elif sub_path.startswith('tickets/') and sub_path.endswith('/update'):
@@ -2711,6 +2806,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ticket['updated_at'] = now
             with open(ticket_file, 'w') as f:
                 json.dump(ticket, f, ensure_ascii=False, indent=2)
+            # activity.jsonl에 변경 이벤트
+            if changed:
+                _jsonl = os.path.join(company_dir, 'activity.jsonl')
+                for _cf in changed:
+                    with open(_jsonl, 'a') as _jf:
+                        _jf.write(json.dumps({"ts": now, "event": f"ticket_{_cf}_change", "ticket": ticket_id, "agent": body.get('agent', 'user'), "data": {"field": _cf, "to": ticket.get(_cf)}}, ensure_ascii=False) + '\n')
             self.send_json({"ok": True, "changed": changed, "ticket": ticket})
 
         elif sub_path.startswith('tickets/') and sub_path.endswith('/comment'):
