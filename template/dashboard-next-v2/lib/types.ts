@@ -72,6 +72,23 @@ export interface TicketsResponse {
   tickets: Ticket[];
 }
 
+// --- Goals ---
+
+export interface Goal {
+  id: string;
+  title: string;
+  mission: string;
+  status: "active" | "completed" | "archived";
+  tickets: string[];
+  progress: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GoalsResponse {
+  goals: Goal[];
+}
+
 // --- Activity ---
 
 /** GET /api/activity → entries[] 항목 */

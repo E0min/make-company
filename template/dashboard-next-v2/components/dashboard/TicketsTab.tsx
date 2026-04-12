@@ -34,7 +34,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { api, getCurrentProject } from "@/lib/api";
 import type {
-  Ticket, TicketStatus, TicketPriority, StateResponse, AgentsResponse,
+  Ticket, TicketStatus, TicketPriority, StateResponse, AgentsResponse, Goal,
 } from "@/lib/types";
 
 // ━━━ 상수 ━━━
@@ -65,8 +65,10 @@ interface Props {
 
 export function TicketsTab({ state, agents }: Props) {
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
+  const [goalCreateOpen, setGoalCreateOpen] = useState(false);
   const [detailTicket, setDetailTicket] = useState<Ticket | null>(null);
   const [viewMode, setViewMode] = useState<"board" | "list">("board");
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -74,16 +76,17 @@ export function TicketsTab({ state, agents }: Props) {
   const teams = state?.teams ?? {};
   const agentList = agents?.agents ?? [];
 
-  const fetchTickets = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     if (!getCurrentProject()) { setLoading(false); return; }
     try {
-      const res = await api.tickets();
-      setTickets(res.tickets ?? []);
-    } catch { setTickets([]); }
+      const [tRes, gRes] = await Promise.all([api.tickets(), api.goals()]);
+      setTickets(tRes.tickets ?? []);
+      setGoals(gRes.goals ?? []);
+    } catch { setTickets([]); setGoals([]); }
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { fetchTickets(); }, [fetchTickets]);
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
   // 상태별 그룹핑
   const grouped: Record<TicketStatus, Ticket[]> = {
@@ -144,12 +147,35 @@ export function TicketsTab({ state, agents }: Props) {
               <List className="size-3" />
             </Button>
           </div>
+          <Button variant="outline" size="sm" onClick={() => setGoalCreateOpen(true)}>
+            <Plus className="size-3.5" />
+            Goal
+          </Button>
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="size-3.5" />
-            New Ticket
+            Ticket
           </Button>
         </div>
       </div>
+
+      {/* Goals 진행률 바 */}
+      {goals.length > 0 && (
+        <div className="flex gap-3 overflow-x-auto pb-1">
+          {goals.filter((g) => g.status === "active").map((g) => (
+            <div key={g.id} className="shrink-0 min-w-[200px] p-3 rounded-lg border border-border/50 bg-muted/10 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold truncate">{g.title}</span>
+                <span className="text-[10px] text-muted-foreground tabular-nums">{Math.round(g.progress * 100)}%</span>
+              </div>
+              {g.mission && <div className="text-[10px] text-muted-foreground truncate">{g.mission}</div>}
+              <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${g.progress * 100}%` }} />
+              </div>
+              <div className="text-[9px] text-muted-foreground">{g.tickets.length} tickets · {g.id}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* 보드 뷰 */}
       {viewMode === "board" ? (
@@ -205,12 +231,16 @@ export function TicketsTab({ state, agents }: Props) {
       )}
 
       {/* 생성 다이얼로그 */}
+      {/* Goal 생성 */}
+      <GoalCreateDialog open={goalCreateOpen} onOpenChange={setGoalCreateOpen} onCreated={fetchAll} />
+
       <CreateTicketDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
         teams={teams}
+        goals={goals}
         agents={agentList}
-        onCreated={fetchTickets}
+        onCreated={fetchAll}
       />
 
       {/* 상세 패널 */}
@@ -220,7 +250,7 @@ export function TicketsTab({ state, agents }: Props) {
           teams={teams}
           agents={agentList}
           onClose={() => setDetailTicket(null)}
-          onUpdated={fetchTickets}
+          onUpdated={fetchAll}
         />
       )}
     </div>
@@ -320,11 +350,12 @@ function TicketCard({
 // ━━━ 생성 다이얼로그 ━━━
 
 function CreateTicketDialog({
-  open, onOpenChange, teams, agents, onCreated,
+  open, onOpenChange, teams, goals, agents, onCreated,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   teams: StateResponse["teams"];
+  goals: Goal[];
   agents: { id: string; name: string }[];
   onCreated: () => Promise<void>;
 }) {
@@ -333,12 +364,13 @@ function CreateTicketDialog({
   const [priority, setPriority] = useState<TicketPriority>("medium");
   const [assignee, setAssignee] = useState<string | null>(null);
   const [team, setTeam] = useState<string | null>(null);
+  const [goal, setGoal] = useState<string | null>(null);
   const [ac, setAc] = useState("");
   const [labels, setLabels] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) { setTitle(""); setDesc(""); setPriority("medium"); setAssignee(null); setTeam(null); setAc(""); setLabels(""); }
+    if (open) { setTitle(""); setDesc(""); setPriority("medium"); setAssignee(null); setTeam(null); setGoal(null); setAc(""); setLabels(""); }
   }, [open]);
 
   const handleCreate = async () => {
@@ -372,7 +404,7 @@ function CreateTicketDialog({
             <Label>제목</Label>
             <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="무엇을 해야 하나요?" autoFocus />
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <div className="space-y-1.5">
               <Label>우선순위</Label>
               <Select value={priority} onValueChange={(v) => setPriority(v as TicketPriority)}>
@@ -402,6 +434,16 @@ function CreateTicketDialog({
                 <SelectContent>
                   <SelectItem value="__none__">미정</SelectItem>
                   {Object.entries(teams).map(([k, v]) => <SelectItem key={k} value={k}>{v.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>목표</Label>
+              <Select value={goal ?? "__none__"} onValueChange={(v) => setGoal(v === "__none__" ? null : v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">없음</SelectItem>
+                  {goals.filter((g) => g.status === "active").map((g) => <SelectItem key={g.id} value={g.id}>{g.title}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -545,5 +587,59 @@ function TicketDetailPanel({
         </div>
       </div>
     </div>
+  );
+}
+
+// ━━━ Goal 생성 다이얼로그 ━━━
+
+function GoalCreateDialog({
+  open, onOpenChange, onCreated,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  onCreated: () => Promise<void>;
+}) {
+  const [title, setTitle] = useState("");
+  const [mission, setMission] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { if (open) { setTitle(""); setMission(""); } }, [open]);
+
+  const handleCreate = async () => {
+    if (!title.trim()) { toast.warning("목표 제목을 입력하세요"); return; }
+    setSaving(true);
+    const r = await api.goalCreate({ title: title.trim(), mission: mission.trim() });
+    if (r.ok) {
+      toast.success("목표 생성됨", { description: String(r.id ?? "") });
+      onOpenChange(false);
+      await onCreated();
+    } else {
+      toast.error("생성 실패", { description: r.error });
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader><DialogTitle>새 목표</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label>목표</Label>
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="사용자 인증 시스템 구축" autoFocus />
+          </div>
+          <div className="space-y-1.5">
+            <Label>미션 (왜 이걸 하는가)</Label>
+            <Input value={mission} onChange={(e) => setMission(e.target.value)} placeholder="안전한 사용자 경험 제공" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>취소</Button>
+          <Button onClick={handleCreate} disabled={saving}>
+            {saving ? <Loader2 className="size-3.5 animate-spin" /> : null} 생성
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

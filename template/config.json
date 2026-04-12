@@ -11,6 +11,16 @@
   "lazy_spawn": true,
   "max_concurrent_agents": 4,
   "agent_idle_timeout": 180,
+  "quality_gates": {
+    "in_progress → review": {
+      "reviewer": "qa",
+      "criteria": ["완료 기준(AC) 정의됨"]
+    },
+    "review → done": {
+      "reviewer": "qa",
+      "criteria": ["리뷰어 승인"]
+    }
+  },
   "dashboard_auto_open": true,
   "teams": {
     "dev": {

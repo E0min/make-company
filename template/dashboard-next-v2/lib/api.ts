@@ -165,6 +165,19 @@ export const api = {
   /** 특정 에이전트 전체 정보 (frontmatter + content) */
   agentContent: (id: string) => getJSON<AgentFull>(`${apiBase()}/agent/${id}/content`),
 
+  // ── Goals ──
+
+  goals: () => getJSON<import("./types").GoalsResponse>(`${apiBase()}/goals`),
+
+  goalCreate: (body: { title: string; mission?: string; tickets?: string[] }) =>
+    postJSON<{ ok: boolean; id?: string; goal?: import("./types").Goal }>(`${apiBase()}/goals`, body),
+
+  goalUpdate: (id: string, body: Record<string, unknown>) =>
+    postJSON<{ ok: boolean; goal?: import("./types").Goal }>(`${apiBase()}/goals/${id}/update`, body),
+
+  goalDelete: (id: string) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/goals/${id}/delete`, {}),
+
   // ── Tickets ──
 
   /** 티켓 목록 (필터 지원) */

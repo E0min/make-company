@@ -1680,7 +1680,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             project_id = project_match.group(1)
             sub_path = project_match.group(2)
             # 예약된 레거시 경로 제외 (agent/, workflow/ 등은 기존 라우트)
-            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company', 'tickets'):
+            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company', 'tickets', 'goals'):
                 company_dir = get_project_company_dir(project_id)
                 if not company_dir:
                     self.send_json({"error": f"project '{project_id}' not found"}, 404)
@@ -1782,6 +1782,45 @@ class DashboardHandler(BaseHTTPRequestHandler):
             config = cached(f"{project_id}:config", 2,
                             lambda: _read_config_for_project(company_dir))
             self.send_json({"teams": config.get("teams", {})})
+
+        elif sub_path == 'goals' or sub_path.startswith('goals/'):
+            goals_dir = os.path.join(company_dir, 'state', 'goals')
+            os.makedirs(goals_dir, exist_ok=True)
+            tickets_dir = os.path.join(company_dir, 'state', 'tickets')
+
+            if sub_path == 'goals':
+                # GET /api/{project}/goals — 목록 + 진행률 자동 계산
+                goals = []
+                for f in sorted(os.listdir(goals_dir)):
+                    if not f.endswith('.json'): continue
+                    try:
+                        with open(os.path.join(goals_dir, f)) as fh:
+                            g = json.load(fh)
+                        # 진행률 계산: 하위 티켓 중 done 비율
+                        ticket_ids = g.get('tickets', [])
+                        if ticket_ids:
+                            done_count = 0
+                            for tid in ticket_ids:
+                                tf = os.path.join(tickets_dir, f"{tid}.json")
+                                if os.path.exists(tf):
+                                    with open(tf) as th:
+                                        t = json.load(th)
+                                    if t.get('status') == 'done':
+                                        done_count += 1
+                            g['progress'] = done_count / len(ticket_ids)
+                        else:
+                            g['progress'] = 0
+                        goals.append(g)
+                    except: pass
+                self.send_json({"goals": goals})
+            else:
+                goal_id = sub_path.split('/', 1)[1] if '/' in sub_path else ''
+                goal_file = os.path.join(goals_dir, f"{goal_id}.json")
+                if os.path.exists(goal_file):
+                    with open(goal_file) as fh:
+                        self.send_json(json.load(fh))
+                else:
+                    self.send_json({"error": "goal not found"}, 404)
 
         elif sub_path == 'tickets' or sub_path.startswith('tickets/'):
             tickets_dir = os.path.join(company_dir, 'state', 'tickets')
@@ -2505,6 +2544,57 @@ class DashboardHandler(BaseHTTPRequestHandler):
             invalidate_cache(f"{project_id}:workflows")
             self.send_json({"ok": True})
 
+        elif sub_path == 'goals' or sub_path == 'goals/create':
+            # POST /api/{project}/goals — 목표 생성
+            goals_dir = os.path.join(company_dir, 'state', 'goals')
+            os.makedirs(goals_dir, exist_ok=True)
+            existing = [f for f in os.listdir(goals_dir) if f.startswith('GOAL-') and f.endswith('.json')]
+            next_num = max([int(f[5:-5]) for f in existing] + [0]) + 1
+            goal_id = f"GOAL-{next_num:03d}"
+            now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            goal = {
+                "id": goal_id,
+                "title": body.get('title', '').strip(),
+                "mission": body.get('mission', '').strip(),
+                "status": body.get('status', 'active'),
+                "tickets": body.get('tickets', []),
+                "progress": 0,
+                "created_at": now,
+                "updated_at": now,
+            }
+            if not goal['title']:
+                self.send_json({"ok": False, "error": "제목을 입력하세요"}, 400)
+                return
+            with open(os.path.join(goals_dir, f"{goal_id}.json"), 'w') as f:
+                json.dump(goal, f, ensure_ascii=False, indent=2)
+            self.send_json({"ok": True, "id": goal_id, "goal": goal})
+
+        elif sub_path.startswith('goals/') and sub_path.endswith('/update'):
+            # POST /api/{project}/goals/{id}/update
+            goal_id = sub_path.split('/')[1]
+            goals_dir = os.path.join(company_dir, 'state', 'goals')
+            goal_file = os.path.join(goals_dir, f"{goal_id}.json")
+            if not os.path.exists(goal_file):
+                self.send_json({"ok": False, "error": "goal not found"}, 404)
+                return
+            with open(goal_file) as f: goal = json.load(f)
+            now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            for field in ('title', 'mission', 'status', 'tickets'):
+                if field in body:
+                    goal[field] = body[field]
+            goal['updated_at'] = now
+            with open(goal_file, 'w') as f:
+                json.dump(goal, f, ensure_ascii=False, indent=2)
+            self.send_json({"ok": True, "goal": goal})
+
+        elif sub_path.startswith('goals/') and sub_path.endswith('/delete'):
+            goal_id = sub_path.split('/')[1]
+            goals_dir = os.path.join(company_dir, 'state', 'goals')
+            goal_file = os.path.join(goals_dir, f"{goal_id}.json")
+            if os.path.exists(goal_file):
+                os.remove(goal_file)
+            self.send_json({"ok": True})
+
         elif sub_path == 'tickets' or sub_path == 'tickets/create':
             # POST /api/{project}/tickets — 티켓 생성
             tickets_dir = os.path.join(company_dir, 'state', 'tickets')
@@ -2558,6 +2648,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             with open(ticket_file) as f: ticket = json.load(f)
             now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+            # ━━━ 품질 게이트 체크 (status 변경 시) ━━━
+            if 'status' in body and body['status'] != ticket.get('status'):
+                config = _read_config_for_project(company_dir)
+                gates = config.get('quality_gates', {})
+                transition = f"{ticket['status']} → {body['status']}"
+                gate = gates.get(transition)
+                if gate:
+                    # AC 체크: acceptance_criteria가 정의되어 있는데 비어있으면 거부
+                    criteria = gate.get('criteria', [])
+                    failures = []
+                    for c in criteria:
+                        c_lower = c.lower()
+                        if 'ac' in c_lower or '완료 기준' in c_lower or 'acceptance' in c_lower:
+                            if not ticket.get('acceptance_criteria'):
+                                failures.append(c)
+                        # 커스텀 기준은 문자열로만 기록 (자동 검증 불가 → 리뷰어에게 위임)
+                    if failures:
+                        ticket['activity'].append({
+                            "ts": now,
+                            "agent": "system",
+                            "action": "gate_rejected",
+                            "gate": transition,
+                            "failures": failures,
+                        })
+                        ticket['updated_at'] = now
+                        with open(ticket_file, 'w') as f:
+                            json.dump(ticket, f, ensure_ascii=False, indent=2)
+                        self.send_json({
+                            "ok": False,
+                            "error": f"품질 게이트 거부: {transition}",
+                            "gate": transition,
+                            "failures": failures,
+                            "reviewer": gate.get('reviewer'),
+                        })
+                        return
+
             changed = []
             for field in ('status', 'priority', 'assignee', 'team', 'title', 'description', 'labels', 'acceptance_criteria', 'goal'):
                 if field in body and body[field] != ticket.get(field):
@@ -2571,6 +2698,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "from": old_val,
                         "to": body[field],
                     })
+            # 상태가 done으로 변경되면 연결된 goal의 티켓 목록에 추가
+            if 'status' in changed and ticket.get('status') == 'done' and ticket.get('goal'):
+                goals_dir = os.path.join(company_dir, 'state', 'goals')
+                goal_file = os.path.join(goals_dir, f"{ticket['goal']}.json")
+                if os.path.exists(goal_file):
+                    with open(goal_file) as gf: goal = json.load(gf)
+                    if ticket_id not in goal.get('tickets', []):
+                        goal.setdefault('tickets', []).append(ticket_id)
+                        goal['updated_at'] = now
+                        with open(goal_file, 'w') as gf: json.dump(goal, gf, ensure_ascii=False, indent=2)
             ticket['updated_at'] = now
             with open(ticket_file, 'w') as f:
                 json.dump(ticket, f, ensure_ascii=False, indent=2)
