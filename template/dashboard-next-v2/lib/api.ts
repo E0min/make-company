@@ -193,6 +193,11 @@ export const api = {
   insights: () =>
     getJSON<{ total_events: number; agent_activity: Record<string, number>; top_agents: [string, number][]; gate_rejections: number; cycle_times: Array<{ ticket: string; title: string; seconds: number }>; avg_cycle_seconds: number; status_counts: Record<string, number> }>(`${apiBase()}/insights`),
 
+  // ── Org Chart ──
+
+  orgchart: () =>
+    getJSON<{ nodes: Array<{ id: string; label: string; team: string | null; teamLabel: string; state: string; reports_to: string | null; approves: string[]; heartbeat: Record<string, unknown> | null }>; edges: Array<{ source: string; target: string; type: string }> }>(`${apiBase()}/orgchart`),
+
   // ── Git ──
 
   /** Git 커밋 로그 (에이전트/티켓 태그 파싱) */

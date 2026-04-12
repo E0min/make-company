@@ -1680,7 +1680,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             project_id = project_match.group(1)
             sub_path = project_match.group(2)
             # 예약된 레거시 경로 제외 (agent/, workflow/ 등은 기존 라우트)
-            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company', 'tickets', 'goals', 'events', 'git', 'heartbeats', 'heartbeat', 'insights'):
+            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company', 'tickets', 'goals', 'events', 'git', 'heartbeats', 'heartbeat', 'insights', 'orgchart'):
                 company_dir = get_project_company_dir(project_id)
                 if not company_dir:
                     self.send_json({"error": f"project '{project_id}' not found"}, 404)
@@ -2020,6 +2020,60 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if len(commits) >= limit: break
             except Exception: pass
             self.send_json({"commits": commits})
+
+        elif sub_path == 'orgchart':
+            # GET /api/{project}/orgchart — 보고 구조 + 에이전트 상태 통합
+            config = cached(f"{project_id}:config", 2,
+                            lambda: _read_config_for_project(company_dir))
+            reporting = config.get('reporting', {})
+            config_ids, team_map = _parse_config_agents(config)
+            teams_config = config.get('teams', {})
+
+            # 에이전트 상태 가져오기
+            states = cached(f"{project_id}:states", 1,
+                            lambda: _read_agent_states_for_project(company_dir, agents_dir))
+            state_map = {s['id']: s.get('state', 'idle') for s in states}
+
+            # heartbeat 가져오기
+            hb_dir = os.path.join(company_dir, 'state', 'heartbeats')
+            heartbeats = {}
+            if os.path.isdir(hb_dir):
+                for f in os.listdir(hb_dir):
+                    if f.endswith('.json'):
+                        try:
+                            with open(os.path.join(hb_dir, f)) as fh:
+                                heartbeats[f[:-5]] = json.load(fh)
+                        except: pass
+
+            # 노드 생성
+            nodes = []
+            for aid in config_ids:
+                rep = reporting.get(aid, {})
+                team = team_map.get(aid)
+                # config에서 label 찾기
+                label = aid
+                for a in config.get('agents', []):
+                    if isinstance(a, dict) and a.get('id') == aid:
+                        label = a.get('label', aid)
+                        break
+                nodes.append({
+                    "id": aid,
+                    "label": label,
+                    "team": team,
+                    "teamLabel": teams_config.get(team, {}).get('label', '') if team else '',
+                    "state": state_map.get(aid, 'idle'),
+                    "reports_to": rep.get('reports_to'),
+                    "approves": rep.get('approves', []),
+                    "heartbeat": heartbeats.get(aid),
+                })
+
+            # 엣지 (reports_to 관계)
+            edges = []
+            for n in nodes:
+                if n['reports_to']:
+                    edges.append({"source": n['reports_to'], "target": n['id'], "type": "reports_to"})
+
+            self.send_json({"nodes": nodes, "edges": edges})
 
         elif sub_path == 'insights':
             # GET /api/{project}/insights — activity.jsonl 기반 병목 분석

@@ -21,6 +21,16 @@
       "criteria": ["리뷰어 승인"]
     }
   },
+  "reporting": {
+    "orch": { "reports_to": null, "approves": ["pm", "marketing"] },
+    "pm": { "reports_to": "orch", "approves": ["design", "frontend", "backend"] },
+    "design": { "reports_to": "pm" },
+    "frontend": { "reports_to": "pm" },
+    "backend": { "reports_to": "pm" },
+    "fe-qa": { "reports_to": "frontend" },
+    "be-qa": { "reports_to": "backend" },
+    "marketing": { "reports_to": "orch" }
+  },
   "dashboard_auto_open": true,
   "teams": {
     "dev": {
