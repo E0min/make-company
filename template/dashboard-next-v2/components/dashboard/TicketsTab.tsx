@@ -34,7 +34,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { api, getCurrentProject } from "@/lib/api";
 import type {
-  Ticket, TicketStatus, TicketPriority, StateResponse, AgentsResponse, Goal,
+  Ticket, TicketStatus, TicketPriority, TicketType, StateResponse, AgentsResponse, Goal,
 } from "@/lib/types";
 
 // ━━━ 상수 ━━━
@@ -360,6 +360,7 @@ function CreateTicketDialog({
   onCreated: () => Promise<void>;
 }) {
   const [title, setTitle] = useState("");
+  const [ticketType, setTicketType] = useState<TicketType>("feature");
   const [desc, setDesc] = useState("");
   const [priority, setPriority] = useState<TicketPriority>("medium");
   const [assignee, setAssignee] = useState<string | null>(null);
@@ -370,7 +371,7 @@ function CreateTicketDialog({
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open) { setTitle(""); setDesc(""); setPriority("medium"); setAssignee(null); setTeam(null); setGoal(null); setAc(""); setLabels(""); }
+    if (open) { setTitle(""); setTicketType("feature"); setDesc(""); setPriority("medium"); setAssignee(null); setTeam(null); setGoal(null); setAc(""); setLabels(""); }
   }, [open]);
 
   const handleCreate = async () => {
@@ -378,6 +379,7 @@ function CreateTicketDialog({
     setSaving(true);
     const r = await api.ticketCreate({
       title: title.trim(),
+      type: ticketType,
       description: desc.trim(),
       priority,
       assignee,
@@ -404,7 +406,19 @@ function CreateTicketDialog({
             <Label>제목</Label>
             <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="무엇을 해야 하나요?" autoFocus />
           </div>
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-5 gap-3">
+            <div className="space-y-1.5">
+              <Label>타입</Label>
+              <Select value={ticketType} onValueChange={(v) => setTicketType(v as TicketType)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="feature">Feature</SelectItem>
+                  <SelectItem value="bugfix">Bugfix</SelectItem>
+                  <SelectItem value="design">Design</SelectItem>
+                  <SelectItem value="refactor">Refactor</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-1.5">
               <Label>우선순위</Label>
               <Select value={priority} onValueChange={(v) => setPriority(v as TicketPriority)}>

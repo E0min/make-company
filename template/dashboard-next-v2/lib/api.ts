@@ -242,6 +242,7 @@ export const api = {
   /** 티켓 생성 */
   ticketCreate: (body: {
     title: string;
+    type?: string;
     description?: string;
     status?: string;
     priority?: string;

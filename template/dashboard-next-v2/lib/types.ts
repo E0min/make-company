@@ -49,9 +49,12 @@ export interface TicketActivity {
   reason?: string;
 }
 
+export type TicketType = "feature" | "bugfix" | "design" | "refactor";
+
 export interface Ticket {
   id: string;
   title: string;
+  type: TicketType;
   status: TicketStatus;
   priority: TicketPriority;
   assignee: string | null;
@@ -65,6 +68,8 @@ export interface Ticket {
   labels: string[];
   description: string;
   acceptance_criteria: string[];
+  completed_steps: string[];
+  verify_passed: boolean | null;
   activity: TicketActivity[];
 }
 

@@ -128,6 +128,7 @@ if [ -z "$TASK" ]; then
 import json, sys
 body = {
     'title': sys.argv[1],
+    'type': sys.argv[6],
     'priority': sys.argv[2],
     'labels': [sys.argv[3]],
     'description': sys.argv[4],
@@ -135,7 +136,7 @@ body = {
     'created_by': 'user',
 }
 print(json.dumps(body, ensure_ascii=False))
-" "$TASK" "$_priority" "$_label" "${_description:-}" "$_ac_json" 2>/dev/null)
+" "$TASK" "$_priority" "$_label" "${_description:-}" "$_ac_json" "$_type" 2>/dev/null)
 
     _ticket_result=$(curl -s -X POST "http://localhost:${DASHBOARD_PORT}/api/${PROJECT_ID}/tickets" \
       -H "Content-Type: application/json" \

@@ -18,8 +18,47 @@
     },
     "review → done": {
       "reviewer": "qa",
-      "criteria": ["리뷰어 승인"]
+      "criteria": ["리뷰어 승인", "자동 검증 통과"]
     }
+  },
+  "workflow_templates": {
+    "feature": {
+      "steps": ["backlog", "todo", "spec", "design", "in_progress", "review", "done"],
+      "required_before": {
+        "in_progress": ["spec", "design"],
+        "review": ["in_progress"],
+        "done": ["review"]
+      }
+    },
+    "bugfix": {
+      "steps": ["backlog", "todo", "in_progress", "review", "done"],
+      "required_before": {
+        "review": ["in_progress"],
+        "done": ["review"]
+      }
+    },
+    "design": {
+      "steps": ["backlog", "todo", "research", "draft", "review", "done"],
+      "required_before": {
+        "draft": ["research"],
+        "review": ["draft"],
+        "done": ["review"]
+      }
+    },
+    "refactor": {
+      "steps": ["backlog", "todo", "in_progress", "review", "done"]
+    }
+  },
+  "wip_limits": {
+    "global": 3,
+    "per_agent": 1,
+    "per_team": 2
+  },
+  "auto_verify": {
+    "on_commit": true,
+    "test_command": "npm test",
+    "lint_command": "",
+    "gate_integration": true
   },
   "reporting": {
     "orch": { "reports_to": null, "approves": ["pm", "marketing"] },

@@ -2856,12 +2856,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ticket = {
                 "id": ticket_id,
                 "title": body.get('title', '').strip(),
+                "type": body.get('type', 'feature'),
                 "status": body.get('status', 'backlog'),
                 "priority": body.get('priority', 'medium'),
                 "assignee": body.get('assignee') or None,
                 "team": body.get('team') or None,
                 "parent": body.get('parent') or None,
                 "children": [],
+                "completed_steps": [],
                 "created_at": now,
                 "updated_at": now,
                 "created_by": body.get('created_by', 'user'),
@@ -2870,6 +2872,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "description": body.get('description', ''),
                 "acceptance_criteria": body.get('acceptance_criteria', []),
                 "activity": [{"ts": now, "agent": body.get('created_by', 'user'), "action": "created"}],
+                "verify_passed": None,
             }
             if not ticket['title']:
                 self.send_json({"ok": False, "error": "제목을 입력하세요"}, 400)
@@ -2902,6 +2905,67 @@ class DashboardHandler(BaseHTTPRequestHandler):
             with open(ticket_file) as f: ticket = json.load(f)
             now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
+            # ━━━ 워크플로 강제 (status 변경 시) ━━━
+            if 'status' in body and body['status'] != ticket.get('status'):
+                config = _read_config_for_project(company_dir)
+                wf_templates = config.get('workflow_templates', {})
+                ticket_type = ticket.get('type', 'feature')
+                wf = wf_templates.get(ticket_type, {})
+                required_before = wf.get('required_before', {})
+                new_status = body['status']
+                completed = set(ticket.get('completed_steps', []))
+                # 현재 상태도 완료로 추가
+                completed.add(ticket.get('status'))
+
+                if new_status in required_before:
+                    missing = [s for s in required_before[new_status] if s not in completed]
+                    if missing:
+                        self.send_json({
+                            "ok": False,
+                            "error": f"워크플로 위반: {', '.join(missing)} 단계를 먼저 완료하세요",
+                            "missing_steps": missing,
+                            "ticket_type": ticket_type,
+                        })
+                        return
+
+            # ━━━ WIP 제한 체크 (in_progress 전환 시) ━━━
+            if 'status' in body and body['status'] == 'in_progress' and ticket.get('status') != 'in_progress':
+                config = _read_config_for_project(company_dir)
+                wip_limits = config.get('wip_limits', {})
+                if wip_limits:
+                    # 현재 in_progress 티켓 조회
+                    all_tickets = []
+                    for _f in os.listdir(tickets_dir):
+                        if _f.endswith('.json'):
+                            try:
+                                with open(os.path.join(tickets_dir, _f)) as _fh:
+                                    _t = json.load(_fh)
+                                if _t.get('status') == 'in_progress':
+                                    all_tickets.append(_t)
+                            except: pass
+                    # 글로벌 WIP
+                    global_limit = wip_limits.get('global', 999)
+                    if len(all_tickets) >= global_limit:
+                        wip_ids = [t['id'] for t in all_tickets[:5]]
+                        self.send_json({
+                            "ok": False,
+                            "error": f"WIP 제한 초과: 진행 중 {len(all_tickets)}/{global_limit}. 현재 작업을 먼저 완료하세요",
+                            "wip_tickets": wip_ids,
+                        })
+                        return
+                    # 에이전트별 WIP
+                    agent_limit = wip_limits.get('per_agent', 999)
+                    agent_id = body.get('agent') or ticket.get('assignee')
+                    if agent_id:
+                        agent_wip = [t for t in all_tickets if t.get('assignee') == agent_id]
+                        if len(agent_wip) >= agent_limit:
+                            self.send_json({
+                                "ok": False,
+                                "error": f"에이전트 WIP 제한: {agent_id}가 이미 {len(agent_wip)}개 진행 중",
+                                "wip_tickets": [t['id'] for t in agent_wip],
+                            })
+                            return
+
             # ━━━ 품질 게이트 체크 (status 변경 시) ━━━
             if 'status' in body and body['status'] != ticket.get('status'):
                 config = _read_config_for_project(company_dir)
@@ -2912,12 +2976,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     # AC 체크: acceptance_criteria가 정의되어 있는데 비어있으면 거부
                     criteria = gate.get('criteria', [])
                     failures = []
+                    auto_verify = config.get('auto_verify', {})
                     for c in criteria:
                         c_lower = c.lower()
                         if 'ac' in c_lower or '완료 기준' in c_lower or 'acceptance' in c_lower:
                             if not ticket.get('acceptance_criteria'):
                                 failures.append(c)
-                        # 커스텀 기준은 문자열로만 기록 (자동 검증 불가 → 리뷰어에게 위임)
+                        elif ('자동 검증' in c_lower or 'auto' in c_lower or 'test' in c_lower) and auto_verify.get('gate_integration'):
+                            if ticket.get('verify_passed') is not True:
+                                failures.append(c)
                     if failures:
                         ticket['activity'].append({
                             "ts": now,
@@ -2951,6 +3018,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "from": old_val,
                         "to": body[field],
                     })
+            # completed_steps 기록
+            if 'status' in changed:
+                steps = ticket.setdefault('completed_steps', [])
+                if ticket['status'] not in steps:
+                    steps.append(ticket['status'])
+            # type 필드 업데이트 (body에 있으면)
+            if 'type' in body and body['type'] != ticket.get('type'):
+                ticket['type'] = body['type']
+                changed.append('type')
+            # verify_passed 업데이트
+            if 'verify_passed' in body:
+                ticket['verify_passed'] = body['verify_passed']
             # 상태가 done으로 변경되면 연결된 goal의 티켓 목록에 추가
             if 'status' in changed and ticket.get('status') == 'done' and ticket.get('goal'):
                 goals_dir = os.path.join(company_dir, 'state', 'goals')
