@@ -96,9 +96,21 @@ Always read `DESIGN.md` before any visual/UI work on `template/dashboard/`. Toke
 - 스킬 완료 시: `[SKILL_DONE:스킬명]`
 - 스킬 파이프라인이 지정되면 순서를 건너뛸 수 없음
 
+### Heartbeat (필수)
+작업 완료 시마다 현재 상태를 보고. 형식:
+```
+[HEARTBEAT]
+티켓: TASK-001
+상태: implement 완료
+다음: @fe-qa에게 리뷰 요청
+목표: GOAL-001 (사용자 인증)
+품질: 7/10
+```
+Heartbeat은 라우터가 파싱하여 대시보드에 실시간 반영.
+
 ### 커밋 태그 (필수)
-git commit 시 메시지에 `[agent:에이전트-id]` 태그 포함.
-예: `git commit -m "[agent:frontend-engineer] feat: 로그인 폼 구현"`
+git commit 시 메시지에 `[agent:에이전트-id]` + `[ticket:TASK-XXX]` 태그 포함.
+예: `git commit -m "[agent:frontend] [ticket:TASK-001] feat: 로그인 폼 구현"`
 
 ### 코드 작성 규칙
 - Read/Write/Edit 도구로 실제 파일 수정. 가짜 코드/예시 금지.

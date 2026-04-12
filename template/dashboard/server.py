@@ -1680,7 +1680,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             project_id = project_match.group(1)
             sub_path = project_match.group(2)
             # 예약된 레거시 경로 제외 (agent/, workflow/ 등은 기존 라우트)
-            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company', 'tickets', 'goals', 'events', 'git'):
+            if project_id not in ('agent', 'agents', 'workflow', 'workflows', 'retrospectives', 'state', 'activity', 'running', 'sse', 'token', 'projects', 'run', 'stop', 'analytics', 'improvements', 'skills', 'shared-knowledge', 'tools', 'terminal', 'company', 'tickets', 'goals', 'events', 'git', 'heartbeats', 'heartbeat', 'insights'):
                 company_dir = get_project_company_dir(project_id)
                 if not company_dir:
                     self.send_json({"error": f"project '{project_id}' not found"}, 404)
@@ -2020,6 +2020,82 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if len(commits) >= limit: break
             except Exception: pass
             self.send_json({"commits": commits})
+
+        elif sub_path == 'insights':
+            # GET /api/{project}/insights — activity.jsonl 기반 병목 분석
+            jsonl_path = os.path.join(company_dir, 'activity.jsonl')
+            tickets_dir = os.path.join(company_dir, 'state', 'tickets')
+
+            events = []
+            if os.path.exists(jsonl_path):
+                with open(jsonl_path) as f:
+                    for line in f:
+                        try: events.append(json.loads(line.strip()))
+                        except: pass
+
+            # 에이전트별 이벤트 수
+            agent_activity = {}
+            for ev in events:
+                a = ev.get('agent')
+                if a:
+                    agent_activity[a] = agent_activity.get(a, 0) + 1
+
+            # 게이트 거부 횟수
+            gate_rejections = [ev for ev in events if ev.get('event') == 'gate_rejected' or 'gate' in str(ev.get('data', {}))]
+
+            # 티켓 사이클 타임 (created → done)
+            cycle_times = []
+            if os.path.isdir(tickets_dir):
+                for f in os.listdir(tickets_dir):
+                    if not f.endswith('.json'): continue
+                    try:
+                        with open(os.path.join(tickets_dir, f)) as fh:
+                            t = json.load(fh)
+                        if t.get('status') == 'done' and t.get('created_at') and t.get('updated_at'):
+                            from datetime import datetime
+                            created = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00'))
+                            updated = datetime.fromisoformat(t['updated_at'].replace('Z', '+00:00'))
+                            cycle_sec = (updated - created).total_seconds()
+                            cycle_times.append({"ticket": t['id'], "title": t['title'], "seconds": cycle_sec})
+                    except: pass
+
+            # 상태별 티켓 수
+            status_counts = {"backlog": 0, "todo": 0, "in_progress": 0, "review": 0, "done": 0}
+            if os.path.isdir(tickets_dir):
+                for f in os.listdir(tickets_dir):
+                    if not f.endswith('.json'): continue
+                    try:
+                        with open(os.path.join(tickets_dir, f)) as fh:
+                            t = json.load(fh)
+                        s = t.get('status', 'backlog')
+                        status_counts[s] = status_counts.get(s, 0) + 1
+                    except: pass
+
+            # 가장 활발한 에이전트 / 가장 비활성 에이전트
+            sorted_agents = sorted(agent_activity.items(), key=lambda x: x[1], reverse=True)
+
+            self.send_json({
+                "total_events": len(events),
+                "agent_activity": agent_activity,
+                "top_agents": sorted_agents[:5],
+                "gate_rejections": len(gate_rejections),
+                "cycle_times": sorted(cycle_times, key=lambda x: x['seconds']),
+                "avg_cycle_seconds": sum(c['seconds'] for c in cycle_times) / len(cycle_times) if cycle_times else 0,
+                "status_counts": status_counts,
+            })
+
+        elif sub_path == 'heartbeats':
+            # GET /api/{project}/heartbeats — 에이전트별 최신 heartbeat
+            hb_dir = os.path.join(company_dir, 'state', 'heartbeats')
+            heartbeats = {}
+            if os.path.isdir(hb_dir):
+                for f in os.listdir(hb_dir):
+                    if f.endswith('.json'):
+                        try:
+                            with open(os.path.join(hb_dir, f)) as fh:
+                                heartbeats[f[:-5]] = json.load(fh)
+                        except: pass
+            self.send_json({"heartbeats": heartbeats})
 
         elif sub_path == 'agents':
             agents = cached(f"{project_id}:agents_full", 5,
@@ -2615,6 +2691,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "워크플로우를 찾을 수 없습니다"}, 404)
                 return
             invalidate_cache(f"{project_id}:workflows")
+            self.send_json({"ok": True})
+
+        elif sub_path == 'heartbeats' or sub_path == 'heartbeat':
+            # POST /api/{project}/heartbeats — 에이전트 heartbeat 기록
+            agent_id = body.get('agent', '').strip()
+            if not agent_id:
+                self.send_json({"ok": False, "error": "agent ID 필요"}, 400)
+                return
+            hb_dir = os.path.join(company_dir, 'state', 'heartbeats')
+            os.makedirs(hb_dir, exist_ok=True)
+            now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            hb = {
+                "agent": agent_id,
+                "ts": now,
+                "ticket": body.get('ticket'),
+                "status": body.get('status', ''),
+                "next_action": body.get('next_action', ''),
+                "goal": body.get('goal'),
+                "quality": body.get('quality'),
+                "blockers": body.get('blockers'),
+            }
+            hb = {k: v for k, v in hb.items() if v is not None}
+            with open(os.path.join(hb_dir, f"{agent_id}.json"), 'w') as f:
+                json.dump(hb, f, ensure_ascii=False, indent=2)
+            # activity.jsonl에도 기록
+            _jsonl = os.path.join(company_dir, 'activity.jsonl')
+            with open(_jsonl, 'a') as _jf:
+                _jf.write(json.dumps({"ts": now, "event": "heartbeat", "agent": agent_id, "data": hb}, ensure_ascii=False) + '\n')
             self.send_json({"ok": True})
 
         elif sub_path == 'events' or sub_path == 'events/log':

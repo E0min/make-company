@@ -182,6 +182,17 @@ export const api = {
   eventLog: (event: { event: string; agent?: string; ticket?: string; team?: string; data?: Record<string, unknown> }) =>
     postJSON<{ ok: boolean }>(`${apiBase()}/events`, event),
 
+  // ── Heartbeats + Insights ──
+
+  heartbeats: () =>
+    getJSON<{ heartbeats: Record<string, { agent: string; ts: string; ticket?: string; status?: string; next_action?: string; goal?: string; quality?: number }> }>(`${apiBase()}/heartbeats`),
+
+  heartbeatLog: (body: { agent: string; ticket?: string; status?: string; next_action?: string; goal?: string; quality?: number }) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/heartbeats`, body),
+
+  insights: () =>
+    getJSON<{ total_events: number; agent_activity: Record<string, number>; top_agents: [string, number][]; gate_rejections: number; cycle_times: Array<{ ticket: string; title: string; seconds: number }>; avg_cycle_seconds: number; status_counts: Record<string, number> }>(`${apiBase()}/insights`),
+
   // ── Git ──
 
   /** Git 커밋 로그 (에이전트/티켓 태그 파싱) */
