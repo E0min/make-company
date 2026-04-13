@@ -1,10 +1,10 @@
 1:"$Sreact.fragment"
 2:I[75080,["/_next/static/chunks/00n4gvdij_ii..js","/_next/static/chunks/0nj0jc932-4aj.js","/_next/static/chunks/11c7v61sc_c~p.js"],"ClientPageRoot"]
-3:I[31713,["/_next/static/chunks/00n4gvdij_ii..js","/_next/static/chunks/0nj0jc932-4aj.js","/_next/static/chunks/11c7v61sc_c~p.js","/_next/static/chunks/0vy3k7dueitpp.js","/_next/static/chunks/007bpd6wrfg6n.js"],"default"]
+3:I[31713,["/_next/static/chunks/00n4gvdij_ii..js","/_next/static/chunks/0nj0jc932-4aj.js","/_next/static/chunks/11c7v61sc_c~p.js","/_next/static/chunks/0vy3k7dueitpp.js","/_next/static/chunks/00g~2kq.3jl0y.js"],"default"]
 6:I[6755,["/_next/static/chunks/00n4gvdij_ii..js","/_next/static/chunks/0nj0jc932-4aj.js","/_next/static/chunks/11c7v61sc_c~p.js"],"OutletBoundary"]
 7:"$Sreact.suspense"
 :HL["/_next/static/chunks/0jvmviuftg5e2.css","style"]
-0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{"Component":"$3","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@4","$@5"]}}],[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/0jvmviuftg5e2.css","precedence":"next"}],["$","script","script-0",{"src":"/_next/static/chunks/0vy3k7dueitpp.js","async":true}],["$","script","script-1",{"src":"/_next/static/chunks/007bpd6wrfg6n.js","async":true}]],["$","$L6",null,{"children":["$","$7",null,{"name":"Next.MetadataOutlet","children":"$@8"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"Xr4y_Us7dl5lee-h8IGiN"}
+0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{"Component":"$3","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@4","$@5"]}}],[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/0jvmviuftg5e2.css","precedence":"next"}],["$","script","script-0",{"src":"/_next/static/chunks/0vy3k7dueitpp.js","async":true}],["$","script","script-1",{"src":"/_next/static/chunks/00g~2kq.3jl0y.js","async":true}]],["$","$L6",null,{"children":["$","$7",null,{"name":"Next.MetadataOutlet","children":"$@8"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"0aSO60FFK_m6O-lhk530c"}
 4:{}
 5:"$0:rsc:props:children:0:props:serverProvidedParams:params"
 8:null

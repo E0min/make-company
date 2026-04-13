@@ -456,6 +456,18 @@ export const api = {
   skillConfigSave: (skill: string, config: Record<string, unknown>) =>
     postJSON<{ ok: boolean }>(`${apiBase()}/skills/${skill}/config`, { config }),
 
+  /** 스킬 카테고리 조회 (프로젝트별 커스텀 + 기본값 병합) */
+  skillCategories: () =>
+    getJSON<{ ok: boolean; categories: Record<string, string[]>; colors: Record<string, string> }>(`${apiBase()}/skill-categories`),
+
+  /** 스킬 카테고리 전체 저장 */
+  skillCategoriesSave: (categories: Record<string, string[]>, colors?: Record<string, string>) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/skill-categories`, { categories, colors: colors ?? {} }),
+
+  /** 단일 스킬 카테고리 배정 */
+  skillCategoryAssign: (skill: string, category: string) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/skill-categories/assign`, { skill, category }),
+
   // ━━━ Tools API ━━━
 
   toolProfiles: () =>

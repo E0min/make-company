@@ -8,33 +8,26 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { InstalledSkill, SkillUsageAgg } from "@/lib/types";
-import { Search, Package, Settings, X } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Search, Package, Settings, Tag, X, Plus, Pencil, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 /* ── Sub-view identifiers ── */
-type SubView = "my" | "customize";
+type SubView = "my" | "customize" | "categories";
 
 const SUB_TABS: { key: SubView; label: string; icon: React.ReactNode }[] = [
   { key: "my", label: "내 스킬", icon: <Package className="size-3.5" /> },
+  { key: "categories", label: "카테고리 관리", icon: <Tag className="size-3.5" /> },
   { key: "customize", label: "개인화", icon: <Settings className="size-3.5" /> },
 ];
 
-/* ── 역할 기반 카테고리 정의 ── */
-const ROLE_CATEGORIES = [
-  "전체",
-  "개발",
-  "디자인",
-  "QA/테스트",
-  "기획/관리",
-  "배포/인프라",
-  "보안/리뷰",
-  "문서/기타",
-  "기타",
-] as const;
+/* ── 기본 카테고리 (서버에서 커스텀 로드 전 폴백) ── */
+const DEFAULT_CATEGORIES = [
+  "전체", "개발", "디자인", "QA/테스트", "기획/관리", "배포/인프라", "보안/리뷰", "문서/기타", "기타",
+];
 
-type RoleCategory = (typeof ROLE_CATEGORIES)[number];
-
-/** 카테고리별 뱃지 색상 매핑 */
-const CATEGORY_COLORS: Record<string, string> = {
+/** 카테고리별 뱃지 색상 매핑 (기본값) */
+const DEFAULT_CATEGORY_COLORS: Record<string, string> = {
   "개발":      "bg-indigo-500/15 text-indigo-300 border-indigo-500/30",
   "디자인":    "bg-pink-500/15 text-pink-300 border-pink-500/30",
   "QA/테스트": "bg-amber-500/15 text-amber-300 border-amber-500/30",
@@ -45,8 +38,26 @@ const CATEGORY_COLORS: Record<string, string> = {
   "기타":      "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
 };
 
-function getCategoryColor(category: string): string {
-  return CATEGORY_COLORS[category] ?? CATEGORY_COLORS["기타"];
+/** 색상 이름 → CSS 클래스 매핑 (카테고리 관리 UI에서 사용) */
+const COLOR_PRESETS: Record<string, string> = {
+  indigo:  "bg-indigo-500/15 text-indigo-300 border-indigo-500/30",
+  pink:    "bg-pink-500/15 text-pink-300 border-pink-500/30",
+  amber:   "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  emerald: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  cyan:    "bg-cyan-500/15 text-cyan-300 border-cyan-500/30",
+  red:     "bg-red-500/15 text-red-300 border-red-500/30",
+  violet:  "bg-violet-500/15 text-violet-300 border-violet-500/30",
+  orange:  "bg-orange-500/15 text-orange-300 border-orange-500/30",
+  zinc:    "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
+};
+
+const CATEGORY_COLORS: Record<string, string> = { ...DEFAULT_CATEGORY_COLORS };
+
+function getCategoryColor(category: string, customColors?: Record<string, string>): string {
+  if (customColors?.[category]) {
+    return COLOR_PRESETS[customColors[category]] ?? DEFAULT_CATEGORY_COLORS["기타"];
+  }
+  return CATEGORY_COLORS[category] ?? DEFAULT_CATEGORY_COLORS["기타"];
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -79,6 +90,7 @@ export function SkillsTab() {
 
       {/* ── 서브뷰 렌더 ── */}
       {view === "my" && <MySkillsView />}
+      {view === "categories" && <CategoriesView />}
       {view === "customize" && <CustomizeView />}
     </div>
   );
@@ -92,16 +104,21 @@ function MySkillsView() {
   const [usage, setUsage] = useState<Record<string, SkillUsageAgg>>({});
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const [activeCategory, setActiveCategory] = useState<RoleCategory>("전체");
+  const [activeCategory, setActiveCategory] = useState("전체");
+  const [categoryNames, setCategoryNames] = useState<string[]>(DEFAULT_CATEGORIES);
 
   useEffect(() => {
     if (!getCurrentProject()) { setLoading(false); return; }
 
     setLoading(true);
-    Promise.all([api.skillsInstalled(), api.skillsUsage()])
-      .then(([skillsRes, usageRes]) => {
+    Promise.all([api.skillsInstalled(), api.skillsUsage(), api.skillCategories().catch(() => null)])
+      .then(([skillsRes, usageRes, catRes]) => {
         setSkills(skillsRes.skills ?? []);
         setUsage(usageRes.usage ?? {});
+        if (catRes?.categories) {
+          const names = ["전체", ...Object.keys(catRes.categories), "기타"];
+          setCategoryNames([...new Set(names)]);
+        }
       })
       .catch(() => {
         setSkills([]);
@@ -162,7 +179,7 @@ function MySkillsView() {
 
       {/* 역할 카테고리 필터 pills */}
       <div className="flex flex-wrap gap-1.5">
-        {ROLE_CATEGORIES.map((cat) => {
+        {categoryNames.map((cat) => {
           const count = cat === "전체"
             ? skills.length
             : (categoryCounts[cat] ?? 0);
@@ -281,7 +298,284 @@ function MySkillsView() {
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- * 2. 개인화 (Skill Customization)
+ * 2. 카테고리 관리 — CRUD + 스킬 배정
+ * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function CategoriesView() {
+  const [categories, setCategories] = useState<Record<string, string[]>>({});
+  const [colors, setColors] = useState<Record<string, string>>({});
+  const [skills, setSkills] = useState<InstalledSkill[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [editDialog, setEditDialog] = useState<{ mode: "add" | "edit"; name: string; color: string } | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editColor, setEditColor] = useState("indigo");
+  const [assignDialog, setAssignDialog] = useState<string | null>(null);
+  const [skillSearch, setSkillSearch] = useState("");
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([api.skillCategories(), api.skillsInstalled()])
+      .then(([catRes, skillsRes]) => {
+        if (catRes.categories) setCategories(catRes.categories);
+        if (catRes.colors) setColors(catRes.colors);
+        setSkills(skillsRes.skills ?? []);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSaveAll = async () => {
+    setSaving(true);
+    try {
+      await api.skillCategoriesSave(categories, colors);
+      toast.success("카테고리 저장 완료");
+    } catch {
+      toast.error("저장 실패");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAddCategory = () => {
+    setEditDialog({ mode: "add", name: "", color: "indigo" });
+    setEditName("");
+    setEditColor("indigo");
+  };
+
+  const handleEditCategory = (name: string) => {
+    setEditDialog({ mode: "edit", name, color: colors[name] ?? "zinc" });
+    setEditName(name);
+    setEditColor(colors[name] ?? "zinc");
+  };
+
+  const handleSaveDialog = () => {
+    if (!editDialog || !editName.trim()) return;
+    const trimmed = editName.trim();
+
+    if (editDialog.mode === "add") {
+      if (categories[trimmed]) { toast.warning("이미 존재하는 카테고리입니다"); return; }
+      setCategories((prev) => ({ ...prev, [trimmed]: [] }));
+    } else if (editDialog.mode === "edit" && editDialog.name !== trimmed) {
+      // 이름 변경
+      const newCats = { ...categories };
+      newCats[trimmed] = newCats[editDialog.name] ?? [];
+      delete newCats[editDialog.name];
+      setCategories(newCats);
+      const newColors = { ...colors };
+      delete newColors[editDialog.name];
+      newColors[trimmed] = editColor;
+      setColors(newColors);
+      setEditDialog(null);
+      return;
+    }
+    setColors((prev) => ({ ...prev, [trimmed]: editColor }));
+    setEditDialog(null);
+  };
+
+  const handleDeleteCategory = (name: string) => {
+    const newCats = { ...categories };
+    delete newCats[name];
+    setCategories(newCats);
+    const newColors = { ...colors };
+    delete newColors[name];
+    setColors(newColors);
+  };
+
+  const handleAssignSkill = (skill: string, category: string) => {
+    // 다른 카테고리에서 제거
+    const newCats = { ...categories };
+    for (const [cat, names] of Object.entries(newCats)) {
+      newCats[cat] = names.filter((n) => n !== skill);
+    }
+    // 대상 카테고리에 추가
+    if (!newCats[category]) newCats[category] = [];
+    if (!newCats[category].includes(skill)) {
+      newCats[category] = [...newCats[category], skill];
+    }
+    setCategories(newCats);
+  };
+
+  const handleRemoveSkill = (skill: string, category: string) => {
+    setCategories((prev) => ({
+      ...prev,
+      [category]: (prev[category] ?? []).filter((n) => n !== skill),
+    }));
+  };
+
+  // 카테고리에 배정되지 않은 스킬
+  const assignedSkills = new Set(Object.values(categories).flat());
+  const unassignedSkills = skills.filter((s) => !assignedSkills.has(s.name));
+
+  if (loading) {
+    return <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">카테고리 불러오는 중...</div>;
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* 헤더 */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          카테고리를 추가/수정/삭제하고, 스킬을 원하는 카테고리에 배정하세요. 변경 후 저장을 눌러야 적용됩니다.
+        </p>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={handleAddCategory} className="gap-1.5">
+            <Plus className="size-3" /> 카테고리 추가
+          </Button>
+          <Button variant="default" size="sm" onClick={handleSaveAll} disabled={saving} className="gap-1.5">
+            {saving ? "저장 중..." : "저장"}
+          </Button>
+        </div>
+      </div>
+
+      {/* 카테고리 목록 */}
+      <div className="space-y-3">
+        {Object.entries(categories).map(([catName, catSkills]) => {
+          const colorClass = COLOR_PRESETS[colors[catName] ?? "zinc"] ?? COLOR_PRESETS["zinc"];
+          return (
+            <Card key={catName}>
+              <CardContent className="p-4 space-y-2">
+                {/* 카테고리 헤더 */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className={cn("text-xs border", colorClass)}>
+                      {catName}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">{catSkills.length}개 스킬</span>
+                  </div>
+                  <div className="flex gap-1">
+                    <Button variant="ghost" size="sm" className="size-7 p-0" onClick={() => handleEditCategory(catName)}>
+                      <Pencil className="size-3" />
+                    </Button>
+                    <Button variant="ghost" size="sm" className="size-7 p-0 text-red-400 hover:text-red-300" onClick={() => handleDeleteCategory(catName)}>
+                      <Trash2 className="size-3" />
+                    </Button>
+                    <Button variant="ghost" size="sm" className="size-7 p-0" onClick={() => { setAssignDialog(catName); setSkillSearch(""); }}>
+                      <Plus className="size-3" />
+                    </Button>
+                  </div>
+                </div>
+
+                {/* 배정된 스킬 뱃지 */}
+                {catSkills.length > 0 ? (
+                  <div className="flex flex-wrap gap-1">
+                    {catSkills.map((sk) => (
+                      <Badge key={sk} variant="outline" className={cn("text-xs font-mono gap-1 border", colorClass)}>
+                        {sk}
+                        <button type="button" onClick={() => handleRemoveSkill(sk, catName)} className="hover:text-red-400">
+                          <X className="size-2.5" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">배정된 스킬 없음</p>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* 미배정 스킬 */}
+      {unassignedSkills.length > 0 && (
+        <Card>
+          <CardContent className="p-4 space-y-2">
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-xs border bg-zinc-500/15 text-zinc-300 border-zinc-500/30">미배정</Badge>
+              <span className="text-xs text-muted-foreground">{unassignedSkills.length}개 스킬</span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {unassignedSkills.map((sk) => (
+                <Badge key={sk.name} variant="outline" className="text-xs font-mono text-zinc-500 border-zinc-700">
+                  {sk.name}
+                </Badge>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 카테고리 추가/수정 다이얼로그 */}
+      <Dialog open={!!editDialog} onOpenChange={(open) => { if (!open) setEditDialog(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editDialog?.mode === "add" ? "카테고리 추가" : "카테고리 수정"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">이름</label>
+              <Input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="카테고리 이름" className="mt-1" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">색상</label>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {Object.entries(COLOR_PRESETS).map(([name, cls]) => (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => setEditColor(name)}
+                    className={cn(
+                      "px-2.5 py-1 rounded text-xs border transition-all",
+                      cls,
+                      editColor === name ? "ring-2 ring-white/30 scale-105" : "opacity-60 hover:opacity-100"
+                    )}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditDialog(null)}>취소</Button>
+            <Button onClick={handleSaveDialog} disabled={!editName.trim()}>
+              {editDialog?.mode === "add" ? "추가" : "수정"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 스킬 배정 다이얼로그 */}
+      <Dialog open={!!assignDialog} onOpenChange={(open) => { if (!open) setAssignDialog(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{assignDialog} 카테고리에 스킬 추가</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={skillSearch}
+            onChange={(e) => setSkillSearch(e.target.value)}
+            placeholder="스킬 검색..."
+            className="mb-3"
+          />
+          <div className="max-h-[300px] overflow-y-auto space-y-1">
+            {skills
+              .filter((sk) => {
+                if (assignDialog && (categories[assignDialog] ?? []).includes(sk.name)) return false;
+                if (skillSearch && !sk.name.toLowerCase().includes(skillSearch.toLowerCase())) return false;
+                return true;
+              })
+              .map((sk) => (
+                <button
+                  key={sk.name}
+                  type="button"
+                  onClick={() => {
+                    if (assignDialog) handleAssignSkill(sk.name, assignDialog);
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-md hover:bg-muted/50 transition-colors flex items-center justify-between"
+                >
+                  <span className="text-xs font-mono">{sk.name}</span>
+                  <span className="text-xs text-muted-foreground truncate ml-2 max-w-[200px]">{sk.description}</span>
+                </button>
+              ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * 3. 개인화 (Skill Customization)
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 function CustomizeView() {
   const [skills, setSkills] = useState<InstalledSkill[]>([]);
