@@ -2721,9 +2721,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             events.append(ev)
                         except: pass
             # 최신순, limit 적용
+            total_count = len(events)
             events = events[-limit:]
             events.reverse()
-            self.send_json({"events": events, "total": len(events)})
+            self.send_json({"events": events, "total": total_count})
 
         elif sub_path == 'git/log' or sub_path.startswith('git/log?'):
             # GET /api/{project}/git/log — 에이전트/티켓별 커밋 추적

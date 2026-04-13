@@ -26,18 +26,24 @@ import {
   Filter,
 } from "lucide-react";
 
+/* ━━━ Types ━━━ */
+
+interface Props {
+  onNavigateToTab?: (tab: string) => void;
+}
+
 /* ━━━ Constants ━━━ */
 
 const EVENT_TYPES = [
-  { value: "all", label: "All Events" },
-  { value: "gate_rejected", label: "Gate Rejected" },
-  { value: "skill_missing", label: "Skill Missing" },
-  { value: "skill_blocked", label: "Skill Blocked" },
-  { value: "force_transition", label: "Force Transition" },
-  { value: "verify_passed_bypass_rejected", label: "Verify Bypass Rejected" },
-  { value: "parent_done_blocked", label: "Parent Done Blocked" },
-  { value: "auto_verify", label: "Auto Verify" },
-  { value: "doc_updated", label: "Doc Updated" },
+  { value: "all", label: "전체 이벤트" },
+  { value: "gate_rejected", label: "게이트 거부" },
+  { value: "skill_missing", label: "스킬 누락" },
+  { value: "skill_blocked", label: "스킬 차단" },
+  { value: "force_transition", label: "강제 전환" },
+  { value: "verify_passed_bypass_rejected", label: "검증 우회 차단" },
+  { value: "parent_done_blocked", label: "선행 작업 차단" },
+  { value: "auto_verify", label: "자동 검증" },
+  { value: "doc_updated", label: "문서 갱신" },
 ] as const;
 
 const TIME_RANGES = [
@@ -121,7 +127,7 @@ function formatTimestamp(ts: string): string {
 
 /* ━━━ Main Component ━━━ */
 
-export function AuditTab() {
+export function AuditTab({ onNavigateToTab }: Props) {
   const [events, setEvents] = useState<StructuredEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -129,7 +135,14 @@ export function AuditTab() {
   // Filters
   const [eventType, setEventType] = useState("all");
   const [agentFilter, setAgentFilter] = useState("");
+  const [agentFilterInput, setAgentFilterInput] = useState("");
+  const [ticketFilter, setTicketFilter] = useState("");
+  const [ticketFilterInput, setTicketFilterInput] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("24h");
+
+  // Debounce refs
+  const agentDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ticketDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Expanded rows (stable key: ts-event-agent)
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -137,17 +150,42 @@ export function AuditTab() {
   // Auto-refresh
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Cleanup debounce timeouts
+  useEffect(() => {
+    return () => {
+      if (agentDebounceRef.current) clearTimeout(agentDebounceRef.current);
+      if (ticketDebounceRef.current) clearTimeout(ticketDebounceRef.current);
+    };
+  }, []);
+
+  const handleAgentFilterChange = useCallback((value: string) => {
+    setAgentFilterInput(value);
+    if (agentDebounceRef.current) clearTimeout(agentDebounceRef.current);
+    agentDebounceRef.current = setTimeout(() => {
+      setAgentFilter(value);
+    }, 300);
+  }, []);
+
+  const handleTicketFilterChange = useCallback((value: string) => {
+    setTicketFilterInput(value);
+    if (ticketDebounceRef.current) clearTimeout(ticketDebounceRef.current);
+    ticketDebounceRef.current = setTimeout(() => {
+      setTicketFilter(value);
+    }, 300);
+  }, []);
+
   const fetchEvents = useCallback(async () => {
     if (!getCurrentProject()) {
       setLoading(false);
       return;
     }
     try {
-      const filters: { event?: string; agent?: string; limit?: number } = {
+      const filters: { event?: string; agent?: string; ticket?: string; limit?: number } = {
         limit: 500,
       };
       if (eventType !== "all") filters.event = eventType;
       if (agentFilter.trim()) filters.agent = agentFilter.trim();
+      if (ticketFilter.trim()) filters.ticket = ticketFilter.trim();
       const res = await api.events(filters);
       setEvents(res.events ?? []);
       setError(null);
@@ -156,7 +194,7 @@ export function AuditTab() {
     } finally {
       setLoading(false);
     }
-  }, [eventType, agentFilter]);
+  }, [eventType, agentFilter, ticketFilter]);
 
   // Initial fetch + refetch when filters change
   useEffect(() => {
@@ -191,7 +229,7 @@ export function AuditTab() {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 className="size-4 animate-spin mr-2 text-muted-foreground" />
-        <span className="text-sm text-muted-foreground">Loading audit events...</span>
+        <span className="text-sm text-muted-foreground">감사 이벤트 불러오는 중...</span>
       </div>
     );
   }
@@ -201,7 +239,7 @@ export function AuditTab() {
     return (
       <Card>
         <CardContent className="p-8 text-center text-sm text-red-400">
-          Failed to load audit events: {error}
+          감사 이벤트 로드 실패: {error}
         </CardContent>
       </Card>
     );
@@ -218,7 +256,7 @@ export function AuditTab() {
             {/* Event type */}
             <Select value={eventType} onValueChange={(v) => setEventType(v ?? "all")}>
               <SelectTrigger className="w-[200px] h-8 text-xs">
-                <SelectValue placeholder="Event type" />
+                <SelectValue placeholder="이벤트 유형" />
               </SelectTrigger>
               <SelectContent>
                 {EVENT_TYPES.map((t) => (
@@ -233,9 +271,20 @@ export function AuditTab() {
             <div className="relative">
               <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
               <Input
-                value={agentFilter}
-                onChange={(e) => setAgentFilter(e.target.value)}
-                placeholder="Agent filter..."
+                value={agentFilterInput}
+                onChange={(e) => handleAgentFilterChange(e.target.value)}
+                placeholder="에이전트 필터..."
+                className="h-8 w-[160px] pl-7 text-xs"
+              />
+            </div>
+
+            {/* Ticket filter */}
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+              <Input
+                value={ticketFilterInput}
+                onChange={(e) => handleTicketFilterChange(e.target.value)}
+                placeholder="티켓 필터..."
                 className="h-8 w-[160px] pl-7 text-xs"
               />
             </div>
@@ -248,7 +297,7 @@ export function AuditTab() {
                   type="button"
                   onClick={() => setTimeRange(r.value)}
                   className={cn(
-                    "px-2 py-1 rounded text-[10px] font-mono font-medium transition-colors",
+                    "px-2 py-1 rounded text-xs font-mono font-medium transition-colors",
                     timeRange === r.value
                       ? "bg-indigo-600 text-white"
                       : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
@@ -267,12 +316,12 @@ export function AuditTab() {
               onClick={() => fetchEvents()}
             >
               <RefreshCw className="size-3" />
-              Refresh
+              새로고침
             </Button>
 
             {/* Count */}
-            <span className="text-[10px] text-muted-foreground font-mono tabular-nums">
-              {filteredEvents.length} events
+            <span className="text-xs text-muted-foreground font-mono tabular-nums">
+              {filteredEvents.length}건
             </span>
           </div>
         </CardContent>
@@ -292,13 +341,13 @@ export function AuditTab() {
         <Card>
           <CardContent className="p-0">
             {/* Table header */}
-            <div className="grid grid-cols-[20px_140px_140px_100px_100px_1fr_16px] gap-2 px-4 py-2 border-b border-border text-[10px] text-muted-foreground font-semibold uppercase tracking-wider">
+            <div className="grid grid-cols-[20px_140px_140px_100px_100px_1fr_16px] gap-2 px-4 py-2 border-b border-border text-xs text-muted-foreground font-semibold uppercase tracking-wider">
               <span />
-              <span>Timestamp</span>
-              <span>Event</span>
-              <span>Agent</span>
-              <span>Ticket</span>
-              <span>Detail</span>
+              <span>시간</span>
+              <span>이벤트</span>
+              <span>에이전트</span>
+              <span>티켓</span>
+              <span>상세</span>
               <span />
             </div>
 
@@ -343,7 +392,7 @@ export function AuditTab() {
                         </div>
 
                         {/* Timestamp */}
-                        <span className="font-mono tabular-nums text-muted-foreground text-[11px] truncate">
+                        <span className="font-mono tabular-nums text-muted-foreground text-xs truncate">
                           {formatTimestamp(evt.ts)}
                         </span>
 
@@ -352,7 +401,7 @@ export function AuditTab() {
                           <Badge
                             variant="outline"
                             className={cn(
-                              "text-[9px] font-mono",
+                              "text-xs font-mono",
                               SEVERITY_STYLES[severity]
                             )}
                           >
@@ -360,13 +409,25 @@ export function AuditTab() {
                           </Badge>
                         </div>
 
-                        {/* Agent */}
-                        <span className="font-mono text-muted-foreground truncate">
+                        {/* Agent — clickable */}
+                        <span
+                          className="font-mono text-muted-foreground truncate cursor-pointer hover:text-foreground hover:underline"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onNavigateToTab?.("agents");
+                          }}
+                        >
                           {evt.agent ?? "--"}
                         </span>
 
-                        {/* Ticket */}
-                        <span className="font-mono text-indigo-400/80 truncate">
+                        {/* Ticket — clickable */}
+                        <span
+                          className="font-mono text-indigo-400/80 truncate cursor-pointer hover:text-indigo-300 hover:underline"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onNavigateToTab?.("tickets");
+                          }}
+                        >
                           {evt.ticket ?? "--"}
                         </span>
 
@@ -386,12 +447,21 @@ export function AuditTab() {
                         </div>
                       </button>
 
-                      {/* Expanded data */}
+                      {/* Expanded data — structured table */}
                       {isExpanded && hasData && (
                         <div className="px-8 py-3 bg-zinc-950/50 border-t border-border/20">
-                          <pre className="text-[11px] font-mono text-zinc-400 whitespace-pre-wrap break-all leading-relaxed">
-                            {JSON.stringify(evt.data, null, 2)}
-                          </pre>
+                          <table className="w-full text-xs">
+                            <tbody>
+                              {Object.entries(evt.data!).map(([key, value]) => (
+                                <tr key={key} className="border-b border-border/10 last:border-0">
+                                  <td className="py-1.5 pr-4 font-mono text-muted-foreground align-top whitespace-nowrap">{key}</td>
+                                  <td className="py-1.5 font-mono text-zinc-300 break-all">
+                                    {typeof value === "object" && value !== null ? JSON.stringify(value, null, 2) : String(value ?? "")}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
                       )}
                     </div>

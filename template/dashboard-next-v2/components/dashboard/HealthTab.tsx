@@ -6,17 +6,11 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { AgentScores, WorkflowAnalysis, Improvement } from "@/lib/types";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, TrendingUp, TrendingDown, Minus, Zap, Clock, BarChart3, Target, Search, UserPlus, Bell, MessageSquare, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, TrendingUp, TrendingDown, Minus, Clock, BarChart3, Target, Search, UserPlus, Bell, MessageSquare, Loader2, RefreshCw, Shield, GitBranch } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
 /* ━━━ Helper types for fetched data ━━━ */
-
-interface BottleneckAlert {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  severity: "high" | "medium" | "low";
-}
 
 interface Suggestion {
   type: string;
@@ -45,7 +39,7 @@ interface ActionConfig {
   execute: (suggestion: Suggestion) => Promise<string>;
 }
 
-function getActionConfig(type: string): ActionConfig | null {
+function getActionConfig(type: string, onNavigateToTab?: (tab: string) => void): ActionConfig | null {
   switch (type) {
     case "stuck":
       return {
@@ -83,7 +77,7 @@ function getActionConfig(type: string): ActionConfig | null {
           if (!idleAgent) throw new Error("유휴 에이전트 없음");
           const result = await api.ticketUpdate(s.ticket, { assignee: idleAgent.id });
           if (!result.ok) throw new Error(result.error ?? "배정 실패");
-          return `${s.ticket} -> ${idleAgent.id} assigned`;
+          return `${s.ticket} → ${idleAgent.id} 배정 완료`;
         },
       };
     case "wip_high":
@@ -109,6 +103,41 @@ function getActionConfig(type: string): ActionConfig | null {
           await api.ticketComment(ticketId, "Repeated rejection detected -- code quality process improvement needed", "system");
           return "개선 제안 전송 완료";
         },
+      };
+    case "gate_issue":
+      return {
+        label: "게이트 확인",
+        icon: <Shield className="size-3" />,
+        confirm: "하네스 탭에서 게이트 이력을 확인하시겠습니까?",
+        execute: async () => { onNavigateToTab?.("harness"); return "하네스 탭으로 이동"; },
+      };
+    case "idle":
+      return {
+        label: "태스크 확인",
+        icon: <Search className="size-3" />,
+        confirm: "티켓 탭에서 대기 중인 작업을 확인하시겠습니까?",
+        execute: async () => { onNavigateToTab?.("tickets"); return "티켓 탭으로 이동"; },
+      };
+    case "slow_step":
+      return {
+        label: "워크플로우 확인",
+        icon: <GitBranch className="size-3" />,
+        confirm: "워크플로우 탭에서 병목 단계를 확인하시겠습니까?",
+        execute: async () => { onNavigateToTab?.("run"); return "워크플로우 탭으로 이동"; },
+      };
+    case "no_heartbeat":
+      return {
+        label: "에이전트 확인",
+        icon: <AlertTriangle className="size-3" />,
+        confirm: "에이전트 프로필에서 상태를 확인하시겠습니까?",
+        execute: async () => { onNavigateToTab?.("profile"); return "프로필 탭으로 이동"; },
+      };
+    case "cycle_anomaly":
+      return {
+        label: "티켓 조사",
+        icon: <Search className="size-3" />,
+        confirm: "티켓 탭에서 이상 항목을 확인하시겠습니까?",
+        execute: async () => { onNavigateToTab?.("tickets"); return "티켓 탭으로 이동"; },
       };
     default:
       return null;
@@ -143,60 +172,6 @@ function TrendIcon({ trend }: { trend: AgentScores["trend"] }) {
   }
 }
 
-/* ━━━ Derive bottleneck alerts from scores & workflows ━━━ */
-
-function deriveAlerts(
-  agentScores: Record<string, AgentScores>,
-  workflowData: Record<string, WorkflowAnalysis>
-): BottleneckAlert[] {
-  const alerts: BottleneckAlert[] = [];
-
-  // Find highest error-rate agent
-  let worstAgent = "";
-  let worstRate = 0;
-  for (const [name, scores] of Object.entries(agentScores)) {
-    if (scores.error_rate > worstRate) {
-      worstRate = scores.error_rate;
-      worstAgent = name;
-    }
-  }
-  if (worstAgent && worstRate > 0) {
-    alerts.push({
-      icon: <AlertTriangle className="size-4" />,
-      title: "High Error Rate",
-      description: `${worstAgent} has a ${(worstRate * 100).toFixed(1)}% error rate across ${agentScores[worstAgent].total_tasks} tasks.`,
-      severity: worstRate > 0.2 ? "high" : worstRate > 0.1 ? "medium" : "low",
-    });
-  }
-
-  // Find slowest workflow bottleneck step
-  for (const [wfName, analysis] of Object.entries(workflowData)) {
-    if (analysis.bottleneck_step) {
-      const stepDuration = analysis.avg_step_durations[analysis.bottleneck_step] ?? 0;
-      alerts.push({
-        icon: <Clock className="size-4" />,
-        title: "Workflow Bottleneck",
-        description: `"${wfName}" bottleneck at step "${analysis.bottleneck_step}" (avg ${stepDuration.toFixed(1)}s).`,
-        severity: stepDuration > 120 ? "high" : stepDuration > 60 ? "medium" : "low",
-      });
-    }
-  }
-
-  // Find declining quality trends
-  for (const [name, scores] of Object.entries(agentScores)) {
-    if (scores.trend === "declining") {
-      alerts.push({
-        icon: <TrendingDown className="size-4" />,
-        title: "Quality Declining",
-        description: `${name} quality is trending down (avg quality: ${scores.avg_quality.toFixed(2)}).`,
-        severity: scores.avg_quality < 0.5 ? "high" : scores.avg_quality < 0.7 ? "medium" : "low",
-      });
-    }
-  }
-
-  return alerts;
-}
-
 /* ━━━ Format seconds to human-readable string ━━━ */
 
 function formatDuration(seconds: number): string {
@@ -210,34 +185,39 @@ function formatDuration(seconds: number): string {
 
 interface HealthTabProps {
   onInvestigate?: (type: "ticket" | "agent", id: string) => void;
+  onNavigateToTab?: (tab: string) => void;
 }
 
-export function HealthTab({ onInvestigate }: HealthTabProps = {}) {
+export function HealthTab({ onInvestigate, onNavigateToTab }: HealthTabProps = {}) {
   const [agentScores, setAgentScores] = useState<Record<string, AgentScores>>({});
   const [workflowData, setWorkflowData] = useState<Record<string, WorkflowAnalysis>>({});
   const [improvements, setImprovements] = useState<Improvement[]>([]);
   const [insights, setInsights] = useState<InsightsData | null>(null);
+  const [healthScore, setHealthScore] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ index: number; suggestion: Suggestion; config: ActionConfig } | null>(null);
 
   const fetchAll = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     setError(null);
 
     try {
-      const [scoresRes, workflowsRes, improvementsRes, insightsRes] = await Promise.all([
+      const [scoresRes, workflowsRes, improvementsRes, insightsRes, healthRes] = await Promise.all([
         api.analyticsScores().catch(() => ({ agents: {} })),
         api.analyticsWorkflows().catch(() => ({ workflows: {} })),
         api.improvements().catch(() => ({ improvements: [] })),
         api.insights().catch(() => null),
+        api.harnessHealth().catch(() => null),
       ]);
 
       setAgentScores((scoresRes as { agents: Record<string, AgentScores> }).agents ?? {});
       setWorkflowData((workflowsRes as { workflows: Record<string, WorkflowAnalysis> }).workflows ?? {});
       setImprovements((improvementsRes as { improvements: Improvement[] }).improvements ?? []);
       if (insightsRes) setInsights(insightsRes as InsightsData);
+      if (healthRes) setHealthScore((healthRes as { health_score: number }).health_score ?? null);
       setLastUpdated(new Date());
     } catch (e) {
       setError(String(e));
@@ -267,15 +247,20 @@ export function HealthTab({ onInvestigate }: HealthTabProps = {}) {
     return () => { cancelled = true; clearInterval(interval); };
   }, [fetchAll]);
 
-  /** Execute a remediation action for a suggestion */
-  const handleAction = useCallback(async (index: number, suggestion: Suggestion, config: ActionConfig) => {
-    if (!window.confirm(config.confirm)) return;
+  /** Open confirmation dialog for a remediation action */
+  const handleAction = useCallback((index: number, suggestion: Suggestion, config: ActionConfig) => {
+    setConfirmDialog({ index, suggestion, config });
+  }, []);
 
+  /** Execute the confirmed action */
+  const executeConfirmedAction = useCallback(async () => {
+    if (!confirmDialog) return;
+    const { index, suggestion, config } = confirmDialog;
+    setConfirmDialog(null);
     setActionLoading(index);
     try {
       const result = await config.execute(suggestion);
       toast.success("작업 완료", { description: result });
-      // Refresh insights to reflect the change
       await fetchAll(false);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -283,12 +268,12 @@ export function HealthTab({ onInvestigate }: HealthTabProps = {}) {
     } finally {
       setActionLoading(null);
     }
-  }, [fetchAll]);
+  }, [confirmDialog, fetchAll]);
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="text-sm text-muted-foreground">Loading health data...</div>
+        <div className="text-sm text-muted-foreground">건강 데이터 불러오는 중...</div>
       </div>
     );
   }
@@ -297,23 +282,43 @@ export function HealthTab({ onInvestigate }: HealthTabProps = {}) {
     return (
       <Card>
         <CardContent className="p-8 text-center text-sm text-red-400">
-          Failed to load health data: {error}
+          건강 데이터 로드 실패: {error}
         </CardContent>
       </Card>
     );
   }
 
-  const alerts = deriveAlerts(agentScores, workflowData);
-
   return (
     <div className="space-y-8">
-      {/* ── Header: Last updated + Refresh ── */}
+      {/* ── 건강 점수 트래픽라이트 ── */}
+      {healthScore !== null && (
+        <Card className="overflow-hidden">
+          <CardContent className="p-4 flex items-center gap-4">
+            <div className={cn(
+              "size-12 rounded-full flex items-center justify-center text-lg font-bold tabular-nums",
+              healthScore >= 80 ? "bg-emerald-400/15 text-emerald-400" :
+              healthScore >= 50 ? "bg-amber-400/15 text-amber-400" :
+              "bg-red-400/15 text-red-400"
+            )}>
+              {healthScore}
+            </div>
+            <div>
+              <div className="text-sm font-semibold">시스템 건강 점수</div>
+              <div className="text-xs text-muted-foreground">
+                {healthScore >= 80 ? "정상 운영 중" : healthScore >= 50 ? "주의 필요" : "긴급 점검 필요"}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Header: 마지막 업데이트 + 새로고침 ── */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Clock className="size-3" />
           {lastUpdated
-            ? `Last updated ${lastUpdated.toLocaleTimeString("ko-KR", { hour12: false })}`
-            : "Loading..."}
+            ? `마지막 업데이트 ${lastUpdated.toLocaleTimeString("ko-KR", { hour12: false })}`
+            : "불러오는 중..."}
         </div>
         <Button
           variant="ghost"
@@ -322,11 +327,110 @@ export function HealthTab({ onInvestigate }: HealthTabProps = {}) {
           onClick={() => fetchAll(false)}
         >
           <RefreshCw className="size-3" />
-          Refresh
+          새로고침
         </Button>
       </div>
 
-      {/* ── Section 0: Insights KPI ── */}
+      {/* ── 개선 제안 (최우선 표시) ── */}
+      {insights && (
+        <section className="space-y-3">
+          <h2 className="text-base font-semibold flex items-center gap-2">
+            <AlertTriangle className="size-4 text-amber-400" />
+            개선 제안
+          </h2>
+          {(!insights.suggestions || insights.suggestions.length === 0) ? (
+            <Card>
+              <CardContent className="p-6 text-center text-sm text-muted-foreground">
+                이상 없음
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {insights.suggestions.map((s, i) => {
+                const sc = severityColor(s.severity as "high" | "medium" | "low");
+                const investigateTarget = s.ticket
+                  ? { type: "ticket" as const, id: s.ticket }
+                  : s.agent
+                    ? { type: "agent" as const, id: s.agent }
+                    : null;
+                const action = getActionConfig(s.type, onNavigateToTab);
+                const isThisLoading = actionLoading === i;
+                return (
+                  <Card key={i} className="overflow-hidden relative">
+                    <div className={cn("absolute left-0 top-0 bottom-0 w-[3px]", sc.bg)} />
+                    <CardContent className="p-4 pl-5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className={cn("size-4", sc.text)} />
+                          <Badge variant="outline" className={cn("text-xs font-mono uppercase", sc.text, sc.bg)}>
+                            {s.severity}
+                          </Badge>
+                          <Badge variant="secondary" className="text-xs">
+                            {s.type}
+                          </Badge>
+                        </div>
+                      </div>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        {s.message}
+                      </p>
+                      <div className="pt-1 flex items-center gap-1.5 flex-wrap">
+                        {investigateTarget && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 px-2 text-xs gap-1"
+                            disabled={!onInvestigate}
+                            onClick={() => onInvestigate?.(investigateTarget.type, investigateTarget.id)}
+                          >
+                            <Search className="size-3" />
+                            조사하기
+                          </Button>
+                        )}
+                        {action && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 px-2 text-xs gap-1"
+                            disabled={isThisLoading || actionLoading !== null}
+                            onClick={() => handleAction(i, s, action)}
+                          >
+                            {isThisLoading ? <Loader2 className="size-3 animate-spin" /> : action.icon}
+                            {action.label}
+                          </Button>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* ── 에이전트 성과 ── */}
+      <section className="space-y-3">
+        <h2 className="text-base font-semibold flex items-center gap-2">
+          <Target className="size-4 text-violet-400" />
+          에이전트 성과
+        </h2>
+
+        {Object.keys(agentScores).length === 0 ? (
+          <Card>
+            <CardContent className="p-6 text-center text-sm text-muted-foreground">
+              에이전트 점수 데이터가 아직 없습니다.
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {Object.entries(agentScores).map(([name, scores]) => (
+              <AgentScoreCard key={name} name={name} scores={scores} />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* ── 프로젝트 인사이트 KPI ── */}
       {insights && (
         <section className="space-y-3">
           <h2 className="text-base font-semibold flex items-center gap-2">
@@ -336,19 +440,19 @@ export function HealthTab({ onInvestigate }: HealthTabProps = {}) {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Card><CardContent className="p-4 text-center">
               <div className="text-2xl font-bold tabular-nums">{insights.total_events}</div>
-              <div className="text-[10px] text-muted-foreground mt-1">총 이벤트</div>
+              <div className="text-xs text-muted-foreground mt-1">총 이벤트</div>
             </CardContent></Card>
             <Card><CardContent className="p-4 text-center">
               <div className="text-2xl font-bold tabular-nums text-red-400">{insights.gate_rejections}</div>
-              <div className="text-[10px] text-muted-foreground mt-1">게이트 거부</div>
+              <div className="text-xs text-muted-foreground mt-1">게이트 거부</div>
             </CardContent></Card>
             <Card><CardContent className="p-4 text-center">
               <div className="text-2xl font-bold tabular-nums">{insights.avg_cycle_seconds > 0 ? `${(insights.avg_cycle_seconds / 3600).toFixed(1)}h` : "—"}</div>
-              <div className="text-[10px] text-muted-foreground mt-1">평균 사이클 타임</div>
+              <div className="text-xs text-muted-foreground mt-1">평균 사이클 타임</div>
             </CardContent></Card>
             <Card><CardContent className="p-4 text-center">
               <div className="text-2xl font-bold tabular-nums">{Object.values(insights.status_counts).reduce((a, b) => a + b, 0)}</div>
-              <div className="text-[10px] text-muted-foreground mt-1">총 티켓</div>
+              <div className="text-xs text-muted-foreground mt-1">총 티켓</div>
             </CardContent></Card>
           </div>
 
@@ -406,161 +510,17 @@ export function HealthTab({ onInvestigate }: HealthTabProps = {}) {
         </section>
       )}
 
-      {/* ── Suggestions ── */}
-      {insights && (
-        <section className="space-y-3">
-          <h2 className="text-base font-semibold flex items-center gap-2">
-            <AlertTriangle className="size-4 text-amber-400" />
-            Suggestions
-          </h2>
-          {(!insights.suggestions || insights.suggestions.length === 0) ? (
-            <Card>
-              <CardContent className="p-6 text-center text-sm text-muted-foreground">
-                이상 없음
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {insights.suggestions.map((s, i) => {
-                const sc = severityColor(s.severity as "high" | "medium" | "low");
-                const investigateTarget = s.ticket
-                  ? { type: "ticket" as const, id: s.ticket }
-                  : s.agent
-                    ? { type: "agent" as const, id: s.agent }
-                    : null;
-                const action = getActionConfig(s.type);
-                const isThisLoading = actionLoading === i;
-                return (
-                  <Card key={i} className="overflow-hidden relative">
-                    <div className={cn("absolute left-0 top-0 bottom-0 w-[3px]", sc.bg)} />
-                    <CardContent className="p-4 pl-5 space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <AlertTriangle className={cn("size-4", sc.text)} />
-                          <Badge variant="outline" className={cn("text-[10px] font-mono uppercase", sc.text, sc.bg)}>
-                            {s.severity}
-                          </Badge>
-                          <Badge variant="secondary" className="text-[10px]">
-                            {s.type}
-                          </Badge>
-                        </div>
-                      </div>
-                      <p className="text-[12px] text-muted-foreground leading-relaxed">
-                        {s.message}
-                      </p>
-                      <div className="pt-1 flex items-center gap-1.5 flex-wrap">
-                        {investigateTarget && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-6 px-2 text-[10px] gap-1"
-                            disabled={!onInvestigate}
-                            onClick={() => onInvestigate?.(investigateTarget.type, investigateTarget.id)}
-                          >
-                            <Search className="size-3" />
-                            조사하기
-                          </Button>
-                        )}
-                        {action && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-6 px-2 text-[10px] gap-1"
-                            disabled={isThisLoading || actionLoading !== null}
-                            onClick={() => handleAction(i, s, action)}
-                          >
-                            {isThisLoading ? <Loader2 className="size-3 animate-spin" /> : action.icon}
-                            {action.label}
-                          </Button>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* ── Section 1: Bottleneck Alerts ── */}
-      <section className="space-y-3">
-        <h2 className="text-base font-semibold flex items-center gap-2">
-          <Zap className="size-4 text-amber-400" />
-          Bottleneck Alerts
-        </h2>
-
-        {alerts.length === 0 ? (
-          <Card>
-            <CardContent className="p-6 text-center text-sm text-muted-foreground">
-              No bottlenecks detected. All systems healthy.
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {alerts.map((alert, i) => {
-              const c = severityColor(alert.severity);
-              return (
-                <Card key={i} className="overflow-hidden relative">
-                  {/* Left severity accent bar */}
-                  <div className={cn("absolute left-0 top-0 bottom-0 w-[3px]", c.bg)} />
-                  <CardContent className="p-4 pl-5 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className={c.text}>{alert.icon}</span>
-                        <span className="text-sm font-semibold">{alert.title}</span>
-                      </div>
-                      <Badge
-                        variant="outline"
-                        className={cn("text-[10px] font-mono uppercase", c.text, c.bg)}
-                      >
-                        {alert.severity}
-                      </Badge>
-                    </div>
-                    <p className="text-[12px] text-muted-foreground leading-relaxed">
-                      {alert.description}
-                    </p>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* ── Section 2: Agent Performance Grid ── */}
-      <section className="space-y-3">
-        <h2 className="text-base font-semibold flex items-center gap-2">
-          <Target className="size-4 text-violet-400" />
-          Agent Performance
-        </h2>
-
-        {Object.keys(agentScores).length === 0 ? (
-          <Card>
-            <CardContent className="p-6 text-center text-sm text-muted-foreground">
-              No agent score data available yet.
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-            {Object.entries(agentScores).map(([name, scores]) => (
-              <AgentScoreCard key={name} name={name} scores={scores} />
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* ── Section 3: Workflow Efficiency ── */}
+      {/* ── 워크플로우 효율성 ── */}
       <section className="space-y-3">
         <h2 className="text-base font-semibold flex items-center gap-2">
           <BarChart3 className="size-4 text-emerald-400" />
-          Workflow Efficiency
+          워크플로우 효율성
         </h2>
 
         {Object.keys(workflowData).length === 0 ? (
           <Card>
             <CardContent className="p-6 text-center text-sm text-muted-foreground">
-              No workflow analytics available yet.
+              워크플로우 분석 데이터가 아직 없습니다.
             </CardContent>
           </Card>
         ) : (
@@ -576,13 +536,13 @@ export function HealthTab({ onInvestigate }: HealthTabProps = {}) {
       <section className="space-y-3">
         <h2 className="text-base font-semibold flex items-center gap-2">
           <TrendingUp className="size-4 text-blue-400" />
-          Recent Improvements
+          최근 개선 사항
         </h2>
 
         {improvements.length === 0 ? (
           <Card>
             <CardContent className="p-6 text-center text-sm text-muted-foreground">
-              No improvement reports generated yet.
+              개선 보고서가 아직 없습니다.
             </CardContent>
           </Card>
         ) : (
@@ -593,6 +553,20 @@ export function HealthTab({ onInvestigate }: HealthTabProps = {}) {
           </div>
         )}
       </section>
+
+      {/* ── 확인 다이얼로그 ── */}
+      <Dialog open={!!confirmDialog} onOpenChange={(open) => { if (!open) setConfirmDialog(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>작업 확인</DialogTitle>
+            <DialogDescription>{confirmDialog?.config.confirm}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmDialog(null)}>취소</Button>
+            <Button onClick={executeConfirmedAction}>확인</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -631,19 +605,19 @@ function AgentScoreCard({ name, scores }: { name: string; scores: AgentScores })
         {/* Stats grid */}
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px]">
           {/* Total tasks */}
-          <span className="text-muted-foreground">Tasks</span>
+          <span className="text-muted-foreground">태스크</span>
           <span className="text-right tabular-nums font-medium">
             {scores.total_tasks}
           </span>
 
           {/* Avg quality */}
-          <span className="text-muted-foreground">Quality</span>
+          <span className="text-muted-foreground">품질</span>
           <span className={cn("text-right tabular-nums font-medium", qualityColor)}>
             {(scores.avg_quality * 100).toFixed(1)}%
           </span>
 
           {/* Avg duration */}
-          <span className="text-muted-foreground">Avg Duration</span>
+          <span className="text-muted-foreground">평균 소요시간</span>
           <span className="text-right tabular-nums font-medium">
             {formatDuration(scores.avg_duration_sec)}
           </span>
@@ -651,8 +625,8 @@ function AgentScoreCard({ name, scores }: { name: string; scores: AgentScores })
 
         {/* Error rate bar */}
         <div className="space-y-1">
-          <div className="flex items-center justify-between text-[10px]">
-            <span className="text-muted-foreground">Error Rate</span>
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted-foreground">오류율</span>
             <span className="tabular-nums font-mono">
               {(scores.error_rate * 100).toFixed(1)}%
             </span>
@@ -693,7 +667,7 @@ function WorkflowEfficiencyCard({
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-sm font-semibold truncate">{name}</span>
-            <Badge variant="secondary" className="text-[10px] shrink-0">
+            <Badge variant="secondary" className="text-xs shrink-0">
               {analysis.run_count} runs
             </Badge>
           </div>
@@ -704,7 +678,7 @@ function WorkflowEfficiencyCard({
 
         {/* Step bars */}
         {steps.length === 0 ? (
-          <div className="text-[11px] text-muted-foreground">No step data.</div>
+          <div className="text-[11px] text-muted-foreground">단계 데이터 없음</div>
         ) : (
           <div className="space-y-2">
             {steps.map(([stepName, duration]) => {
@@ -721,12 +695,12 @@ function WorkflowEfficiencyCard({
                     >
                       {stepName}
                       {isBottleneck && (
-                        <span className="ml-1.5 text-[9px] text-red-400/70 uppercase tracking-wider">
-                          bottleneck
+                        <span className="ml-1.5 text-xs text-red-400/70 uppercase tracking-wider">
+                          병목
                         </span>
                       )}
                     </span>
-                    <span className="tabular-nums font-mono text-[10px] shrink-0 ml-2">
+                    <span className="tabular-nums font-mono text-xs shrink-0 ml-2">
                       {formatDuration(duration)}
                     </span>
                   </div>
@@ -763,18 +737,18 @@ function ImprovementCard({ improvement }: { improvement: Improvement }) {
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-sm font-semibold truncate">{trigger}</span>
-            <span className="text-[10px] text-muted-foreground/70 font-mono tabular-nums shrink-0">
+            <span className="text-xs text-muted-foreground/70 font-mono tabular-nums shrink-0">
               {generated_at}
             </span>
           </div>
-          <span className="text-[10px] text-muted-foreground font-mono shrink-0">
+          <span className="text-xs text-muted-foreground font-mono shrink-0">
             {id.slice(0, 8)}
           </span>
         </div>
 
         {/* Findings list */}
         {findings.length === 0 ? (
-          <div className="text-[11px] text-muted-foreground">No findings.</div>
+          <div className="text-[11px] text-muted-foreground">발견 사항 없음</div>
         ) : (
           <div className="space-y-2">
             {findings.map((finding, i) => {
@@ -793,11 +767,11 @@ function ImprovementCard({ improvement }: { improvement: Improvement }) {
                     <div className="flex items-center gap-2 min-w-0">
                       <Badge
                         variant="outline"
-                        className={cn("text-[9px] font-mono uppercase shrink-0", c.text, c.bg)}
+                        className={cn("text-xs font-mono uppercase shrink-0", c.text, c.bg)}
                       >
                         {finding.severity}
                       </Badge>
-                      <Badge variant="secondary" className="text-[9px] shrink-0">
+                      <Badge variant="secondary" className="text-xs shrink-0">
                         {finding.type.replace("_", " ")}
                       </Badge>
                       {finding.agent && (
@@ -807,7 +781,7 @@ function ImprovementCard({ improvement }: { improvement: Improvement }) {
                       )}
                     </div>
                     {isApplied && (
-                      <span className="text-[10px] text-emerald-400 flex items-center gap-1 shrink-0">
+                      <span className="text-xs text-emerald-400 flex items-center gap-1 shrink-0">
                         <svg className="size-3" viewBox="0 0 16 16" fill="none">
                           <path
                             d="M13.5 4.5L6.5 11.5L2.5 7.5"
@@ -817,7 +791,7 @@ function ImprovementCard({ improvement }: { improvement: Improvement }) {
                             strokeLinejoin="round"
                           />
                         </svg>
-                        auto-applied
+                        자동 적용됨
                       </span>
                     )}
                   </div>
@@ -825,7 +799,7 @@ function ImprovementCard({ improvement }: { improvement: Improvement }) {
                     {finding.description}
                   </p>
                   <p className="text-[11px] text-muted-foreground leading-relaxed">
-                    <span className="font-medium text-foreground/60">Suggestion:</span>{" "}
+                    <span className="font-medium text-foreground/60">제안:</span>{" "}
                     {finding.suggestion}
                   </p>
                 </div>
@@ -836,8 +810,8 @@ function ImprovementCard({ improvement }: { improvement: Improvement }) {
 
         {/* Auto-applied summary */}
         {auto_applied.length > 0 && (
-          <div className="text-[10px] text-emerald-400/70 border-t border-border/30 pt-2">
-            {auto_applied.length} improvement{auto_applied.length !== 1 ? "s" : ""} auto-applied
+          <div className="text-xs text-emerald-400/70 border-t border-border/30 pt-2">
+            {auto_applied.length}건 자동 적용됨
           </div>
         )}
       </CardContent>

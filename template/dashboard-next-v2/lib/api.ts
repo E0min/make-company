@@ -476,4 +476,8 @@ export const api = {
 
   harnessSummary: () =>
     getJSON<import("./types").HarnessSummary>(`${apiBase()}/harness/summary`),
+
+  /** 하네스 건강 점수 (0-100) */
+  harnessHealth: () =>
+    getJSON<{ health_score: number; checks: Record<string, unknown> }>(`${apiBase()}/harness/health`),
 };

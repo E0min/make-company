@@ -460,12 +460,12 @@ export default function DashboardPage() {
           {view === "health" && <HealthTab onInvestigate={(type, id) => {
             if (type === "ticket") { setView("tickets"); }
             else if (type === "agent") { openTerminal(id); }
-          }} />}
+          }} onNavigateToTab={(tab) => setView(tab as typeof view)} />}
           {view === "retro" && <RetroTab />}
           {view === "profile" && <AgentProfileTab agents={agentsQ.data?.agents ?? null} initialAgentId={profileAgentId} onOpenTerminal={openTerminal} />}
-          {view === "harness" && <HarnessTab key={currentProject ?? ""} />}
+          {view === "harness" && <HarnessTab key={currentProject ?? ""} onNavigateToTab={(tab) => setView(tab as typeof view)} />}
           {view === "docs" && <DocsTab key={currentProject ?? ""} />}
-          {view === "audit" && <AuditTab key={currentProject ?? ""} />}
+          {view === "audit" && <AuditTab key={currentProject ?? ""} onNavigateToTab={(tab) => setView(tab as typeof view)} />}
         </main>
 
         {/* 시작 모달 */}
