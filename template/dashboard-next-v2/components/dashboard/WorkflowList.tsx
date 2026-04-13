@@ -6,6 +6,12 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -23,6 +29,7 @@ interface Props {
   onGenerate: (description: string) => Promise<void>;
   running: RunningResponse | null;
   onRunTask: (task: string) => void;
+  projectActive: boolean;
 }
 
 // ━━━ Component ━━━
@@ -42,6 +49,7 @@ export function WorkflowList({
   onGenerate,
   running,
   onRunTask,
+  projectActive,
 }: Props) {
   const [task, setTask] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -76,7 +84,7 @@ export function WorkflowList({
 
   /** Enter 키로 Quick Run 실행 */
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !submitting && !isRunning) {
+    if (e.key === "Enter" && !submitting && !isRunning && projectActive) {
       handleQuickRun();
     }
   };
@@ -190,35 +198,48 @@ export function WorkflowList({
               <Textarea
                 value={aiDesc}
                 onChange={(e) => setAiDesc(e.target.value)}
-                placeholder={"워크플로우를 설명하세요\n예: PM이 기획하고 디자이너가 디자인하고 프론트가 구현하는 흐름"}
+                placeholder={projectActive
+                  ? "워크플로우를 설명하세요\n예: PM이 기획하고 디자이너가 디자인하고 프론트가 구현하는 흐름"
+                  : "회사를 시작한 후 사용할 수 있습니다"}
                 rows={3}
                 className="text-xs resize-none"
-                disabled={aiGenerating}
+                disabled={!projectActive || aiGenerating}
               />
               <div className="flex gap-1.5">
-                <Button
-                  variant="default"
-                  size="xs"
-                  className="flex-1 gap-1"
-                  disabled={!aiDesc.trim() || aiGenerating}
-                  onClick={async () => {
-                    setAiGenerating(true);
-                    try {
-                      await onGenerate(aiDesc.trim());
-                      setAiDesc("");
-                      setCreateMode(null);
-                    } finally {
-                      setAiGenerating(false);
-                    }
-                  }}
-                >
-                  {aiGenerating ? (
-                    <Loader2 className="size-3 animate-spin" />
-                  ) : (
-                    <Sparkles className="size-3" />
-                  )}
-                  {aiGenerating ? "생성중..." : "AI 생성"}
-                </Button>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant="default"
+                          size="xs"
+                          className="flex-1 gap-1"
+                          disabled={!projectActive || !aiDesc.trim() || aiGenerating}
+                          onClick={async () => {
+                            setAiGenerating(true);
+                            try {
+                              await onGenerate(aiDesc.trim());
+                              setAiDesc("");
+                              setCreateMode(null);
+                            } finally {
+                              setAiGenerating(false);
+                            }
+                          }}
+                        >
+                          {aiGenerating ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <Sparkles className="size-3" />
+                          )}
+                          {aiGenerating ? "생성중..." : "AI 생성"}
+                        </Button>
+                      }
+                    />
+                    {!projectActive && (
+                      <TooltipContent>회사 실행 필요</TooltipContent>
+                    )}
+                  </Tooltip>
+                </TooltipProvider>
                 <Button
                   variant="ghost"
                   size="xs"
@@ -246,25 +267,36 @@ export function WorkflowList({
           value={task}
           onChange={(e) => setTask(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Describe a task..."
-          disabled={isRunning || submitting}
+          placeholder={projectActive ? "Describe a task..." : "회사를 시작한 후 사용할 수 있습니다"}
+          disabled={!projectActive || isRunning || submitting}
           className="text-xs"
         />
 
-        <Button
-          variant="default"
-          size="sm"
-          onClick={handleQuickRun}
-          disabled={isRunning || submitting || !task.trim()}
-          className="w-full gap-1.5"
-        >
-          {submitting ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Play className="size-3.5" />
-          )}
-          Run
-        </Button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleQuickRun}
+                  disabled={!projectActive || isRunning || submitting || !task.trim()}
+                  className="w-full gap-1.5"
+                >
+                  {submitting ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Play className="size-3.5" />
+                  )}
+                  Run
+                </Button>
+              }
+            />
+            {!projectActive && (
+              <TooltipContent>회사 실행 필요</TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
       </div>
     </div>
   );

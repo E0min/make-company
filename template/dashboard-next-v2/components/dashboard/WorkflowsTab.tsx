@@ -8,6 +8,16 @@ import { WorkflowList } from "./WorkflowList";
 import { WorkflowEditor } from "./WorkflowEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog";
 import { Square, Loader2 } from "lucide-react";
 import type {
   WorkflowItem,
@@ -19,14 +29,19 @@ interface Props {
   workflows: WorkflowItem[];
   running: RunningResponse | null;
   onRefetch: () => Promise<void>;
+  projectActive: boolean;
 }
 
-export function WorkflowsTab({ workflows, running, onRefetch }: Props) {
+export function WorkflowsTab({ workflows, running, onRefetch, projectActive }: Props) {
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [definition, setDefinition] = useState<WorkflowDefinition | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [isNew, setIsNew] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // ── Workflow Run Dialog (replaces window.prompt) ──
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
+  const [runInput, setRunInput] = useState("");
 
   // ── Load workflow YAML ──
   const loadWorkflow = useCallback(async (name: string) => {
@@ -75,10 +90,10 @@ export function WorkflowsTab({ workflows, running, onRefetch }: Props) {
         setIsNew(true);
         toast.success("워크플로우 생성 완료");
       } else {
-        toast.error(res.error ?? "AI 생성 실패");
+        toast.error("생성 실패", { description: res.error || "워크플로 생성에 실패했습니다. claude CLI를 확인하세요" });
       }
     } catch {
-      toast.error("AI 생성 실패");
+      toast.error("생성 실패", { description: "워크플로 생성에 실패했습니다. claude CLI를 확인하세요" });
     } finally {
       setLoading(false);
     }
@@ -146,26 +161,32 @@ export function WorkflowsTab({ workflows, running, onRefetch }: Props) {
     }
   }, [selectedName, onRefetch]);
 
-  // ── Run ──
-  const handleRun = useCallback(async () => {
-    const name = selectedName;
-    if (!name) {
+  // ── Run (open dialog instead of window.prompt) ──
+  const handleRunClick = useCallback(() => {
+    if (!selectedName) {
       toast.error("먼저 워크플로우를 저장하세요");
       return;
     }
-    const input = prompt("워크플로우에 전달할 입력을 입력하세요:") ?? "";
+    setRunInput("");
+    setRunDialogOpen(true);
+  }, [selectedName]);
+
+  const handleRunConfirm = useCallback(async () => {
+    const name = selectedName;
+    if (!name) return;
+    setRunDialogOpen(false);
     try {
-      const res = await api.workflow(name, input);
+      const res = await api.workflow(name, runInput);
       if (res.ok) {
         toast.success("워크플로우 실행 시작");
         await onRefetch();
       } else {
-        toast.error(res.error ?? "실행 실패");
+        toast.error("실행 실패", { description: res.error || "claude CLI 실행에 실패했습니다" });
       }
     } catch {
-      toast.error("실행 실패");
+      toast.error("실행 실패", { description: "claude CLI 실행에 실패했습니다" });
     }
-  }, [selectedName, onRefetch]);
+  }, [selectedName, runInput, onRefetch]);
 
   // ── Quick run (multi-agent) ──
   const handleRunTask = useCallback(
@@ -173,13 +194,13 @@ export function WorkflowsTab({ workflows, running, onRefetch }: Props) {
       try {
         const res = await api.run(task);
         if (res.ok) {
-          toast.success("멀티에이전트 실행 시작");
+          toast.success("태스크 실행 시작");
           await onRefetch();
         } else {
-          toast.error(res.error ?? "실행 실패");
+          toast.error("실행 실패", { description: res.error || "claude CLI 실행에 실패했습니다" });
         }
       } catch {
-        toast.error("실행 실패");
+        toast.error("실행 실패", { description: "claude CLI 실행에 실패했습니다" });
       }
     },
     [onRefetch]
@@ -234,6 +255,7 @@ export function WorkflowsTab({ workflows, running, onRefetch }: Props) {
           onGenerate={handleGenerate}
           running={running}
           onRunTask={handleRunTask}
+          projectActive={projectActive}
         />
 
         {loading ? (
@@ -247,12 +269,43 @@ export function WorkflowsTab({ workflows, running, onRefetch }: Props) {
             onChange={handleChange}
             onSave={handleSave}
             onDelete={handleDelete}
-            onRun={handleRun}
+            onRun={handleRunClick}
             isDirty={isDirty}
             isNew={isNew}
+            projectActive={projectActive}
           />
         )}
       </div>
+
+      {/* ── Workflow Run Input Dialog (replaces window.prompt) ── */}
+      <Dialog open={runDialogOpen} onOpenChange={setRunDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>워크플로우 실행</DialogTitle>
+            <DialogDescription>
+              워크플로우에 전달할 입력을 입력하세요. 비워두면 입력 없이 실행됩니다.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={runInput}
+            onChange={(e) => setRunInput(e.target.value)}
+            placeholder="워크플로우 입력 (선택사항)"
+            rows={4}
+            className="text-xs resize-none"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                handleRunConfirm();
+              }
+            }}
+          />
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>
+              취소
+            </DialogClose>
+            <Button onClick={handleRunConfirm}>실행</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

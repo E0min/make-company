@@ -1,15 +1,17 @@
 "use client";
 
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow, ReactFlowProvider, Controls, Background, BackgroundVariant,
-  Handle, Position, type Node, type Edge, type NodeProps,
+  Handle, Position, useReactFlow, type Node, type Edge, type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { cn } from "@/lib/utils";
+import { stateColor } from "@/lib/format";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, CheckCircle2, AlertCircle, Circle, ArrowDown } from "lucide-react";
+import { AgentDetailPopover } from "./AgentDetailPopover";
 
 // ━━━ 타입 ━━━
 
@@ -27,31 +29,19 @@ interface OrgNode {
 type OrgNodeData = OrgNode & Record<string, unknown>;
 type OrgNodeType = Node<OrgNodeData, "org">;
 
-// ━━━ 상태 스타일 ━━━
-
-function stateStyle(state: string) {
-  switch (state) {
-    case "working": return { border: "border-indigo-500 ring-1 ring-indigo-500/30", dot: "bg-indigo-400 animate-pulse" };
-    case "done": return { border: "border-emerald-500", dot: "bg-emerald-400" };
-    case "error": return { border: "border-red-500", dot: "bg-red-400" };
-    case "active": return { border: "border-indigo-400/50", dot: "bg-indigo-400" };
-    default: return { border: "border-border", dot: "bg-zinc-500" };
-  }
-}
-
 // ━━━ Org 노드 컴포넌트 ━━━
 
 function OrgNodeRaw({ data }: NodeProps<OrgNodeType>) {
-  const s = stateStyle(data.state);
+  const c = stateColor(data.state);
   const hb = data.heartbeat as Record<string, string | number> | null;
 
   return (
-    <div className={cn("w-[180px] rounded-lg bg-card border shadow-sm", s.border)}>
+    <div className={cn("w-[180px] rounded-lg bg-card border shadow-sm", c.border)}>
       <Handle type="target" position={Position.Top} className="!w-2 !h-2 !bg-muted-foreground !border-2 !border-background" />
 
       <div className="px-3 py-2.5 space-y-1.5">
         <div className="flex items-center gap-2">
-          <span className={cn("size-2 rounded-full shrink-0", s.dot)} />
+          <span className={cn("size-2 rounded-full shrink-0", c.dot)} />
           <span className="text-sm font-bold truncate flex-1">{data.label}</span>
         </div>
 
@@ -145,8 +135,17 @@ function autoLayout(nodes: OrgNode[], edges: { source: string; target: string }[
 
 // ━━━ 메인 컴포넌트 ━━━
 
-function OrgChartInner() {
+interface OrgChartProps {
+  onOpenTerminal?: (agentId: string) => void;
+  onNavigateToProfile?: (agentId: string) => void;
+  teams?: Record<string, { label: string; description: string }>;
+}
+
+function OrgChartInner({ onOpenTerminal, onNavigateToProfile, teams }: OrgChartProps) {
   const [data, setData] = useState<{ nodes: OrgNode[]; edges: { source: string; target: string }[] } | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<{ id: string; position: { x: number; y: number } } | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const { flowToScreenPosition } = useReactFlow();
 
   useEffect(() => {
     api.orgchart().then(setData).catch(() => setData(null));
@@ -157,6 +156,14 @@ function OrgChartInner() {
     return autoLayout(data.nodes, data.edges);
   }, [data]);
 
+  const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+    const screenPos = flowToScreenPosition({ x: node.position.x + 90, y: node.position.y + 70 });
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    const offsetX = containerRect ? screenPos.x - containerRect.left : screenPos.x;
+    const offsetY = containerRect ? screenPos.y - containerRect.top : screenPos.y;
+    setSelectedAgent({ id: node.id, position: { x: offsetX, y: offsetY } });
+  }, [flowToScreenPosition]);
+
   if (!data || data.nodes.length === 0) {
     return (
       <div className="flex items-center justify-center h-[400px] text-sm text-muted-foreground border border-dashed border-border rounded-lg">
@@ -166,7 +173,7 @@ function OrgChartInner() {
   }
 
   return (
-    <div className="h-[450px] border border-border rounded-lg overflow-hidden bg-background">
+    <div ref={containerRef} className="h-[450px] border border-border rounded-lg overflow-hidden bg-background relative">
       <ReactFlow
         nodes={xyNodes}
         edges={xyEdges}
@@ -178,19 +185,32 @@ function OrgChartInner() {
         proOptions={{ hideAttribution: true }}
         nodesDraggable={false}
         nodesConnectable={false}
-        elementsSelectable={false}
+        elementsSelectable={true}
+        onNodeClick={handleNodeClick}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="oklch(0.3 0 0)" />
         <Controls showInteractive={false} />
       </ReactFlow>
+
+      {/* 에이전트 상세 팝오버 */}
+      {selectedAgent && (
+        <AgentDetailPopover
+          agentId={selectedAgent.id}
+          position={selectedAgent.position}
+          onClose={() => setSelectedAgent(null)}
+          onOpenTerminal={onOpenTerminal}
+          onNavigateToProfile={onNavigateToProfile}
+          teams={teams}
+        />
+      )}
     </div>
   );
 }
 
-export function OrgChartView() {
+export function OrgChartView(props: OrgChartProps) {
   return (
     <ReactFlowProvider>
-      <OrgChartInner />
+      <OrgChartInner onOpenTerminal={props.onOpenTerminal} onNavigateToProfile={props.onNavigateToProfile} teams={props.teams} />
     </ReactFlowProvider>
   );
 }

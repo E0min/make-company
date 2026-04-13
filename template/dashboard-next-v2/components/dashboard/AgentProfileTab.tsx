@@ -26,17 +26,28 @@ import { JsonRenderBlock } from "./JsonRenderBlock";
 
 interface Props {
   agents: AgentFull[] | null;
+  initialAgentId?: string;
+  onOpenTerminal?: (id: string) => void;
 }
 
 // ━━━ Main Component ━━━
 
-export function AgentProfileTab({ agents }: Props) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+export function AgentProfileTab({ agents, initialAgentId, onOpenTerminal }: Props) {
+  const [selectedId, setSelectedId] = useState<string | null>(initialAgentId ?? null);
   const [profile, setProfile] = useState<AgentProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const agentList = agents ?? [];
+
+  // Auto-select: initialAgentId prop or first agent on mount
+  useEffect(() => {
+    if (initialAgentId) {
+      setSelectedId(initialAgentId);
+    } else if (!selectedId && agentList.length > 0) {
+      setSelectedId(agentList[0].id);
+    }
+  }, [initialAgentId, agentList.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 에이전트 선택 시 프로필 fetch
   useEffect(() => {
@@ -127,7 +138,7 @@ export function AgentProfileTab({ agents }: Props) {
 
       {selectedId && !loading && !error && profile && (
         <div className="space-y-4">
-          <IdentityHeader agent={profile.agent} />
+          <IdentityHeader agent={profile.agent} onOpenTerminal={onOpenTerminal} />
           {profile.scores?.trend && (
             <PerformanceSummary scores={profile.scores} />
           )}
@@ -146,7 +157,7 @@ export function AgentProfileTab({ agents }: Props) {
 
 // ━━━ Section 1: Identity Header ━━━
 
-function IdentityHeader({ agent }: { agent: AgentFull }) {
+function IdentityHeader({ agent, onOpenTerminal }: { agent: AgentFull; onOpenTerminal?: (id: string) => void }) {
   return (
     <Card className="overflow-hidden relative">
       {/* 왼쪽 컬러 바 (에이전트 고유 색상) */}
@@ -168,15 +179,29 @@ function IdentityHeader({ agent }: { agent: AgentFull }) {
               </p>
             )}
           </div>
-          {/* 카테고리 배지 */}
-          {agent.category && (
-            <Badge
-              variant="outline"
-              className="shrink-0 text-[10px] font-mono"
-            >
-              {agent.category}
-            </Badge>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* 터미널 열기 버튼 */}
+            {onOpenTerminal && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs gap-1.5 h-7"
+                onClick={() => onOpenTerminal(agent.id)}
+              >
+                <Terminal className="size-3" />
+                터미널 열기
+              </Button>
+            )}
+            {/* 카테고리 배지 */}
+            {agent.category && (
+              <Badge
+                variant="outline"
+                className="shrink-0 text-[10px] font-mono"
+              >
+                {agent.category}
+              </Badge>
+            )}
+          </div>
         </div>
       </CardContent>
     </Card>

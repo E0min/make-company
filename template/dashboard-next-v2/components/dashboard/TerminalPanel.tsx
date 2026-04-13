@@ -54,6 +54,8 @@ export function TerminalPanel({ projectId, agentId, onClose }: Props) {
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [terminalReady, setTerminalReady] = useState(false);
+  const [panelHeight, setPanelHeight] = useState(280);
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null);
 
   /* ── xterm 초기화 (dynamic import로 CSS 포함) ── */
   useEffect(() => {
@@ -254,16 +256,45 @@ export function TerminalPanel({ projectId, agentId, onClose }: Props) {
     };
   }, [terminalReady]);
 
+  /* ── 드래그 리사이즈 핸들러 ── */
+  const handleDragStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startY: e.clientY, startH: panelHeight };
+    const handleMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const delta = dragRef.current.startY - ev.clientY;
+      const newH = Math.max(120, Math.min(window.innerHeight * 0.85, dragRef.current.startH + delta));
+      setPanelHeight(newH);
+    };
+    const handleUp = () => {
+      dragRef.current = null;
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("mouseup", handleUp);
+      // 리사이즈 완료 후 xterm fit
+      setTimeout(() => { try { fitAddonRef.current?.fit(); } catch {} }, 50);
+    };
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("mouseup", handleUp);
+  };
+
   if (!agentId) return null;
 
   return (
     <div
       className={cn(
-        /* 패널 기본: 하단 고정, 리사이즈 가능, 가로 전폭 */
-        "flex flex-col border-t border-border bg-[#09090b] shrink-0 transition-all duration-200 w-full overflow-hidden",
-        maximized ? "h-[70vh]" : "h-[280px]"
+        /* 패널 기본: 하단 고정, 가로 전폭 */
+        "flex flex-col border-t border-border bg-[#09090b] shrink-0 w-full overflow-hidden",
+        maximized && "!h-[70vh]"
       )}
+      style={maximized ? undefined : { height: panelHeight }}
     >
+      {/* ── 리사이즈 핸들 (상단 드래그 바) ── */}
+      <div
+        className="h-1.5 w-full cursor-ns-resize hover:bg-indigo-500/30 active:bg-indigo-500/50 transition-colors shrink-0 flex items-center justify-center"
+        onMouseDown={handleDragStart}
+      >
+        <div className="w-8 h-0.5 rounded-full bg-zinc-600" />
+      </div>
       {/* ── 헤더 바 ── */}
       <div className="flex items-center justify-between px-3 h-9 border-b border-border/50 shrink-0 select-none">
         {/* 좌측: 아이콘 + 에이전트 이름 */}

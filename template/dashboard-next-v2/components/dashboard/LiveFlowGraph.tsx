@@ -11,7 +11,7 @@
  * - 레이아웃: 자동 계층 배치 (Orch 상단 → 팀별 하단)
  */
 
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -20,15 +20,19 @@ import {
   BackgroundVariant,
   Handle,
   Position,
+  useReactFlow,
   type Node,
   type Edge,
   type NodeProps,
 } from "@xyflow/react";
+import { AgentDetailPopover } from "./AgentDetailPopover";
 import "@xyflow/react/dist/style.css";
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api";
+import { stateColor } from "@/lib/format";
+import { api, getCurrentProject } from "@/lib/api";
+import { useSSE } from "@/hooks/useSSE";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, CheckCircle2, AlertCircle, Circle } from "lucide-react";
+import { Loader2, CheckCircle2, AlertCircle, Circle, Radio } from "lucide-react";
 import type { TeamsMap } from "@/lib/types";
 
 // ━━━ 타입 ━━━
@@ -63,15 +67,15 @@ type FlowNodeData = {
 
 type FlowNodeType = Node<FlowNodeData, "flow">;
 
-// ━━━ 상태별 스타일 ━━━
+// ━━━ 상태별 스타일 (unified from lib/format.ts) ━━━
 
-function stateStyle(state: string) {
+function stateIcon(state: string) {
   switch (state) {
-    case "working": return { border: "border-indigo-500 ring-1 ring-indigo-500/30", icon: <Loader2 className="size-3 text-indigo-400 animate-spin" /> };
-    case "done": return { border: "border-emerald-500", icon: <CheckCircle2 className="size-3 text-emerald-400" /> };
-    case "error": return { border: "border-red-500", icon: <AlertCircle className="size-3 text-red-400" /> };
-    case "active": return { border: "border-indigo-400/50", icon: <Circle className="size-3 text-indigo-400 fill-indigo-400" /> };
-    default: return { border: "border-border", icon: <Circle className="size-3 text-muted-foreground/40 fill-muted-foreground/20" /> };
+    case "working": return <Loader2 className="size-3 text-indigo-400 animate-spin" />;
+    case "done": return <CheckCircle2 className="size-3 text-emerald-400" />;
+    case "error": case "permanently-failed": case "dead": return <AlertCircle className="size-3 text-red-400" />;
+    case "active": return <Circle className="size-3 text-indigo-400 fill-indigo-400" />;
+    default: return <Circle className="size-3 text-muted-foreground/40 fill-muted-foreground/20" />;
   }
 }
 
@@ -85,11 +89,11 @@ function agentColor(agent: string): string {
 
 function FlowNodeRaw({ data }: NodeProps<FlowNodeType>) {
   const { label, team, teamLabel, state } = data;
-  const s = stateStyle(state);
+  const c = stateColor(state);
   const dotColor = agentColor(label);
 
   return (
-    <div className={cn("w-[160px] rounded-lg bg-card border shadow-sm", s.border)}>
+    <div className={cn("w-[160px] rounded-lg bg-card border shadow-sm", c.border)}>
       <Handle type="target" position={Position.Top} className="!w-2 !h-2 !bg-muted-foreground !border-2 !border-background" />
 
       <div className="px-3 py-2.5 space-y-1.5">
@@ -97,7 +101,7 @@ function FlowNodeRaw({ data }: NodeProps<FlowNodeType>) {
         <div className="flex items-center gap-2">
           <span className="size-2 rounded-full shrink-0" style={{ backgroundColor: dotColor }} />
           <span className="text-sm font-semibold truncate flex-1">{label}</span>
-          {s.icon}
+          {stateIcon(state)}
         </div>
 
         {/* 팀 배지 */}
@@ -206,13 +210,39 @@ function autoLayout(flowNodes: FlowNode[], flowEdges: FlowEdge[]): { nodes: Node
 
 interface Props {
   teams: TeamsMap;
-  /** 폴링 간격 (ms), 0이면 폴링 안함 */
-  pollInterval?: number;
+  onOpenTerminal?: (agentId: string) => void;
+  onNavigateToProfile?: (agentId: string) => void;
 }
 
-function LiveFlowGraphInner({ teams, pollInterval = 5000 }: Props) {
+function LiveFlowGraphInner({ teams, onOpenTerminal, onNavigateToProfile }: Props) {
   const [flowData, setFlowData] = useState<FlowResponse | null>(null);
+  const [sseConnected, setSseConnected] = useState(false);
+  const sseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<{ id: string; position: { x: number; y: number } } | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const { flowToScreenPosition } = useReactFlow();
 
+  // SSE: message_routed 이벤트 수신 → 즉시 갱신
+  const handleActivity = useCallback((line: string) => {
+    // SSE activity에 message_routed가 오면 flow 데이터 리프레시
+    if (line.includes("message_routed") || line.includes("→")) {
+      api.flow().then(setFlowData).catch(() => {});
+    }
+    setSseConnected(true);
+    // 10초 이내에 다음 이벤트가 없으면 disconnected로 간주
+    if (sseTimerRef.current) clearTimeout(sseTimerRef.current);
+    sseTimerRef.current = setTimeout(() => setSseConnected(false), 10000);
+  }, []);
+
+  const handleAgentOutput = useCallback(() => {}, []);
+
+  useSSE(handleActivity, handleAgentOutput, {
+    enabled: true,
+    reconnectInterval: 3000,
+    project: getCurrentProject(),
+  });
+
+  // SSE fallback: 30초 폴링 (SSE가 끊길 때 대비)
   useEffect(() => {
     let cancelled = false;
 
@@ -224,17 +254,24 @@ function LiveFlowGraphInner({ teams, pollInterval = 5000 }: Props) {
     }
 
     poll();
-    if (pollInterval > 0) {
-      const t = setInterval(poll, pollInterval);
-      return () => { cancelled = true; clearInterval(t); };
-    }
-    return () => { cancelled = true; };
-  }, [pollInterval]);
+    const t = setInterval(poll, 30000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
 
   const { nodes, edges } = useMemo(() => {
     if (!flowData) return { nodes: [], edges: [] };
     return autoLayout(flowData.nodes, flowData.edges);
   }, [flowData]);
+
+  // ── 노드 클릭 핸들러 ──
+
+  const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+    const screenPos = flowToScreenPosition({ x: node.position.x + 80, y: node.position.y + 70 });
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    const offsetX = containerRect ? screenPos.x - containerRect.left : screenPos.x;
+    const offsetY = containerRect ? screenPos.y - containerRect.top : screenPos.y;
+    setSelectedAgent({ id: node.id, position: { x: offsetX, y: offsetY } });
+  }, [flowToScreenPosition]);
 
   if (!flowData || flowData.nodes.length === 0) {
     return (
@@ -245,7 +282,12 @@ function LiveFlowGraphInner({ teams, pollInterval = 5000 }: Props) {
   }
 
   return (
-    <div className="h-[400px] border border-border rounded-lg overflow-hidden bg-background">
+    <div ref={containerRef} className="h-[400px] border border-border rounded-lg overflow-hidden bg-background relative">
+      {/* SSE 연결 상태 인디케이터 */}
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 bg-card/80 backdrop-blur-sm rounded-full px-2 py-1 border border-border/50">
+        <Radio className={cn("size-3", sseConnected ? "text-emerald-400" : "text-zinc-500")} />
+        <span className="text-[9px] text-muted-foreground">{sseConnected ? "Live" : "Polling"}</span>
+      </div>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -257,11 +299,24 @@ function LiveFlowGraphInner({ teams, pollInterval = 5000 }: Props) {
         proOptions={{ hideAttribution: true }}
         nodesDraggable={false}
         nodesConnectable={false}
-        elementsSelectable={false}
+        elementsSelectable={true}
+        onNodeClick={handleNodeClick}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="oklch(0.3 0 0)" />
         <Controls showInteractive={false} />
       </ReactFlow>
+
+      {/* 에이전트 상세 팝오버 */}
+      {selectedAgent && (
+        <AgentDetailPopover
+          agentId={selectedAgent.id}
+          position={selectedAgent.position}
+          onClose={() => setSelectedAgent(null)}
+          onOpenTerminal={onOpenTerminal}
+          onNavigateToProfile={onNavigateToProfile}
+          teams={teams}
+        />
+      )}
     </div>
   );
 }
@@ -269,7 +324,7 @@ function LiveFlowGraphInner({ teams, pollInterval = 5000 }: Props) {
 export function LiveFlowGraph(props: Props) {
   return (
     <ReactFlowProvider>
-      <LiveFlowGraphInner {...props} />
+      <LiveFlowGraphInner teams={props.teams} onOpenTerminal={props.onOpenTerminal} onNavigateToProfile={props.onNavigateToProfile} />
     </ReactFlowProvider>
   );
 }

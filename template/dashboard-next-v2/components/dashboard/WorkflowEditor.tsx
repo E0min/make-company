@@ -4,6 +4,12 @@ import { useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from "@/components/ui/tooltip";
 import { Save, Trash2, Play, Plus, FileText, LayoutGrid } from "lucide-react";
 import WorkflowCanvas from "./workflow/WorkflowCanvas";
 import { WorkflowPromptDialog } from "./WorkflowPromptDialog";
@@ -17,6 +23,7 @@ interface Props {
   onRun: () => void;
   isDirty: boolean;
   isNew: boolean;
+  projectActive: boolean;
 }
 
 export function WorkflowEditor({
@@ -27,6 +34,7 @@ export function WorkflowEditor({
   onRun,
   isDirty,
   isNew,
+  projectActive,
 }: Props) {
   const [promptStep, setPromptStep] = useState<string | null>(null);
 
@@ -101,9 +109,20 @@ export function WorkflowEditor({
           <Button variant="destructive" size="sm" onClick={onDelete} disabled={isNew} className="gap-1.5">
             <Trash2 className="size-3.5" /> Delete
           </Button>
-          <Button variant="outline" size="sm" onClick={onRun} disabled={definition.steps.length === 0} className="gap-1.5">
-            <Play className="size-3.5" /> Run
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button variant="outline" size="sm" onClick={onRun} disabled={!projectActive || definition.steps.length === 0} className="gap-1.5">
+                    <Play className="size-3.5" /> Run
+                  </Button>
+                }
+              />
+              {!projectActive && (
+                <TooltipContent>회사 실행 필요</TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
 

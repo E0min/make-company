@@ -1,27 +1,56 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { api, getCurrentProject } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import type { InstalledSkill, SkillUsageAgg, SkillCandidate } from "@/lib/types";
-import { Search, Package, Sparkles, Settings, Download, Star, TrendingUp } from "lucide-react";
+import type { InstalledSkill, SkillUsageAgg } from "@/lib/types";
+import { Search, Package, Settings, X } from "lucide-react";
 
 /* ── Sub-view identifiers ── */
-type SubView = "my" | "search" | "workflows" | "customize";
+type SubView = "my" | "customize";
 
 const SUB_TABS: { key: SubView; label: string; icon: React.ReactNode }[] = [
   { key: "my", label: "내 스킬", icon: <Package className="size-3.5" /> },
-  { key: "search", label: "검색", icon: <Search className="size-3.5" /> },
-  { key: "workflows", label: "워크플로우", icon: <TrendingUp className="size-3.5" /> },
   { key: "customize", label: "개인화", icon: <Settings className="size-3.5" /> },
 ];
 
+/* ── 역할 기반 카테고리 정의 ── */
+const ROLE_CATEGORIES = [
+  "전체",
+  "개발",
+  "디자인",
+  "QA/테스트",
+  "기획/관리",
+  "배포/인프라",
+  "보안/리뷰",
+  "문서/기타",
+  "기타",
+] as const;
+
+type RoleCategory = (typeof ROLE_CATEGORIES)[number];
+
+/** 카테고리별 뱃지 색상 매핑 */
+const CATEGORY_COLORS: Record<string, string> = {
+  "개발":      "bg-indigo-500/15 text-indigo-300 border-indigo-500/30",
+  "디자인":    "bg-pink-500/15 text-pink-300 border-pink-500/30",
+  "QA/테스트": "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  "기획/관리": "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  "배포/인프라": "bg-cyan-500/15 text-cyan-300 border-cyan-500/30",
+  "보안/리뷰": "bg-red-500/15 text-red-300 border-red-500/30",
+  "문서/기타": "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
+  "기타":      "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
+};
+
+function getCategoryColor(category: string): string {
+  return CATEGORY_COLORS[category] ?? CATEGORY_COLORS["기타"];
+}
+
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- * SkillsTab – 스킬 관리 허브 (4개 서브뷰)
+ * SkillsTab – 스킬 관리 허브 (2개 서브뷰)
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 export function SkillsTab() {
   const [view, setView] = useState<SubView>("my");
@@ -50,22 +79,20 @@ export function SkillsTab() {
 
       {/* ── 서브뷰 렌더 ── */}
       {view === "my" && <MySkillsView />}
-      {view === "search" && <SearchView />}
-      {view === "workflows" && <WorkflowsView />}
       {view === "customize" && <CustomizeView />}
     </div>
   );
 }
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- * 1. 내 스킬 (My Skills)
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * 1. 내 스킬 (My Skills) — 역할 기반 카테고리 필터
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 function MySkillsView() {
   const [skills, setSkills] = useState<InstalledSkill[]>([]);
   const [usage, setUsage] = useState<Record<string, SkillUsageAgg>>({});
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [activeCategory, setActiveCategory] = useState<RoleCategory>("전체");
 
   useEffect(() => {
     if (!getCurrentProject()) { setLoading(false); return; }
@@ -83,17 +110,26 @@ function MySkillsView() {
       .finally(() => setLoading(false));
   }, []);
 
-  /* 카테고리 목록 추출 */
-  const categories = Array.from(new Set(skills.map((s) => s.category).filter(Boolean)));
+  /* 카테고리별 스킬 수 집계 */
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const s of skills) {
+      const cat = s.category || "기타";
+      counts[cat] = (counts[cat] ?? 0) + 1;
+    }
+    return counts;
+  }, [skills]);
 
-  /* 필터링 */
+  /* 필터링: 텍스트 검색 + 역할 카테고리 (키워드도 텍스트 검색에 포함) */
   const filtered = skills.filter((s) => {
+    const lowerQuery = query.toLowerCase();
     const matchesQuery =
       !query ||
-      s.name.toLowerCase().includes(query.toLowerCase()) ||
-      s.description.toLowerCase().includes(query.toLowerCase());
+      s.name.toLowerCase().includes(lowerQuery) ||
+      s.description.toLowerCase().includes(lowerQuery) ||
+      (s.keywords ?? []).some((kw) => kw.toLowerCase().includes(lowerQuery));
     const matchesCategory =
-      categoryFilter === "all" || s.category === categoryFilter;
+      activeCategory === "전체" || s.category === activeCategory;
     return matchesQuery && matchesCategory;
   });
 
@@ -113,29 +149,48 @@ function MySkillsView() {
 
   return (
     <div className="space-y-4">
-      {/* 검색 + 카테고리 필터 */}
-      <div className="flex flex-col sm:flex-row gap-2">
-        <div className="relative flex-1">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-          <Input
-            placeholder="이름 또는 설명으로 검색..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="pl-8"
-          />
-        </div>
-        <select
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          className="h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-        >
-          <option value="all">모든 카테고리</option>
-          {categories.map((cat) => (
-            <option key={cat} value={cat}>
+      {/* 검색 */}
+      <div className="relative">
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+        <Input
+          placeholder="이름, 설명 또는 키워드로 검색..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="pl-8"
+        />
+      </div>
+
+      {/* 역할 카테고리 필터 pills */}
+      <div className="flex flex-wrap gap-1.5">
+        {ROLE_CATEGORIES.map((cat) => {
+          const count = cat === "전체"
+            ? skills.length
+            : (categoryCounts[cat] ?? 0);
+          /* 해당 카테고리에 스킬이 없으면 pill을 숨김 (전체는 항상 표시) */
+          if (cat !== "전체" && count === 0) return null;
+          const isActive = activeCategory === cat;
+          return (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => setActiveCategory(cat)}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium border transition-colors cursor-pointer",
+                isActive
+                  ? "bg-indigo-600/20 border-indigo-500/50 text-indigo-300"
+                  : "bg-zinc-900/40 border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+              )}
+            >
               {cat}
-            </option>
-          ))}
-        </select>
+              <span className={cn(
+                "text-[10px] font-mono",
+                isActive ? "text-indigo-400" : "text-zinc-600"
+              )}>
+                ({count})
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {/* 스킬 그리드 */}
@@ -154,11 +209,12 @@ function MySkillsView() {
             const count = u?.count ?? 0;
             const agents = u?.agents ?? [];
             const barWidth = (count / maxCount) * 100;
+            const category = skill.category || "기타";
 
             return (
               <Card key={skill.name} className="relative overflow-hidden">
                 <CardContent className="p-4 space-y-3">
-                  {/* 이름 + 카테고리 */}
+                  {/* 이름 + 역할 카테고리 뱃지 */}
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-sm font-semibold truncate">
@@ -168,8 +224,14 @@ function MySkillsView() {
                         {skill.description || "--"}
                       </div>
                     </div>
-                    <Badge variant="secondary" className="text-[9px] shrink-0">
-                      {skill.category || "etc"}
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "text-[9px] shrink-0 border",
+                        getCategoryColor(category)
+                      )}
+                    >
+                      {category}
                     </Badge>
                   </div>
 
@@ -219,141 +281,7 @@ function MySkillsView() {
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- * 2. 검색 (Find Skills)
- * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-function SearchView() {
-  const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    setLoading(true);
-    api
-      .skillsCandidates()
-      .then((res) => setCandidates(res.candidates ?? []))
-      .catch(() => setCandidates([]))
-      .finally(() => setLoading(false));
-  }, []);
-
-  return (
-    <div className="space-y-6">
-      {/* 안내 */}
-      <Card>
-        <CardContent className="p-5 space-y-4">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <Download className="size-4 text-indigo-400" />
-            스킬 검색은 터미널에서 실행하세요:
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <code className="flex-1 rounded-md bg-zinc-900 px-3 py-2 text-xs font-mono text-emerald-400 border border-zinc-800">
-                clawhub search &lt;keyword&gt;
-              </code>
-              <span className="text-[10px] text-muted-foreground shrink-0">
-                커뮤니티 스킬 검색
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 rounded-md bg-zinc-900 px-3 py-2 text-xs font-mono text-emerald-400 border border-zinc-800">
-                ls ~/.agents/skills/
-              </code>
-              <span className="text-[10px] text-muted-foreground shrink-0">
-                로컬 미설치 스킬
-              </span>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* 후보 스킬 */}
-      {loading ? (
-        <div className="text-sm text-muted-foreground text-center py-8">
-          후보 스킬을 불러오는 중...
-        </div>
-      ) : candidates.length > 0 ? (
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold flex items-center gap-1.5">
-            <Sparkles className="size-3.5 text-amber-400" />
-            스킬 후보 (자동 감지)
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {candidates.map((c, i) => (
-              <Card key={`${c.pattern}-${i}`} className="relative overflow-hidden">
-                <CardContent className="p-4 space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold truncate">
-                        {c.pattern}
-                      </div>
-                      <div className="text-[10px] text-muted-foreground mt-0.5">
-                        감지 에이전트: {c.agent}
-                      </div>
-                    </div>
-                    {c.promoted ? (
-                      <Badge variant="default" className="text-[9px] shrink-0 bg-emerald-600">
-                        <Star className="size-2.5 mr-0.5" />
-                        승격됨
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="text-[9px] shrink-0 text-amber-400 border-amber-400/40">
-                        승격
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-                    <span>빈도: {c.frequency}회</span>
-                    <span className="font-mono">
-                      {new Date(c.ts).toLocaleDateString("ko-KR")}
-                    </span>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <div className="text-sm text-muted-foreground text-center py-4">
-          자동 감지된 스킬 후보가 없습니다.
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- * 3. 워크플로우 (Skill Workflows)
- * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-function WorkflowsView() {
-  return (
-    <Card>
-      <CardContent className="p-8 text-center space-y-4">
-        <TrendingUp className="size-8 text-indigo-400 mx-auto" />
-        <div className="space-y-2">
-          <p className="text-sm font-semibold">스킬 워크플로우</p>
-          <p className="text-sm text-muted-foreground max-w-md mx-auto">
-            기존 Workflows 탭에서 스킬 노드를 추가하여 워크플로우를 구성하세요.
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            /* Workflows 탭으로 전환: 부모 탭 상태를 직접 제어할 수 없으므로
-               커스텀 이벤트를 디스패치하여 부모가 감지하도록 합니다. */
-            window.dispatchEvent(
-              new CustomEvent("vc:switch-tab", { detail: "workflows" })
-            );
-          }}
-        >
-          <TrendingUp className="size-3.5" />
-          Workflows 탭으로 이동
-        </Button>
-      </CardContent>
-    </Card>
-  );
-}
-
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- * 4. 개인화 (Skill Customization)
+ * 2. 개인화 (Skill Customization)
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 function CustomizeView() {
   const [skills, setSkills] = useState<InstalledSkill[]>([]);
@@ -453,6 +381,8 @@ function CustomizeView() {
           isValid = false;
         }
 
+        const category = skill.category || "기타";
+
         return (
           <Card key={skill.name} className="relative overflow-hidden">
             <CardContent className="p-4 space-y-3">
@@ -461,8 +391,14 @@ function CustomizeView() {
                 <div className="text-sm font-semibold truncate">
                   {skill.name}
                 </div>
-                <Badge variant="secondary" className="text-[9px] shrink-0">
-                  {skill.category || "etc"}
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "text-[9px] shrink-0 border",
+                    getCategoryColor(category)
+                  )}
+                >
+                  {category}
                 </Badge>
               </div>
 

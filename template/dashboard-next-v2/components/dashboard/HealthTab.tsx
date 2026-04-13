@@ -1,11 +1,13 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { api, getCurrentProject } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { AgentScores, WorkflowAnalysis, Improvement } from "@/lib/types";
-import { AlertTriangle, TrendingUp, TrendingDown, Minus, Zap, Clock, BarChart3, Target } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { AlertTriangle, TrendingUp, TrendingDown, Minus, Zap, Clock, BarChart3, Target, Search, UserPlus, Bell, MessageSquare, Loader2, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 
 /* ━━━ Helper types for fetched data ━━━ */
 
@@ -14,6 +16,103 @@ interface BottleneckAlert {
   title: string;
   description: string;
   severity: "high" | "medium" | "low";
+}
+
+interface Suggestion {
+  type: string;
+  message: string;
+  severity: string;
+  ticket?: string;
+  agent?: string;
+}
+
+interface InsightsData {
+  total_events: number;
+  agent_activity: Record<string, number>;
+  gate_rejections: number;
+  cycle_times: { ticket: string; title: string; seconds: number }[];
+  avg_cycle_seconds: number;
+  status_counts: Record<string, number>;
+  suggestions?: Suggestion[];
+}
+
+/* ━━━ Remediation action config per suggestion type ━━━ */
+
+interface ActionConfig {
+  label: string;
+  icon: React.ReactNode;
+  confirm: string;
+  execute: (suggestion: Suggestion) => Promise<string>;
+}
+
+function getActionConfig(type: string): ActionConfig | null {
+  switch (type) {
+    case "stuck":
+      return {
+        label: "에스컬레이션",
+        icon: <AlertTriangle className="size-3" />,
+        confirm: "이 티켓을 에스컬레이션 하시겠습니까?",
+        execute: async (s) => {
+          if (!s.ticket) throw new Error("티켓 정보 없음");
+          await api.ticketComment(s.ticket, "Stuck >48h -- escalation. review required", "system");
+          return `${s.ticket} 에스컬레이션 완료`;
+        },
+      };
+    case "idle_agent":
+      return {
+        label: "핑 보내기",
+        icon: <Bell className="size-3" />,
+        confirm: "이 에이전트에게 핑을 보내시겠습니까?",
+        execute: async (s) => {
+          if (!s.agent) throw new Error("에이전트 정보 없음");
+          const ticketId = s.ticket ?? s.message.match(/TASK-\d+/)?.[0];
+          if (!ticketId) throw new Error("관련 티켓 없음");
+          await api.ticketComment(ticketId, `@${s.agent} status check requested`, "system");
+          return `${s.agent}에게 핑 전송 완료`;
+        },
+      };
+    case "unassigned":
+      return {
+        label: "자동 배정",
+        icon: <UserPlus className="size-3" />,
+        confirm: "유휴 에이전트에게 자동 배정하시겠습니까?",
+        execute: async (s) => {
+          if (!s.ticket) throw new Error("티켓 정보 없음");
+          const stateData = await api.state();
+          const idleAgent = stateData.agents?.find((a: { state: string }) => a.state === "idle");
+          if (!idleAgent) throw new Error("유휴 에이전트 없음");
+          const result = await api.ticketUpdate(s.ticket, { assignee: idleAgent.id });
+          if (!result.ok) throw new Error(result.error ?? "배정 실패");
+          return `${s.ticket} -> ${idleAgent.id} assigned`;
+        },
+      };
+    case "wip_high":
+      return {
+        label: "경고 전송",
+        icon: <MessageSquare className="size-3" />,
+        confirm: "WIP 한도 초과 경고를 전송하시겠습니까?",
+        execute: async (s) => {
+          const ticketId = s.ticket ?? s.message.match(/TASK-\d+/)?.[0];
+          if (!ticketId) throw new Error("관련 티켓 없음");
+          await api.ticketComment(ticketId, "WIP limit exceeded -- finish current work before proceeding", "system");
+          return "WIP 경고 전송 완료";
+        },
+      };
+    case "repeat_reject":
+      return {
+        label: "개선 제안",
+        icon: <MessageSquare className="size-3" />,
+        confirm: "코드 품질 개선 제안을 전송하시겠습니까?",
+        execute: async (s) => {
+          const ticketId = s.ticket ?? s.message.match(/TASK-\d+/)?.[0];
+          if (!ticketId) throw new Error("관련 티켓 없음");
+          await api.ticketComment(ticketId, "Repeated rejection detected -- code quality process improvement needed", "system");
+          return "개선 제안 전송 완료";
+        },
+      };
+    default:
+      return null;
+  }
 }
 
 /* ━━━ Severity → color mapping ━━━ */
@@ -109,13 +208,43 @@ function formatDuration(seconds: number): string {
 
 /* ━━━ Main Component ━━━ */
 
-export function HealthTab() {
+interface HealthTabProps {
+  onInvestigate?: (type: "ticket" | "agent", id: string) => void;
+}
+
+export function HealthTab({ onInvestigate }: HealthTabProps = {}) {
   const [agentScores, setAgentScores] = useState<Record<string, AgentScores>>({});
   const [workflowData, setWorkflowData] = useState<Record<string, WorkflowAnalysis>>({});
   const [improvements, setImprovements] = useState<Improvement[]>([]);
-  const [insights, setInsights] = useState<{ total_events: number; agent_activity: Record<string, number>; gate_rejections: number; cycle_times: { ticket: string; title: string; seconds: number }[]; avg_cycle_seconds: number; status_counts: Record<string, number>; suggestions?: { type: string; message: string; severity: string }[] } | null>(null);
+  const [insights, setInsights] = useState<InsightsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState<number | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  const fetchAll = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
+    setError(null);
+
+    try {
+      const [scoresRes, workflowsRes, improvementsRes, insightsRes] = await Promise.all([
+        api.analyticsScores().catch(() => ({ agents: {} })),
+        api.analyticsWorkflows().catch(() => ({ workflows: {} })),
+        api.improvements().catch(() => ({ improvements: [] })),
+        api.insights().catch(() => null),
+      ]);
+
+      setAgentScores((scoresRes as { agents: Record<string, AgentScores> }).agents ?? {});
+      setWorkflowData((workflowsRes as { workflows: Record<string, WorkflowAnalysis> }).workflows ?? {});
+      setImprovements((improvementsRes as { improvements: Improvement[] }).improvements ?? []);
+      if (insightsRes) setInsights(insightsRes as InsightsData);
+      setLastUpdated(new Date());
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     // 프로젝트 선택 전이면 API 호출 스킵 (라우팅 충돌 방지)
@@ -126,36 +255,35 @@ export function HealthTab() {
 
     let cancelled = false;
 
-    async function fetchAll() {
-      setLoading(true);
-      setError(null);
+    fetchAll().then(() => {
+      if (cancelled) return;
+    });
 
-      try {
-        const [scoresRes, workflowsRes, improvementsRes, insightsRes] = await Promise.all([
-          api.analyticsScores().catch(() => ({ agents: {} })),
-          api.analyticsWorkflows().catch(() => ({ workflows: {} })),
-          api.improvements().catch(() => ({ improvements: [] })),
-          api.insights().catch(() => null),
-        ]);
+    // 15초 폴링
+    const interval = setInterval(() => {
+      if (!cancelled) fetchAll(false);
+    }, 15_000);
 
-        if (cancelled) return;
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [fetchAll]);
 
-        setAgentScores((scoresRes as { agents: Record<string, AgentScores> }).agents ?? {});
-        setWorkflowData((workflowsRes as { workflows: Record<string, WorkflowAnalysis> }).workflows ?? {});
-        setImprovements((improvementsRes as { improvements: Improvement[] }).improvements ?? []);
-        if (insightsRes) setInsights(insightsRes);
-      } catch (e) {
-        if (!cancelled) {
-          setError(String(e));
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+  /** Execute a remediation action for a suggestion */
+  const handleAction = useCallback(async (index: number, suggestion: Suggestion, config: ActionConfig) => {
+    if (!window.confirm(config.confirm)) return;
+
+    setActionLoading(index);
+    try {
+      const result = await config.execute(suggestion);
+      toast.success("작업 완료", { description: result });
+      // Refresh insights to reflect the change
+      await fetchAll(false);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      toast.error("작업 실패", { description: message });
+    } finally {
+      setActionLoading(null);
     }
-
-    fetchAll();
-    return () => { cancelled = true; };
-  }, []);
+  }, [fetchAll]);
 
   if (loading) {
     return (
@@ -179,6 +307,25 @@ export function HealthTab() {
 
   return (
     <div className="space-y-8">
+      {/* ── Header: Last updated + Refresh ── */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Clock className="size-3" />
+          {lastUpdated
+            ? `Last updated ${lastUpdated.toLocaleTimeString("ko-KR", { hour12: false })}`
+            : "Loading..."}
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 text-xs gap-1.5"
+          onClick={() => fetchAll(false)}
+        >
+          <RefreshCw className="size-3" />
+          Refresh
+        </Button>
+      </div>
+
       {/* ── Section 0: Insights KPI ── */}
       {insights && (
         <section className="space-y-3">
@@ -276,6 +423,13 @@ export function HealthTab() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {insights.suggestions.map((s, i) => {
                 const sc = severityColor(s.severity as "high" | "medium" | "low");
+                const investigateTarget = s.ticket
+                  ? { type: "ticket" as const, id: s.ticket }
+                  : s.agent
+                    ? { type: "agent" as const, id: s.agent }
+                    : null;
+                const action = getActionConfig(s.type);
+                const isThisLoading = actionLoading === i;
                 return (
                   <Card key={i} className="overflow-hidden relative">
                     <div className={cn("absolute left-0 top-0 bottom-0 w-[3px]", sc.bg)} />
@@ -294,6 +448,32 @@ export function HealthTab() {
                       <p className="text-[12px] text-muted-foreground leading-relaxed">
                         {s.message}
                       </p>
+                      <div className="pt-1 flex items-center gap-1.5 flex-wrap">
+                        {investigateTarget && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 px-2 text-[10px] gap-1"
+                            disabled={!onInvestigate}
+                            onClick={() => onInvestigate?.(investigateTarget.type, investigateTarget.id)}
+                          >
+                            <Search className="size-3" />
+                            조사하기
+                          </Button>
+                        )}
+                        {action && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 px-2 text-[10px] gap-1"
+                            disabled={isThisLoading || actionLoading !== null}
+                            onClick={() => handleAction(i, s, action)}
+                          >
+                            {isThisLoading ? <Loader2 className="size-3 animate-spin" /> : action.icon}
+                            {action.label}
+                          </Button>
+                        )}
+                      </div>
                     </CardContent>
                   </Card>
                 );

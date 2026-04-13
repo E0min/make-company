@@ -18,6 +18,10 @@ import { HealthTab } from "@/components/dashboard/HealthTab";
 import { RetroTab } from "@/components/dashboard/RetroTab";
 import { AgentProfileTab } from "@/components/dashboard/AgentProfileTab";
 import { TicketsTab } from "@/components/dashboard/TicketsTab";
+import { DocsTab } from "@/components/dashboard/DocsTab";
+import { HarnessTab } from "@/components/dashboard/HarnessTab";
+import { AuditTab } from "@/components/dashboard/AuditTab";
+import { CommandPalette } from "@/components/dashboard/CommandPalette";
 import {
   LayoutDashboard,
   GitBranch,
@@ -32,6 +36,9 @@ import {
   History,
   UserCircle,
   Ticket,
+  FileText,
+  Shield,
+  ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -43,17 +50,38 @@ const NAV_ITEMS = [
   { key: "run", label: "Workflows", icon: GitBranch, shortcut: "g r" },
   { key: "activity", label: "Activity", icon: ScrollText, shortcut: "g a" },
   { key: "agents", label: "Agents", icon: Users, shortcut: "g g" },
-  { key: "skills", label: "Skills", icon: Package, shortcut: "g s" },
   { key: "health", label: "Health", icon: Activity, shortcut: "g h" },
+  { key: "harness", label: "Harness", icon: Shield, shortcut: "g n" },
+  { key: "audit", label: "Audit", icon: ShieldCheck, shortcut: "g u" },
   { key: "retro", label: "Retro", icon: History, shortcut: "g t" },
+  { key: "skills", label: "Skills", icon: Package, shortcut: "g s" },
   { key: "profile", label: "Profile", icon: UserCircle, shortcut: "g p" },
+  { key: "docs", label: "Docs", icon: FileText, shortcut: "g d" },
 ] as const;
 
 type ViewKey = (typeof NAV_ITEMS)[number]["key"];
 
+/* ── Sidebar nav groups ── */
+const NAV_GROUPS: { label: string; keys: ViewKey[] }[] = [
+  { label: "Core", keys: ["overview", "tickets", "run", "activity", "agents"] },
+  { label: "Monitor", keys: ["health", "harness", "audit"] },
+  { label: "Reference", keys: ["retro", "skills", "profile", "docs"] },
+];
+
 export default function DashboardPage() {
   const [view, setView] = useState<ViewKey>("overview");
   const [sidebarHover, setSidebarHover] = useState(false);
+
+  // ── Command Palette 상태 ──
+  const [cmdOpen, setCmdOpen] = useState(false);
+
+  // ── Profile deep-link 상태 ──
+  const [profileAgentId, setProfileAgentId] = useState<string | undefined>(undefined);
+
+  const handleNavigateToProfile = useCallback((agentId: string) => {
+    setProfileAgentId(agentId);
+    setView("profile");
+  }, []);
 
   // ── 터미널 패널 상태 ──
   const [terminalAgent, setTerminalAgent] = useState<string | null>(null);
@@ -143,6 +171,8 @@ export default function DashboardPage() {
   const workflowsQ = usePolling(() => api.workflows(), { interval: 5000 });
   const runningQ = usePolling(() => api.running(), { interval: 2000 });
 
+  const ticketsQ = usePolling(() => api.tickets(), { interval: 5000 });
+
   // ── SSE (project가 바뀌면 자동 재연결) ──
   const [sseConnected, setSseConnected] = useState(false);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
@@ -185,11 +215,17 @@ export default function DashboardPage() {
   const lastG = useRef(0);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Cmd+K / Ctrl+K -> Command Palette (works even in inputs)
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setCmdOpen((prev) => !prev);
+        return;
+      }
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       if (e.key === "g") { lastG.current = Date.now(); return; }
       if (lastG.current && Date.now() - lastG.current < 800) {
-        const map: Record<string, ViewKey> = { o: "overview", r: "run", a: "activity", g: "agents" };
+        const map: Record<string, ViewKey> = { o: "overview", k: "tickets", r: "run", a: "activity", g: "agents", s: "skills", h: "health", t: "retro", p: "profile", n: "harness", d: "docs", u: "audit" };
         const next = map[e.key];
         if (next) { setView(next); lastG.current = 0; }
       }
@@ -203,6 +239,20 @@ export default function DashboardPage() {
   }, [stateQ, agentsQ, runningQ]);
 
   const clearActivity = useCallback(() => setActivityEntries([]), []);
+
+  // ── CommandPalette 핸들러 ──
+  const handleCmdSelectTicket = useCallback((_id: string) => {
+    // 티켓 선택 시 tickets 뷰로 이동
+    setView("tickets");
+  }, []);
+
+  const handleCmdSelectAgent = useCallback((agentId: string) => {
+    openTerminal(agentId);
+  }, [openTerminal]);
+
+  const handleCmdCreateTicket = useCallback(() => {
+    setView("tickets");
+  }, []);
 
   // ── Derived ──
   const agentStatuses = stateQ.data?.agents ?? [];
@@ -241,41 +291,62 @@ export default function DashboardPage() {
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 flex flex-col gap-0.5 px-2 py-3">
-          {NAV_ITEMS.map((item) => {
-            const active = view === item.key;
-            const Icon = item.icon;
+        <nav className="flex-1 flex flex-col px-2 py-3">
+          {NAV_GROUPS.map((group, gi) => {
+            const groupItems = group.keys.map((k) => NAV_ITEMS.find((n) => n.key === k)!);
             return (
-              <button
-                key={item.key}
-                title={!sidebarHover ? `${item.label} (${item.shortcut})` : undefined}
-                onClick={() => setView(item.key)}
-                className={cn(
-                  "flex items-center gap-3 px-2.5 py-2 rounded-md text-sm transition-colors duration-100 relative",
-                  active
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                    : "text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
+              <div key={group.label}>
+                {/* Group divider (skip for first group) */}
+                {gi > 0 && (
+                  <div className="my-2">
+                    <div className="border-t border-sidebar-border/30" />
+                    <span className={cn(
+                      "block text-[9px] font-semibold uppercase tracking-wider text-sidebar-foreground/40 px-2.5 pt-2 pb-1 transition-opacity duration-150",
+                      sidebarHover ? "opacity-100" : "opacity-0 h-0 overflow-hidden py-0 my-0"
+                    )}>
+                      {group.label}
+                    </span>
+                  </div>
                 )}
-              >
-                {active && (
-                  <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-r-full bg-primary" />
-                )}
-                <Icon className="size-4 shrink-0" />
-                <span className={cn(
-                  "truncate transition-opacity duration-150",
-                  sidebarHover ? "opacity-100" : "opacity-0 w-0"
-                )}>
-                  {item.label}
-                </span>
-                {item.key === "run" && isRunning && (
-                  <span className="size-1.5 rounded-full bg-vc-green animate-pulse ml-auto shrink-0" />
-                )}
-                {item.key === "activity" && activityEntries.length > 0 && sidebarHover && (
-                  <Badge variant="secondary" className="text-[9px] h-4 px-1 ml-auto shrink-0">
-                    {activityEntries.length}
-                  </Badge>
-                )}
-              </button>
+                <div className="flex flex-col gap-0.5">
+                  {groupItems.map((item) => {
+                    const active = view === item.key;
+                    const Icon = item.icon;
+                    return (
+                      <button
+                        key={item.key}
+                        title={!sidebarHover ? `${item.label} (${item.shortcut})` : undefined}
+                        onClick={() => setView(item.key)}
+                        className={cn(
+                          "flex items-center gap-3 px-2.5 py-2 rounded-md text-sm transition-colors duration-100 relative",
+                          active
+                            ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                            : "text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
+                        )}
+                      >
+                        {active && (
+                          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-r-full bg-primary" />
+                        )}
+                        <Icon className="size-4 shrink-0" />
+                        <span className={cn(
+                          "truncate transition-opacity duration-150",
+                          sidebarHover ? "opacity-100" : "opacity-0 w-0"
+                        )}>
+                          {item.label}
+                        </span>
+                        {item.key === "run" && isRunning && (
+                          <span className="size-1.5 rounded-full bg-vc-green animate-pulse ml-auto shrink-0" />
+                        )}
+                        {item.key === "activity" && activityEntries.length > 0 && sidebarHover && (
+                          <Badge variant="secondary" className="text-[9px] h-4 px-1 ml-auto shrink-0">
+                            {activityEntries.length}
+                          </Badge>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             );
           })}
         </nav>
@@ -371,10 +442,10 @@ export default function DashboardPage() {
           )}
 
           {view === "overview" && (
-            <OverviewTab state={stateQ.data} agents={agentsQ.data} activityEntries={activityEntries} onOpenTerminal={openTerminal} projectActive={projectActive} />
+            <OverviewTab state={stateQ.data} agents={agentsQ.data} activityEntries={activityEntries} onOpenTerminal={openTerminal} onNavigateToProfile={handleNavigateToProfile} projectActive={projectActive} />
           )}
           {view === "run" && (
-            <WorkflowsTab workflows={workflowsQ.data?.workflows ?? []} running={runningQ.data} onRefetch={refetchAll} />
+            <WorkflowsTab workflows={workflowsQ.data?.workflows ?? []} running={runningQ.data} onRefetch={refetchAll} projectActive={projectActive} />
           )}
           {view === "activity" && (
             <ActivityTab entries={activityEntries} onClear={clearActivity} />
@@ -386,9 +457,15 @@ export default function DashboardPage() {
             <AgentsTab state={stateQ.data} agents={agentsQ.data} onRefetch={refetchAll} onOpenTerminal={openTerminal} />
           )}
           {view === "skills" && <SkillsTab />}
-          {view === "health" && <HealthTab />}
+          {view === "health" && <HealthTab onInvestigate={(type, id) => {
+            if (type === "ticket") { setView("tickets"); }
+            else if (type === "agent") { openTerminal(id); }
+          }} />}
           {view === "retro" && <RetroTab />}
-          {view === "profile" && <AgentProfileTab agents={agentsQ.data?.agents ?? null} />}
+          {view === "profile" && <AgentProfileTab agents={agentsQ.data?.agents ?? null} initialAgentId={profileAgentId} onOpenTerminal={openTerminal} />}
+          {view === "harness" && <HarnessTab key={currentProject ?? ""} />}
+          {view === "docs" && <DocsTab key={currentProject ?? ""} />}
+          {view === "audit" && <AuditTab key={currentProject ?? ""} />}
         </main>
 
         {/* 시작 모달 */}
@@ -434,6 +511,18 @@ export default function DashboardPage() {
 
         <StatusBar healthy={stateQ.healthy} lastUpdated={stateQ.lastUpdated} />
       </div>
+
+      {/* ── Command Palette ── */}
+      <CommandPalette
+        open={cmdOpen}
+        onOpenChange={setCmdOpen}
+        tickets={ticketsQ.data?.tickets ?? []}
+        agents={agentStatuses}
+        onSelectTicket={handleCmdSelectTicket}
+        onSelectAgent={handleCmdSelectAgent}
+        onCreateTicket={handleCmdCreateTicket}
+        onNavigate={(tab) => setView(tab as ViewKey)}
+      />
     </div>
   );
 }

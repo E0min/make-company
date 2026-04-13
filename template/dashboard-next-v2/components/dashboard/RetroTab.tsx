@@ -4,8 +4,8 @@ import { api, getCurrentProject } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { Retrospective, SharedKnowledge } from "@/lib/types";
-import { Clock, Users, MessageSquare, Lightbulb, Tag, BookOpen } from "lucide-react";
+import type { Retrospective, SharedKnowledge, Improvement } from "@/lib/types";
+import { Clock, Users, MessageSquare, Lightbulb, Tag, BookOpen, AlertTriangle } from "lucide-react";
 
 /* ── Tag color map ── */
 
@@ -86,6 +86,7 @@ export function RetroTab() {
   /* ── State ── */
   const [retros, setRetros] = useState<Retrospective[]>([]);
   const [knowledge, setKnowledge] = useState<SharedKnowledge[]>([]);
+  const [improvements, setImprovements] = useState<Improvement[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [expandedRetro, setExpandedRetro] = useState<string | null>(null);
 
@@ -100,6 +101,10 @@ export function RetroTab() {
     api.sharedKnowledge(undefined, 20)
       .then((res) => setKnowledge(res.entries ?? []))
       .catch(() => setKnowledge([]));
+
+    api.improvements()
+      .then((res) => setImprovements(res.improvements ?? []))
+      .catch(() => setImprovements([]));
   }, []);
 
   /* ── Derived: unique tags from all retros ── */
@@ -231,6 +236,32 @@ export function RetroTab() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {knowledge.map((k, i) => (
               <KnowledgeCard key={`${k.ts}-${i}`} item={k} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ━━━ Section 4: Improvements ━━━ */}
+      <div>
+        <div className="flex items-center gap-2 mb-4">
+          <AlertTriangle className="size-4 text-amber-400" />
+          <h2 className="text-base font-semibold">자기개선 권고</h2>
+          <Badge variant="secondary" className="text-[10px] font-mono">
+            {improvements.length}건
+          </Badge>
+        </div>
+
+        {improvements.length === 0 ? (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+              <AlertTriangle className="size-8 mb-3 opacity-30" />
+              <p className="text-sm">개선 권고가 없습니다</p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {improvements.map((imp) => (
+              <ImprovementCard key={imp.id} item={imp} />
             ))}
           </div>
         )}
@@ -438,6 +469,89 @@ function KnowledgeCard({ item }: { item: SharedKnowledge }) {
             </div>
           )}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ════════════════════════════════════════
+   ImprovementCard – self-improvement recommendation
+   ════════════════════════════════════════ */
+
+const SEVERITY_STYLE: Record<string, { badge: string; border: string }> = {
+  high:   { badge: "bg-red-500/15 text-red-300 border-red-500/30", border: "border-l-red-500" },
+  medium: { badge: "bg-amber-500/15 text-amber-300 border-amber-500/30", border: "border-l-amber-500" },
+  low:    { badge: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30", border: "border-l-zinc-500" },
+};
+
+const TYPE_LABEL: Record<string, string> = {
+  bottleneck: "병목",
+  quality_decline: "품질 저하",
+  skill_gap: "스킬 갭",
+  tool_mismatch: "도구 불일치",
+};
+
+function ImprovementCard({ item }: { item: Improvement }) {
+  return (
+    <Card className="relative overflow-hidden">
+      <CardContent className="space-y-3">
+        {/* Header: generated date + trigger */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold text-foreground truncate">
+              {item.trigger}
+            </p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">
+              {formatDate(item.generated_at)}
+            </p>
+          </div>
+        </div>
+
+        {/* Findings */}
+        {item.findings.length > 0 && (
+          <div className="space-y-2">
+            {item.findings.map((f, fi) => {
+              const sev = SEVERITY_STYLE[f.severity] ?? SEVERITY_STYLE.low;
+              return (
+                <div
+                  key={fi}
+                  className={cn("border-l-2 pl-3 py-1 space-y-1", sev.border)}
+                >
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-medium border", sev.badge)}>
+                      {f.severity}
+                    </span>
+                    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-medium bg-zinc-800 text-zinc-300 border border-zinc-700">
+                      {TYPE_LABEL[f.type] ?? f.type}
+                    </span>
+                    {f.agent && (
+                      <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-medium", agentColorClass(f.agent))}>
+                        {f.agent}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-zinc-400">{f.description}</p>
+                  <p className="text-[11px] text-zinc-200">{f.suggestion}</p>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Auto-applied actions */}
+        {item.auto_applied.length > 0 && (
+          <div className="space-y-1 pt-1 border-t border-zinc-700/60">
+            <p className="text-[10px] font-semibold text-zinc-400">자동 적용됨</p>
+            <ul className="space-y-0.5">
+              {item.auto_applied.map((action, ai) => (
+                <li key={ai} className="text-[10px] text-emerald-300/80 flex items-start gap-1.5">
+                  <span className="shrink-0 mt-0.5 size-1.5 rounded-full bg-emerald-500" />
+                  {action}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
