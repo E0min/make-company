@@ -1,22 +1,11 @@
 "use client";
 
-import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-  TooltipProvider,
-} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api";
-import { toast } from "sonner";
-import { Textarea } from "@/components/ui/textarea";
-import { Plus, Play, Loader2, Zap, Sparkles, FileText } from "lucide-react";
+import { Plus, Loader2 } from "lucide-react";
 import type { WorkflowItem, RunningResponse } from "@/lib/types";
 
 // ━━━ Props ━━━
@@ -26,9 +15,7 @@ interface Props {
   selectedName: string | null;
   onSelect: (name: string) => void;
   onCreate: () => void;
-  onGenerate: (description: string) => Promise<void>;
   running: RunningResponse | null;
-  onRunTask: (task: string) => void;
   projectActive: boolean;
 }
 
@@ -37,8 +24,7 @@ interface Props {
 /**
  * 워크플로우 목록 (좌측 패널).
  * - 워크플로우 리스트 (ScrollArea)
- * - New Workflow 버튼
- * - Quick Run (태스크 입력 + 실행)
+ * - New Workflow 버튼 (빈 템플릿)
  * - 실행 상태 뱃지 표시
  */
 export function WorkflowList({
@@ -46,48 +32,10 @@ export function WorkflowList({
   selectedName,
   onSelect,
   onCreate,
-  onGenerate,
   running,
-  onRunTask,
   projectActive,
 }: Props) {
-  const [task, setTask] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [createMode, setCreateMode] = useState<null | "template" | "ai">(null);
-  const [aiDesc, setAiDesc] = useState("");
-  const [aiGenerating, setAiGenerating] = useState(false);
-
   const isRunning = running?.pid !== null && running?.pid !== undefined;
-
-  /** Quick Run 핸들러 */
-  const handleQuickRun = async () => {
-    const trimmed = task.trim();
-    if (!trimmed) {
-      toast.warning("Task is required");
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const r = await api.run(trimmed);
-      if (r.ok) {
-        toast.success("Task started", { description: trimmed });
-        setTask("");
-        onRunTask(trimmed);
-      } else {
-        toast.error("Run failed", { description: r.error });
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  /** Enter 키로 Quick Run 실행 */
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !submitting && !isRunning && projectActive) {
-      handleQuickRun();
-    }
-  };
 
   return (
     <div className="flex flex-col h-full gap-3">
@@ -151,153 +99,16 @@ export function WorkflowList({
         </div>
       </ScrollArea>
 
-      {/* ── New Workflow 영역 ── */}
-      {createMode === null ? (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setCreateMode("ai")}
-          className="w-full gap-1.5"
-        >
-          <Plus className="size-3.5" />
-          New Workflow
-        </Button>
-      ) : (
-        <div className="flex flex-col gap-2 p-2.5 rounded-lg border border-border bg-card">
-          {/* 모드 선택 탭 */}
-          <div className="flex gap-1">
-            <button
-              onClick={() => setCreateMode("ai")}
-              className={cn(
-                "flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-medium transition-colors",
-                createMode === "ai"
-                  ? "bg-primary/10 text-primary border border-primary/30"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-              )}
-            >
-              <Sparkles className="size-3" />
-              AI 생성
-            </button>
-            <button
-              onClick={() => { setCreateMode("template"); onCreate(); setCreateMode(null); }}
-              className={cn(
-                "flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-medium transition-colors",
-                createMode === "template"
-                  ? "bg-primary/10 text-primary border border-primary/30"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-              )}
-            >
-              <FileText className="size-3" />
-              빈 템플릿
-            </button>
-          </div>
-
-          {/* AI 생성 모드 */}
-          {createMode === "ai" && (
-            <>
-              <Textarea
-                value={aiDesc}
-                onChange={(e) => setAiDesc(e.target.value)}
-                placeholder={projectActive
-                  ? "워크플로우를 설명하세요\n예: PM이 기획하고 디자이너가 디자인하고 프론트가 구현하는 흐름"
-                  : "회사를 시작한 후 사용할 수 있습니다"}
-                rows={3}
-                className="text-xs resize-none"
-                disabled={!projectActive || aiGenerating}
-              />
-              <div className="flex gap-1.5">
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Button
-                          variant="default"
-                          size="xs"
-                          className="flex-1 gap-1"
-                          disabled={!projectActive || !aiDesc.trim() || aiGenerating}
-                          onClick={async () => {
-                            setAiGenerating(true);
-                            try {
-                              await onGenerate(aiDesc.trim());
-                              setAiDesc("");
-                              setCreateMode(null);
-                            } finally {
-                              setAiGenerating(false);
-                            }
-                          }}
-                        >
-                          {aiGenerating ? (
-                            <Loader2 className="size-3 animate-spin" />
-                          ) : (
-                            <Sparkles className="size-3" />
-                          )}
-                          {aiGenerating ? "생성중..." : "AI 생성"}
-                        </Button>
-                      }
-                    />
-                    {!projectActive && (
-                      <TooltipContent>회사 실행 필요</TooltipContent>
-                    )}
-                  </Tooltip>
-                </TooltipProvider>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => { setCreateMode(null); setAiDesc(""); }}
-                  disabled={aiGenerating}
-                >
-                  취소
-                </Button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      <Separator />
-
-      {/* ── Quick Run ── */}
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-1.5 px-1">
-          <Zap className="size-3.5 text-amber-400" />
-          <span className="text-xs font-semibold">Quick Run</span>
-        </div>
-
-        <Input
-          value={task}
-          onChange={(e) => setTask(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={projectActive ? "Describe a task..." : "회사를 시작한 후 사용할 수 있습니다"}
-          disabled={!projectActive || isRunning || submitting}
-          className="text-xs"
-        />
-
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={handleQuickRun}
-                  disabled={!projectActive || isRunning || submitting || !task.trim()}
-                  className="w-full gap-1.5"
-                >
-                  {submitting ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <Play className="size-3.5" />
-                  )}
-                  Run
-                </Button>
-              }
-            />
-            {!projectActive && (
-              <TooltipContent>회사 실행 필요</TooltipContent>
-            )}
-          </Tooltip>
-        </TooltipProvider>
-      </div>
+      {/* ── 새 워크플로우 (빈 템플릿만) ── */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onCreate}
+        className="w-full gap-1.5"
+      >
+        <Plus className="size-3.5" />
+        새 워크플로우
+      </Button>
     </div>
   );
 }

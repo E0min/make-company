@@ -252,9 +252,7 @@ export function WorkflowsTab({ workflows, running, onRefetch, projectActive }: P
           selectedName={selectedName}
           onSelect={handleSelect}
           onCreate={handleCreate}
-          onGenerate={handleGenerate}
           running={running}
-          onRunTask={handleRunTask}
           projectActive={projectActive}
         />
 
