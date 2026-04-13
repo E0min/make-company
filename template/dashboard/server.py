@@ -968,8 +968,21 @@ SKILL_CATEGORIES = {
     "문서/기타": {"document-release", "make-company"},
 }
 
-def _auto_categorize(skill_name):
-    """스킬 이름으로 역할 기반 카테고리 자동 분류."""
+def _auto_categorize(skill_name, company_dir=None):
+    """스킬 이름으로 카테고리 분류. config.json의 skill_categories 우선, 없으면 기본값."""
+    # 1. 프로젝트별 커스텀 카테고리 확인
+    if company_dir:
+        try:
+            config_path = os.path.join(company_dir, 'config.json')
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    custom_cats = json.load(f).get('skill_categories', {})
+                for cat, names in custom_cats.items():
+                    if isinstance(names, list) and skill_name in names:
+                        return cat
+        except Exception:
+            pass
+    # 2. 기본 하드코딩 카테고리
     for cat, names in SKILL_CATEGORIES.items():
         if skill_name in names:
             return cat
@@ -1023,7 +1036,7 @@ def _scan_installed_skills(company_dir=None):
 
         # 카테고리가 비어있거나 기본값이면 자동 분류
         if not meta['category'] or meta['category'] in ('', 'general'):
-            meta['category'] = _auto_categorize(name)
+            meta['category'] = _auto_categorize(name, company_dir)
 
         meta['path'] = skill_md
         meta['is_symlink'] = os.path.islink(skill_dir) or os.path.islink(skill_md)
@@ -3269,6 +3282,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "tools": tool_profiles,
             })
 
+        elif sub_path == 'skill-categories':
+            # GET /api/{project}/skill-categories — 프로젝트별 카테고리 + 기본값 병합
+            try:
+                config_path = os.path.join(company_dir, 'config.json')
+                config = json.load(open(config_path)) if os.path.exists(config_path) else {}
+            except Exception:
+                config = {}
+            custom_cats = config.get('skill_categories', {})
+            custom_colors = config.get('skill_category_colors', {})
+            # 기본값 + 커스텀 병합
+            merged = {}
+            for cat, names in SKILL_CATEGORIES.items():
+                merged[cat] = list(custom_cats.get(cat, names))
+            for cat, names in custom_cats.items():
+                if cat not in merged:
+                    merged[cat] = list(names) if isinstance(names, list) else list(names)
+            self.send_json({"ok": True, "categories": merged, "colors": custom_colors})
+
         elif sub_path == 'skills/installed':
             skills = cached(f"{project_id}:skills_installed", 30, lambda: _scan_installed_skills(company_dir))
             self.send_json({"skills": skills})
@@ -4800,6 +4831,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
             overrides = _read_skill_overrides(company_dir)
             overrides[skill_name] = body.get('config', {})
             _write_skill_overrides(company_dir, overrides)
+            self.send_json({"ok": True})
+
+        elif sub_path == 'skill-categories':
+            # POST /api/{project}/skill-categories — 카테고리 전체 저장
+            categories = body.get('categories', {})
+            colors = body.get('colors', {})
+            config_path = os.path.join(company_dir, 'config.json')
+            with CONFIG_LOCK:
+                config = _read_config_for_project(company_dir)
+                config['skill_categories'] = categories
+                if colors:
+                    config['skill_category_colors'] = colors
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
+                    f.write('\n')
+            invalidate_cache(f"{project_id}:skills_installed")
+            self.send_json({"ok": True})
+
+        elif sub_path == 'skill-categories/assign':
+            # POST /api/{project}/skill-categories/assign — 단일 스킬 카테고리 배정
+            skill = body.get('skill', '')
+            category = body.get('category', '')
+            if not skill:
+                self.send_json({"ok": False, "error": "skill 필드 필요"}, 400)
+                return
+            config_path = os.path.join(company_dir, 'config.json')
+            with CONFIG_LOCK:
+                config = _read_config_for_project(company_dir)
+                cats = config.get('skill_categories', {})
+                # 모든 카테고리에서 제거
+                for cat_name in list(cats.keys()):
+                    if isinstance(cats[cat_name], list) and skill in cats[cat_name]:
+                        cats[cat_name].remove(skill)
+                # 대상 카테고리에 추가
+                if category:
+                    if category not in cats:
+                        cats[category] = []
+                    if skill not in cats[category]:
+                        cats[category].append(skill)
+                config['skill_categories'] = cats
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
+                    f.write('\n')
+            invalidate_cache(f"{project_id}:skills_installed")
             self.send_json({"ok": True})
 
         elif sub_path.startswith('agents/') and sub_path.endswith('/skills'):

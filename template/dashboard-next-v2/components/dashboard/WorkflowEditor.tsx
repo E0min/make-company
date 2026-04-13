@@ -46,11 +46,13 @@ export function WorkflowEditor({
 
   // 설치된 스킬 목록 로드
   useEffect(() => {
+    let cancelled = false;
     api.skillsInstalled().then((res) => {
-      if ((res as { skills?: InstalledSkill[] }).skills) {
-        setInstalledSkills((res as { skills: InstalledSkill[] }).skills);
+      if (!cancelled && res.skills) {
+        setInstalledSkills(res.skills);
       }
     }).catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
   const handleToggleSkill = useCallback((stepId: string, skillName: string) => {
