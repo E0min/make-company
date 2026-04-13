@@ -11,16 +11,41 @@ OUTBOX="$COMPANY_DIR/outbox/${AGENT_ID}.md"
 STATE_DIR="$COMPANY_DIR/state"
 LOG_DIR="$COMPANY_DIR/logs"
 
-# compact threshold를 config에서 읽기
-COMPACT_THRESHOLD=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('compact_threshold',50))" "$COMPANY_DIR/config.json" 2>/dev/null || echo 50)
-
-# config.json에서 agent_file 읽기 (하드코딩 제거)
-CLAUDE_AGENT=$(python3 -c "
+# config에서 설정 읽기 (시작 시 1회)
+_agent_config=$(python3 -c "
 import json, sys
-agents = json.load(open(sys.argv[1]))['agents']
+c = json.load(open(sys.argv[1]))
+agents = c['agents']
 agent = next((a for a in agents if a['id'] == sys.argv[2]), None)
 print(agent.get('agent_file', sys.argv[2]) if agent else sys.argv[2])
-" "$COMPANY_DIR/config.json" "$AGENT_ID" 2>/dev/null || echo "$AGENT_ID")
+print(c.get('compact_threshold', 50))
+print(str(agent.get('protected', False)) if agent else 'False')
+print(c.get('agent_idle_timeout', 180))
+print(agent.get('team', '') or '' if agent else '')
+print(c.get('dashboard_port', 7777))
+print(c.get('project', ''))
+" "$COMPANY_DIR/config.json" "$AGENT_ID" 2>/dev/null)
+
+CLAUDE_AGENT=$(echo "$_agent_config" | sed -n '1p')
+COMPACT_THRESHOLD=$(echo "$_agent_config" | sed -n '2p')
+IS_PROTECTED=$(echo "$_agent_config" | sed -n '3p')
+IDLE_TIMEOUT=$(echo "$_agent_config" | sed -n '4p')
+AGENT_TEAM=$(echo "$_agent_config" | sed -n '5p')
+DASHBOARD_PORT=$(echo "$_agent_config" | sed -n '6p')
+PROJECT_ID=$(echo "$_agent_config" | sed -n '7p')
+DASHBOARD_PORT="${DASHBOARD_PORT:-7777}"
+
+CLAUDE_AGENT="${CLAUDE_AGENT:-$AGENT_ID}"
+COMPACT_THRESHOLD="${COMPACT_THRESHOLD:-50}"
+IS_PROTECTED="${IS_PROTECTED:-False}"
+IDLE_TIMEOUT="${IDLE_TIMEOUT:-180}"
+
+# 팀 workdir 결정: team이 있으면 teams/{team}/, 없으면 프로젝트 루트
+if [ -n "$AGENT_TEAM" ] && [ -d "$PROJECT_DIR/teams/$AGENT_TEAM" ]; then
+  WORK_DIR="$PROJECT_DIR/teams/$AGENT_TEAM"
+else
+  WORK_DIR="$PROJECT_DIR"
+fi
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 touch "$INBOX"
@@ -90,15 +115,33 @@ watcher() {
   sleep 2
 
   set_state "idle"
+  local last_activity
+  last_activity=$(date +%s)
 
   # 메인 루프
   while true; do
     # heartbeat 기록 (모니터의 죽음 감지용)
     date +%s > "$STATE_DIR/${AGENT_ID}.heartbeat" 2>/dev/null
 
+    # ━━━ idle timeout 체크 (protected 에이전트는 제외) ━━━
+    if [ "$IS_PROTECTED" != "True" ] && [ "$IDLE_TIMEOUT" -gt 0 ] 2>/dev/null; then
+      local now_ts
+      now_ts=$(date +%s)
+      local idle_secs=$((now_ts - last_activity))
+      if [ "$idle_secs" -gt "$IDLE_TIMEOUT" ] 2>/dev/null; then
+        printf '[%s] idle timeout (%ss > %ss) — 자동 종료\n' "$(get_ts)" "$idle_secs" "$IDLE_TIMEOUT"
+        set_state "stopped"
+        rm -f "$COMPANY_DIR/state/spawn/${AGENT_ID}.win" 2>/dev/null
+        tmux send-keys -t "$PANE_ID" "/exit" Enter
+        sleep 5
+        return
+      fi
+    fi
+
     # atomic inbox 읽기: mv 기반 TOCTOU 방지
     local _inbox_tmp="${INBOX}.processing.$$"
     if [ -s "$INBOX" ] && mv "$INBOX" "$_inbox_tmp" 2>/dev/null; then
+      last_activity=$(date +%s)
       touch "$INBOX"
       local msg
       msg=$(cat "$_inbox_tmp")
@@ -130,6 +173,48 @@ watcher() {
       local skills_hint
       skills_hint=$(bash "$COMPANY_DIR/scripts/suggest-skills.sh" "$AGENT_ID" "$msg" 2>/dev/null)
 
+      # 티켓 기반 필수 스킬 주입 (step_skills)
+      local step_skills_hint=""
+      if echo "$msg" | grep -q '\[TICKET:'; then
+        local _msg_tk_id
+        _msg_tk_id=$(echo "$msg" | grep -oE '\[TICKET:[A-Z]+-[0-9]+' | head -1 | sed 's/\[TICKET://')
+        if [ -n "$_msg_tk_id" ] && [ -n "$DASHBOARD_PORT" ] && [ -n "$PROJECT_ID" ]; then
+          step_skills_hint=$(python3 -c "
+import json, sys, urllib.request
+try:
+    config = json.load(open(sys.argv[1]))
+    step_skills = config.get('step_skills', {})
+    url = f'http://localhost:{sys.argv[2]}/api/{sys.argv[3]}/tickets/{sys.argv[4]}'
+    with urllib.request.urlopen(url, timeout=1) as r:
+        ticket = json.loads(r.read())
+    ttype = ticket.get('type', 'feature')
+    status = ticket.get('status', '')
+    skills = step_skills.get(ttype, {}).get(status, [])
+    if skills:
+        print('[필수 스킬: ' + ', '.join('/' + s for s in skills) + ']')
+except: pass
+" "$COMPANY_DIR/config.json" "$DASHBOARD_PORT" "$PROJECT_ID" "$_msg_tk_id" 2>/dev/null)
+
+          # REQUIRED_SKILLS 환경변수 내보내기 (comma-separated, 하네스 검증용)
+          _step_skills_list=$(python3 -c "
+import json, sys, urllib.request
+try:
+    config = json.load(open(sys.argv[1]))
+    step_skills = config.get('step_skills', {})
+    url = f'http://localhost:{sys.argv[2]}/api/{sys.argv[3]}/tickets/{sys.argv[4]}'
+    with urllib.request.urlopen(url, timeout=1) as r:
+        ticket = json.loads(r.read())
+    ttype = ticket.get('type', 'feature')
+    status = ticket.get('status', '')
+    skills = step_skills.get(ttype, {}).get(status, [])
+    if skills:
+        print(','.join(skills))
+except: pass
+" "$COMPANY_DIR/config.json" "$DASHBOARD_PORT" "$PROJECT_ID" "$_msg_tk_id" 2>/dev/null)
+          export REQUIRED_SKILLS="${_step_skills_list:-}"
+        fi
+      fi
+
       # 고유 메시지 ID 마커 생성 (응답 추출의 정확한 경계 식별용)
       local msg_id="msg_$(date +%s)_$$_${RANDOM}"
       local msg_marker="[MSG:${msg_id}]"
@@ -140,15 +225,36 @@ watcher() {
       flat="${msg_marker} ${flat}"
       if [ -n "$skills_hint" ]; then
         flat="$flat  |  $(printf '%s' "$skills_hint" | tr '\n' ' ')"
+        [ -n "$step_skills_hint" ] && flat="$flat  $step_skills_hint"
       fi
 
       # knowledge/INDEX.md 주입 (KB-INDEX) — 활성화된 경우만
+      # SENSITIVE 헤더 처리: 첫 줄이 "SENSITIVE: agent1,agent2" 형태이면 해당 에이전트만 주입
       local _kb_inject
       _kb_inject=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('knowledge_inject',True))" "$COMPANY_DIR/config.json" 2>/dev/null || echo "True")
       if [ "$_kb_inject" = "True" ] && [ -f "$COMPANY_DIR/knowledge/INDEX.md" ]; then
-        local _kb
-        _kb=$(head -15 "$COMPANY_DIR/knowledge/INDEX.md" 2>/dev/null | tr '\n' ' ')
-        [ -n "$_kb" ] && flat="$flat  |  [KB] $_kb"
+        local _kb_first_line _kb_allowed _kb
+        _kb_first_line=$(head -1 "$COMPANY_DIR/knowledge/INDEX.md" 2>/dev/null)
+        _kb_allowed="true"
+        case "$_kb_first_line" in
+          SENSITIVE:*)
+            # "SENSITIVE: orch,pm" → 에이전트 목록 추출 후 현재 에이전트가 포함되는지 체크
+            local _sens_list
+            _sens_list=$(echo "$_kb_first_line" | sed 's/^SENSITIVE:[[:space:]]*//' | tr ',' ' ')
+            _kb_allowed="false"
+            for _sens_id in $_sens_list; do
+              _sens_id=$(echo "$_sens_id" | tr -d '[:space:]')
+              if [ "$_sens_id" = "$AGENT_ID" ]; then
+                _kb_allowed="true"
+                break
+              fi
+            done
+            ;;
+        esac
+        if [ "$_kb_allowed" = "true" ]; then
+          _kb=$(head -15 "$COMPANY_DIR/knowledge/INDEX.md" 2>/dev/null | tr '\n' ' ')
+          [ -n "$_kb" ] && flat="$flat  |  [KB] $_kb"
+        fi
       fi
 
       tmux send-keys -t "$PANE_ID" "$flat" Enter
@@ -280,6 +386,45 @@ watcher() {
         fi
       fi
 
+      # ━━━ HEARTBEAT 마커 처리 — 에이전트 자기점검 보고 ━━━
+      if [ -n "$response" ] && echo "$response" | grep -q '\[HEARTBEAT'; then
+        local _hb_ticket _hb_status _hb_next _hb_goal _hb_quality
+        _hb_ticket=$(echo "$response" | grep -oE 'ticket:[A-Z]+-[0-9]+' | head -1 | sed 's/ticket://')
+        _hb_status=$(echo "$response" | grep -oE 'status:[^ ]*' | head -1 | sed 's/status://' | tr -d ']')
+        _hb_goal=$(echo "$response" | grep -oE 'goal:[A-Z]+-[0-9]+' | head -1 | sed 's/goal://')
+        _hb_quality=$(echo "$response" | grep -oE 'quality:[0-9]+' | head -1 | sed 's/quality://')
+        # API로 heartbeat 보고 (비동기)
+        local _hb_token
+        _hb_token=$(curl -s "http://localhost:${DASHBOARD_PORT}/api/token" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+        if [ -n "$_hb_token" ] && [ -n "$PROJECT_ID" ]; then
+          curl -s -X POST "http://localhost:${DASHBOARD_PORT}/api/${PROJECT_ID}/heartbeats" \
+            -H "Content-Type: application/json" \
+            -H "X-Token: $_hb_token" \
+            -d "{\"agent\":\"${AGENT_ID}\",\"ticket\":\"${_hb_ticket}\",\"status\":\"${_hb_status}\",\"goal\":\"${_hb_goal}\",\"quality\":${_hb_quality:-0}}" \
+            >/dev/null 2>&1 &
+          printf '[%s] HEARTBEAT: %s ticket=%s status=%s\n' "$(get_ts)" "$AGENT_ID" "$_hb_ticket" "$_hb_status"
+        fi
+      fi
+
+      # ━━━ TICKET 마커 처리 — 에이전트가 티켓 상태 변경 요청 ━━━
+      if [ -n "$response" ] && echo "$response" | grep -q '\[TICKET:'; then
+        local _tk_id _tk_status
+        _tk_id=$(echo "$response" | grep -oE '\[TICKET:[A-Z]+-[0-9]+' | head -1 | sed 's/\[TICKET://')
+        _tk_status=$(echo "$response" | grep -oE 'status:[a-z_]+' | head -1 | sed 's/status://')
+        if [ -n "$_tk_id" ] && [ -n "$_tk_status" ]; then
+          local _tk_token
+          _tk_token=$(curl -s "http://localhost:${DASHBOARD_PORT}/api/token" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+          if [ -n "$_tk_token" ] && [ -n "$PROJECT_ID" ]; then
+            curl -s -X POST "http://localhost:${DASHBOARD_PORT}/api/${PROJECT_ID}/tickets/${_tk_id}/update" \
+              -H "Content-Type: application/json" \
+              -H "X-Token: $_tk_token" \
+              -d "{\"status\":\"${_tk_status}\",\"agent\":\"${AGENT_ID}\"}" \
+              >/dev/null 2>&1 &
+            printf '[%s] TICKET: %s → %s status=%s\n' "$(get_ts)" "$AGENT_ID" "$_tk_id" "$_tk_status"
+          fi
+        fi
+      fi
+
       if [ -n "$response" ]; then
         # DAG-NODE 또는 CRITIC-RESPONSE 메타데이터 prefix 자동 추가
         local _final_response="$response"
@@ -347,6 +492,17 @@ except: print(0)
       rm -f "$_snap"
 
       set_state "idle"
+      last_activity=$(date +%s)
+
+      # ━━━ 자동 heartbeat (마커 없이도 시스템이 강제) ━━━
+      if [ -n "$DASHBOARD_PORT" ] && [ -n "$PROJECT_ID" ]; then
+        local _hb_tk
+        _hb_tk=$(cat "$COMPANY_DIR/state/current_task.txt" 2>/dev/null)
+        curl -s --max-time 1 -X POST "http://localhost:${DASHBOARD_PORT}/api/${PROJECT_ID}/heartbeats" \
+          -H "Content-Type: application/json" \
+          -d "{\"agent\":\"${AGENT_ID}\",\"status\":\"idle\",\"ticket\":\"${_hb_tk:-}\"}" \
+          >/dev/null 2>&1 &
+      fi
 
       # ━━━ auto-compact: ctx > threshold → /compact ━━━
       local ctx
@@ -374,8 +530,8 @@ except: print(0)
 
 # ━━━━━━ 메인 ━━━━━━
 clear
-printf '\n  %s (Claude interactive, agent=%s)\n' "$AGENT_UPPER" "$CLAUDE_AGENT"
-printf '  pane: %s\n\n' "$PANE_ID"
+printf '\n  %s (Claude interactive, agent=%s, team=%s)\n' "$AGENT_UPPER" "$CLAUDE_AGENT" "${AGENT_TEAM:-root}"
+printf '  pane: %s  workdir: %s\n\n' "$PANE_ID" "$WORK_DIR"
 
 set_state "booting"
 
@@ -387,5 +543,6 @@ WATCHER_PID=$!
 trap 'kill "$WATCHER_PID" 2>/dev/null; rm -f "$COMPANY_DIR"/.snap_${AGENT_ID}.* "${INBOX}.processing."* "$STATE_DIR/${AGENT_ID}.heartbeat"; set_state "stopped"' EXIT INT TERM HUP
 
 # claude 대화형 세션 (포그라운드)
-cd "$PROJECT_DIR"
+# 팀 workdir에서 실행 → Claude Code가 팀 CLAUDE.md + 루트 CLAUDE.md 계층적 로드
+cd "$WORK_DIR"
 claude --agent "$CLAUDE_AGENT"

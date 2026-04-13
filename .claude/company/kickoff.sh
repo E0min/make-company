@@ -49,16 +49,111 @@ fi
 
 TASK="$*"
 
+# ━━━ 인자 없으면 대화형 intake ━━━
 if [ -z "$TASK" ]; then
+  BOLD='\033[1m'
+  CYAN='\033[1;36m'
+  DIM='\033[2m'
+  NC='\033[0m'
+
   echo ""
-  echo "  사용법: kickoff.sh '태스크 내용'"
+  echo -e "  ${BOLD}Virtual Company — 새 태스크${NC}"
   echo ""
-  echo "  예시:"
-  echo "    kickoff.sh '사용자가 노드에 태그를 달 수 있는 기능을 추가해줘'"
-  echo "    kickoff.sh '그래프 성능이 노드 100개 이상에서 느려지는 버그 수정해줘'"
-  echo "    kickoff.sh '다크모드 디자인 개선해줘'"
+
+  # 1. 제목
+  printf "  ${CYAN}무엇을 해야 하나요?${NC}\n  > "
+  read -r TASK
+  if [ -z "$(echo "$TASK" | tr -d '[:space:]')" ]; then
+    echo "  취소됨"
+    exit 0
+  fi
+
+  # 2. 종류
   echo ""
-  exit 1
+  echo -e "  ${CYAN}어떤 종류인가요?${NC}"
+  echo "    1) 새 기능     2) 버그 수정"
+  echo "    3) 리팩토링    4) 디자인"
+  printf "  선택 [1]: "
+  read -r _type_num
+  case "$_type_num" in
+    2) _type="bugfix"; _label="bug" ;;
+    3) _type="refactor"; _label="refactor" ;;
+    4) _type="design"; _label="design" ;;
+    *) _type="feature"; _label="feature" ;;
+  esac
+
+  # 3. 우선순위
+  echo ""
+  echo -e "  ${CYAN}우선순위는?${NC}"
+  echo "    1) Critical   2) High"
+  echo "    3) Medium     4) Low"
+  printf "  선택 [3]: "
+  read -r _pri_num
+  case "$_pri_num" in
+    1) _priority="critical" ;;
+    2) _priority="high" ;;
+    4) _priority="low" ;;
+    *) _priority="medium" ;;
+  esac
+
+  # 4. 완료 기준
+  echo ""
+  echo -e "  ${CYAN}완료 기준 (빈 줄로 종료, 없으면 Enter):${NC}"
+  _ac_list=""
+  while true; do
+    printf "  - "
+    read -r _ac_line
+    [ -z "$_ac_line" ] && break
+    _ac_list="${_ac_list}${_ac_line}\n"
+  done
+
+  # 5. 설명 (선택)
+  echo ""
+  printf "  ${CYAN}추가 설명 (없으면 Enter):${NC}\n  > "
+  read -r _description
+
+  # ━━━ 티켓 생성 (대시보드 서버 API 호출) ━━━
+  _ac_json="[]"
+  if [ -n "$_ac_list" ]; then
+    _ac_json=$(printf '%b' "$_ac_list" | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))" 2>/dev/null || echo "[]")
+  fi
+
+  DASHBOARD_PORT=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('dashboard_port',7777))" "$COMPANY_DIR/config.json" 2>/dev/null || echo 7777)
+  PROJECT_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('project',''))" "$COMPANY_DIR/config.json" 2>/dev/null)
+  _token=$(curl -s "http://localhost:${DASHBOARD_PORT}/api/token" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+
+  _ticket_result=""
+  if [ -n "$_token" ] && [ -n "$PROJECT_ID" ]; then
+    _ticket_body=$(python3 -c "
+import json, sys
+body = {
+    'title': sys.argv[1],
+    'type': sys.argv[6],
+    'priority': sys.argv[2],
+    'labels': [sys.argv[3]],
+    'description': sys.argv[4],
+    'acceptance_criteria': json.loads(sys.argv[5]),
+    'created_by': 'user',
+}
+print(json.dumps(body, ensure_ascii=False))
+" "$TASK" "$_priority" "$_label" "${_description:-}" "$_ac_json" "$_type" 2>/dev/null)
+
+    _ticket_result=$(curl -s -X POST "http://localhost:${DASHBOARD_PORT}/api/${PROJECT_ID}/tickets" \
+      -H "Content-Type: application/json" \
+      -H "X-Token: $_token" \
+      -d "$_ticket_body" 2>/dev/null)
+
+    _ticket_id=$(echo "$_ticket_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+  fi
+
+  # 티켓 ID가 있으면 태스크에 포함
+  if [ -n "$_ticket_id" ]; then
+    TASK="[TICKET:${_ticket_id}] [${_priority}] ${TASK}"
+    echo ""
+    echo -e "  ${BOLD}📋 티켓 생성: ${_ticket_id}${NC}"
+  fi
+
+  echo ""
 fi
 
 # 빈 공백만 있는 태스크 검증

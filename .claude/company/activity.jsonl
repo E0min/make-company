@@ -1,2 +1,4 @@
 {"event":"agent_start_harness","agent":"Frontend Engineer","ts":"2026-04-11T03:07:33Z","source":"harness"}
 {"event":"session_boot","ts":"2026-04-11T03:07:33Z","source":"harness"}
+{"ts": "2026-04-12T16:33:55Z", "event": "ticket_status_change", "ticket": "TASK-001", "agent": "user", "data": {"field": "status", "to": "todo"}}
+{"ts": "2026-04-12T16:33:57Z", "event": "ticket_status_change", "ticket": "TASK-001", "agent": "user", "data": {"field": "status", "to": "backlog"}}

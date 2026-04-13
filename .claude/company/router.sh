@@ -141,6 +141,25 @@ with open(sys.argv[1], 'w') as f:
     esac
   fi
 
+  # ━━━ TICKET 마커 처리: 에이전트가 티켓 상태 변경을 요청한 경우 ━━━
+  if echo "$content" | grep -q '\[TICKET:'; then
+    _tk_id=$(echo "$content" | grep -oE '\[TICKET:[A-Z]+-[0-9]+' | head -1 | sed 's/\[TICKET://')
+    _tk_status=$(echo "$content" | grep -oE 'status:[a-z_]+' | head -1 | sed 's/status://')
+    if [ -n "$_tk_id" ] && [ -n "$_tk_status" ]; then
+      _dash_port=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('dashboard_port',7777))" "$CONFIG" 2>/dev/null || echo 7777)
+      _proj_id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('project',''))" "$CONFIG" 2>/dev/null)
+      _tk_token=$(curl -s "http://localhost:${_dash_port}/api/token" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+      if [ -n "$_tk_token" ] && [ -n "$_proj_id" ]; then
+        curl -s -X POST "http://localhost:${_dash_port}/api/${_proj_id}/tickets/${_tk_id}/update" \
+          -H "Content-Type: application/json" \
+          -H "X-Token: $_tk_token" \
+          -d "{\"status\":\"${_tk_status}\",\"agent\":\"${sender}\"}" \
+          >/dev/null 2>&1
+        log "  TICKET: $sender → $_tk_id status=$_tk_status"
+      fi
+    fi
+  fi
+
   for recipient in $mentions; do
     # 자기 자신에게 보내는 것 차단 (무한 루프 방지)
     if [ "$recipient" = "$sender" ]; then
@@ -149,6 +168,58 @@ with open(sys.argv[1], 'w') as f:
     fi
     # 유효한 에이전트인지 확인
     if echo "$AGENTS" | tr ' ' '\n' | grep -qx "$recipient"; then
+      # ━━━ Reporting 강제: 보고선 위반 시 상위자에게 에스컬레이션 ━━━
+      if ! echo "$content" | grep -qE '\[CRITIC-(REVIEW|RESPONSE)|ESCALATED'; then
+        _reporting_action=$(python3 -c "
+import json, sys
+try:
+    c = json.load(open(sys.argv[1]))
+    reporting = c.get('reporting', {})
+    sender = sys.argv[2]
+    recipient = sys.argv[3]
+    s_info = reporting.get(sender, {})
+    r_info = reporting.get(recipient, {})
+    # 허용: sender가 recipient의 상위자 (approves에 포함)
+    if recipient in s_info.get('approves', []):
+        print('allow')
+    # 허용: sender가 recipient에게 보고 (reports_to)
+    elif s_info.get('reports_to') == recipient:
+        print('allow')
+    # 허용: 같은 상위자 (같은 팀 동료)
+    elif s_info.get('reports_to') and s_info.get('reports_to') == r_info.get('reports_to'):
+        print('allow')
+    # 허용: recipient가 sender의 상위자
+    elif r_info.get('approves') and sender in r_info.get('approves', []):
+        print('allow')
+    # 허용: reporting 설정 없음 (자유 라우팅)
+    elif not reporting:
+        print('allow')
+    # 허용: sender 또는 recipient가 reporting에 없음
+    elif sender not in reporting or recipient not in reporting:
+        print('allow')
+    else:
+        # 에스컬레이션: sender의 상위자에게 위임
+        boss = s_info.get('reports_to', '')
+        print(f'escalate:{boss}' if boss else 'allow')
+except:
+    print('allow')
+" "$CONFIG" "$sender" "$recipient" 2>/dev/null || echo "allow")
+
+        if echo "$_reporting_action" | grep -q '^escalate:'; then
+          _escalate_to=$(echo "$_reporting_action" | sed 's/escalate://')
+          if [ -n "$_escalate_to" ] && echo "$AGENTS" | tr ' ' '\n' | grep -qx "$_escalate_to"; then
+            _etarget="$INBOX_DIR/${_escalate_to}.md"
+            if acquire_lock "$_etarget"; then
+              printf '\n[ESCALATED from:%s for:%s time:%s reason:reporting_violation]\n%s에게 보내려는 메시지를 검토해주세요:\n%s\n' \
+                "$sender" "$recipient" "$ts" "$recipient" "$content" >> "$_etarget"
+              release_lock "$_etarget"
+              log "  ESCALATED: $sender→@$recipient 보고선 위반 → 상위 @$_escalate_to"
+              continue
+            fi
+          fi
+        fi
+      fi
+
       # ━━━ Critic Loop: config 매핑이 있으면 1차 검증 ━━━
       # CRITIC-REVIEW/RESPONSE 메시지는 재귀 방지로 critic 안 거침
       if ! echo "$content" | grep -qE '\[CRITIC-(REVIEW|RESPONSE)'; then
@@ -177,6 +248,8 @@ except: print('')
         printf '\n[TEAM-MSG from:%s time:%s]\n%s\n' "$sender" "$ts" "$content" >> "$_target"
         release_lock "$_target"
         log "  $sender -> @$recipient"
+        # SSE 실시간 이벤트 기록 (activity.jsonl)
+        echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"event\":\"message_routed\",\"agent\":\"$sender\",\"data\":{\"to\":\"$recipient\"}}" >> "$COMPANY_DIR/activity.jsonl" 2>/dev/null
         # 태스크 status 갱신: → routed (current_task.txt 기반)
         _current_task=$(cat "$COMPANY_DIR/state/current_task.txt" 2>/dev/null)
         _task_file="$COMPANY_DIR/state/tasks/${_current_task}.json"
