@@ -15,7 +15,7 @@
 
 # next.js
 /.next/
-/out/
+# NOTE: /out/ is intentionally tracked — pre-built static export for install.sh distribution
 
 # production
 /build

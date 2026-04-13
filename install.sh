@@ -78,8 +78,8 @@ cp "$TEMPLATE_DIR/presets/"*.json "$TARGET_DIR/presets/" 2>/dev/null || true
 mkdir -p "$TARGET_DIR/knowledge-init"
 cp "$TEMPLATE_DIR/knowledge-init/"*.md "$TARGET_DIR/knowledge-init/" 2>/dev/null || true
 
-# workflows/ 예시 템플릿 복사 (사용자 커스텀 우선 — 기존 보존)
-for wf in "$TEMPLATE_DIR/workflows/"*.json; do
+# workflows/ 예시 템플릿 복사 (JSON + YAML, 사용자 커스텀 우선 — 기존 보존)
+for wf in "$TEMPLATE_DIR/workflows/"*.json "$TEMPLATE_DIR/workflows/"*.yml; do
   [ -f "$wf" ] || continue
   base=$(basename "$wf")
   [ ! -f "$TARGET_DIR/workflows/$base" ] && cp "$wf" "$TARGET_DIR/workflows/"

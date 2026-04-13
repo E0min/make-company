@@ -38,7 +38,9 @@
 .claude/agents/
 
 # ── Build artifacts ──
-**/out/
+# NOTE: template/dashboard-next-v2/out/ is intentionally tracked (pre-built static dashboard)
+# Only exclude out/ in local install directories
+.claude/company/**/out/
 __pycache__/
 *.pyc
 node_modules/
