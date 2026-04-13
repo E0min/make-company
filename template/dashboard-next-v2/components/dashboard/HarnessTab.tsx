@@ -76,7 +76,11 @@ const GATE_LABELS: Record<string, string> = {
 
 /* ━━━ Main Component ━━━ */
 
-export function HarnessTab() {
+interface HarnessTabProps {
+  onNavigateToTab?: (tab: string) => void;
+}
+
+export function HarnessTab({ onNavigateToTab }: HarnessTabProps = {}) {
   const [data, setData] = useState<HarnessSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
