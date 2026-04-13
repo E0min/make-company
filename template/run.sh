@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 가상 회사 시작 — config.json 기반 동적 에이전트 생성
+# ⚠️ DEPRECATED: v1 진입점. v2에서는 `claude -company` (vc-launch.sh)를 사용합니다.
+# v1: 가상 회사 시작 — config.json 기반 동적 에이전트 생성
 set -e
 
 COMPANY_DIR="$(cd "$(dirname "$0")" && pwd)"

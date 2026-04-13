@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 실시간 회사 현황 대시보드 — config.json 기반
+# ⚠️ DEPRECATED: v1 전용. v2에서는 웹 대시보드 (server.py + dashboard-next-v2)를 사용합니다.
+# v1: 실시간 회사 현황 대시보드 — config.json 기반
 
 COMPANY_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG="$COMPANY_DIR/config.json"

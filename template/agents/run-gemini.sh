@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Interactive Gemini 에이전트 러너
+# ⚠️ DEPRECATED: v1 전용. v2에서는 Gemini CLI를 직접 사용합니다.
+# v1: Interactive Gemini 에이전트 러너
 # Gemini CLI 대화형 세션 — @mention 기반 팀 통신
 
 COMPANY_DIR="$(cd "$(dirname "$0")/.." && pwd)"

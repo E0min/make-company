@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 메시지 라우팅 데몬 — config.json 기반 동적 에이전트 목록
+# ⚠️ DEPRECATED: v1 전용. v2에서는 Claude Code Agent tool이 직접 통신합니다.
+# v1: 메시지 라우팅 데몬 — config.json 기반 동적 에이전트 목록
 
 COMPANY_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG="$COMPANY_DIR/config.json"

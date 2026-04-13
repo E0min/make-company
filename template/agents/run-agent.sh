@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Interactive Claude 에이전트 러너
+# ⚠️ DEPRECATED: v1 전용. v2에서는 `claude --agent <id>` CLI를 직접 사용합니다.
+# v1: Interactive Claude 에이전트 러너
 # 대화형 세션으로 컨텍스트 누적 + ctx 초과 시 자동 /compact
 
 AGENT_ID="$1"
