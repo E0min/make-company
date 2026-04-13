@@ -549,7 +549,34 @@ function AgentEditDialog({
       setScope("local");
       setColor(COLORS[Math.floor(Math.random() * COLORS.length)]);
       setTeam(null);
-      setContent("");
+      setContent(`---
+name:
+description:
+category: engineering
+default_label:
+default_skills: []
+---
+
+# Role:
+
+당신은 Virtual Company의 에이전트입니다.
+
+## 프로젝트 컨텍스트
+{{project_context}}
+
+## 누적 기억
+{{agent_memory}}
+
+---
+
+## 핵심 원칙
+
+1.
+
+## 작업 방식
+
+1.
+`);
     }
     setAiPrompt("");
     setPreviewMode(false);
@@ -643,6 +670,16 @@ function AgentEditDialog({
   const handleSave = async () => {
     if (!id.trim()) { toast.warning("ID를 입력하세요"); return; }
     if (!content.trim()) { toast.warning("내용을 입력하세요"); return; }
+    // 필수 플레이스홀더 검증
+    const missing: string[] = [];
+    if (!content.includes("{{project_context}}")) missing.push("{{project_context}}");
+    if (!content.includes("{{agent_memory}}")) missing.push("{{agent_memory}}");
+    if (missing.length > 0) {
+      toast.warning("필수 플레이스홀더 누락", {
+        description: `${missing.join(", ")}이(가) 없으면 프로젝트 컨텍스트와 학습 기억이 주입되지 않습니다.`,
+        duration: 5000,
+      });
+    }
     setSaving(true);
 
     // 에이전트 저장
