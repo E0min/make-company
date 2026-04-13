@@ -13,6 +13,67 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ── 1. 레포 청결도 검사 (로컬 산출물 차단) ──
+  repo-hygiene:
+    name: Repo hygiene check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Block local install artifacts
+        run: |
+          set -e
+          FAIL=0
+
+          # 로컬 설치 사본이 트래킹되면 안 됨
+          FORBIDDEN=(
+            ".claude/company/config.json"
+            ".claude/company/activity.log"
+            ".claude/company/activity.jsonl"
+            ".claude/agents/"
+          )
+          for pattern in "${FORBIDDEN[@]}"; do
+            if git ls-files "$pattern" | grep -q .; then
+              echo "::error::Forbidden file tracked: $pattern"
+              FAIL=1
+            fi
+          done
+
+          # .claude/company/ 런타임 디렉토리 체크
+          for dir in agent-memory agent-output artifacts inbox outbox channel logs state knowledge; do
+            if git ls-files ".claude/company/$dir/" | grep -q .; then
+              echo "::error::Runtime directory tracked: .claude/company/$dir/"
+              FAIL=1
+            fi
+          done
+
+          # 개인 데이터 검사 (template/ 소스 파일만)
+          if grep -r "bbok4yo@gmail" template/ 2>/dev/null; then
+            echo "::error::Personal email found in template/"
+            FAIL=1
+          fi
+
+          # 빌드 산출물 중복 체크 (.claude/company/ 아래 out/)
+          if git ls-files ".claude/company/dashboard-next-v2/out/" | grep -q .; then
+            echo "::error::Build output tracked in .claude/company/"
+            FAIL=1
+          fi
+          if git ls-files ".claude/company/dashboard-next/out/" | grep -q .; then
+            echo "::error::Legacy dashboard-next out/ tracked"
+            FAIL=1
+          fi
+
+          # 백업 디렉토리
+          if git ls-files "template/.backup-*" | grep -q .; then
+            echo "::error::Backup directory tracked in template/"
+            FAIL=1
+          fi
+
+          if [ "$FAIL" -eq 0 ]; then
+            echo "✓ Repository is clean — no local artifacts"
+          fi
+          exit $FAIL
+
+  # ── 2. Bash 문법 검사 ──
   bash-lint:
     name: Bash syntax check
     runs-on: ubuntu-latest
@@ -27,9 +88,10 @@ jobs:
               echo "::error file=$f::syntax error"
               fail=1
             fi
-          done < <(find . -type f -name '*.sh' -not -path './node_modules/*' -not -path './template/dashboard-next/node_modules/*')
+          done < <(find . -type f -name '*.sh' -not -path './node_modules/*' -not -path '*/node_modules/*')
           exit $fail
 
+  # ── 3. ShellCheck (경고, 비차단) ──
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
@@ -42,8 +104,26 @@ jobs:
           severity: warning
           ignore_paths: >-
             node_modules
-            template/dashboard-next/node_modules
 
+  # ── 4. Python 문법 검사 ──
+  python-lint:
+    name: Python syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Python syntax
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r f; do
+            if ! python3 -c "import ast; ast.parse(open('$f').read())"; then
+              echo "::error file=$f::syntax error"
+              fail=1
+            fi
+          done < <(find . -type f -name '*.py' -not -path '*/node_modules/*' -not -path '*/__pycache__/*')
+          exit $fail
+
+  # ── 5. install.sh 스모크 테스트 ──
   install-smoke:
     name: install.sh smoke test
     runs-on: ubuntu-latest
@@ -52,19 +132,47 @@ jobs:
       - name: Run install.sh into a temp dir
         run: |
           set -e
-          # Auto-pick preset 1 (Default), default name/session/threshold
           printf '1\n\n\n\n' | bash install.sh /tmp/test-company
-          test -f /tmp/test-company/config.json
-          test -f /tmp/test-company/run.sh
-          test -f /tmp/test-company/dashboard/server.py
-          echo "✓ install.sh produced required files"
 
+          echo "--- Core files ---"
+          test -f /tmp/test-company/config.json       || { echo "FAIL: config.json"; exit 1; }
+          test -f /tmp/test-company/run.sh             || { echo "FAIL: run.sh"; exit 1; }
+          test -f /tmp/test-company/dashboard/server.py || { echo "FAIL: server.py"; exit 1; }
+
+          echo "--- Hooks ---"
+          test -d /tmp/test-company/hooks              || { echo "FAIL: hooks/ missing"; exit 1; }
+          HOOK_COUNT=$(ls /tmp/test-company/hooks/*.sh 2>/dev/null | wc -l)
+          [ "$HOOK_COUNT" -gt 0 ] || { echo "FAIL: no hook scripts"; exit 1; }
+
+          echo "--- Workflows ---"
+          JSON_COUNT=$(ls /tmp/test-company/workflows/*.json 2>/dev/null | wc -l)
+          YML_COUNT=$(ls /tmp/test-company/workflows/*.yml 2>/dev/null | wc -l)
+          [ "$JSON_COUNT" -gt 0 ] || { echo "FAIL: no JSON workflows"; exit 1; }
+          [ "$YML_COUNT" -gt 0 ]  || { echo "FAIL: no YML workflows"; exit 1; }
+
+          echo "--- Dashboard ---"
+          if [ -d /tmp/test-company/dashboard-next-v2/out ]; then
+            test -f /tmp/test-company/dashboard-next-v2/out/index.html || { echo "FAIL: dashboard out/index.html"; exit 1; }
+            echo "✓ Next.js dashboard present"
+          else
+            echo "⚠ Next.js dashboard out/ not present (legacy fallback)"
+          fi
+
+          echo "--- No personal data ---"
+          if grep -r "bbok4yo@gmail" /tmp/test-company/ 2>/dev/null; then
+            echo "FAIL: personal email leaked"
+            exit 1
+          fi
+
+          echo "✓ install.sh smoke test passed"
+
+  # ── 6. Next.js 대시보드 빌드 ──
   dashboard-build:
     name: Next.js dashboard build
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: template/dashboard-next
+        working-directory: template/dashboard-next-v2
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -74,7 +182,7 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-          cache-dependency-path: template/dashboard-next/pnpm-lock.yaml
+          cache-dependency-path: template/dashboard-next-v2/pnpm-lock.yaml
       - name: Install deps
         run: pnpm install --frozen-lockfile
       - name: Type check
