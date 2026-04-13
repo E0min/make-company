@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { AgentState } from "./types";
 
 export function formatTokens(n: number): string {
@@ -33,19 +34,35 @@ export const STATE_RANK: Record<string, number> = {
   unknown: 10,
 };
 
-export function stateColor(state: AgentState | string): {
+/** Unified state color/style — single source of truth for all views */
+export interface StateColorResult {
   bar: string;
   text: string;
   bg: string;
   dot: string;
-} {
+  border: string;
+  icon: ReactNode | null;
+}
+
+export function stateColor(state: AgentState | string): StateColorResult {
   switch (state) {
     case "working":
       return {
-        bar: "bg-violet-500",
-        text: "text-violet-400",
-        bg: "bg-violet-500/10",
-        dot: "bg-violet-500",
+        bar: "bg-indigo-500",
+        text: "text-indigo-400",
+        bg: "bg-indigo-500/10",
+        dot: "bg-indigo-500",
+        border: "border-indigo-500 ring-1 ring-indigo-500/30",
+        icon: null, // icon rendered by consumer (needs JSX import)
+      };
+    case "active":
+      return {
+        bar: "bg-indigo-400",
+        text: "text-indigo-400",
+        bg: "bg-indigo-400/10",
+        dot: "bg-indigo-400",
+        border: "border-indigo-400/50",
+        icon: null,
       };
     case "compacting":
       return {
@@ -53,6 +70,8 @@ export function stateColor(state: AgentState | string): {
         text: "text-amber-400",
         bg: "bg-amber-500/10",
         dot: "bg-amber-500",
+        border: "border-amber-500",
+        icon: null,
       };
     case "error":
     case "permanently-failed":
@@ -62,6 +81,8 @@ export function stateColor(state: AgentState | string): {
         text: "text-red-400",
         bg: "bg-red-500/10",
         dot: "bg-red-500",
+        border: "border-red-500",
+        icon: null,
       };
     case "rate-limited":
       return {
@@ -69,6 +90,8 @@ export function stateColor(state: AgentState | string): {
         text: "text-orange-400",
         bg: "bg-orange-500/10",
         dot: "bg-orange-500",
+        border: "border-orange-500",
+        icon: null,
       };
     case "paused":
       return {
@@ -76,6 +99,8 @@ export function stateColor(state: AgentState | string): {
         text: "text-yellow-400",
         bg: "bg-yellow-500/10",
         dot: "bg-yellow-500",
+        border: "border-yellow-500",
+        icon: null,
       };
     case "done":
       return {
@@ -83,6 +108,8 @@ export function stateColor(state: AgentState | string): {
         text: "text-emerald-400",
         bg: "bg-emerald-500/10",
         dot: "bg-emerald-500",
+        border: "border-emerald-500",
+        icon: null,
       };
     case "stopped":
     case "offline":
@@ -91,6 +118,8 @@ export function stateColor(state: AgentState | string): {
         text: "text-zinc-500",
         bg: "bg-zinc-500/5",
         dot: "bg-zinc-700",
+        border: "border-border",
+        icon: null,
       };
     case "idle":
     default:
@@ -99,6 +128,8 @@ export function stateColor(state: AgentState | string): {
         text: "text-zinc-400",
         bg: "bg-zinc-500/5",
         dot: "bg-zinc-500",
+        border: "border-border",
+        icon: null,
       };
   }
 }

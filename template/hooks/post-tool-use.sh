@@ -136,6 +136,7 @@ except: print('0')
             curl -s -X POST "http://localhost:${_dash_port}/api/${_proj_id}/tickets/${_ticket_id}/update" \
               -H "Content-Type: application/json" \
               -H "X-Token: $_token" \
+              -H "X-Source: auto-verify" \
               -d "{\"verify_passed\":${_verify_val}}" \
               >/dev/null 2>&1
           fi

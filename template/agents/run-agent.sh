@@ -194,6 +194,24 @@ try:
         print('[필수 스킬: ' + ', '.join('/' + s for s in skills) + ']')
 except: pass
 " "$COMPANY_DIR/config.json" "$DASHBOARD_PORT" "$PROJECT_ID" "$_msg_tk_id" 2>/dev/null)
+
+          # REQUIRED_SKILLS 환경변수 내보내기 (comma-separated, 하네스 검증용)
+          _step_skills_list=$(python3 -c "
+import json, sys, urllib.request
+try:
+    config = json.load(open(sys.argv[1]))
+    step_skills = config.get('step_skills', {})
+    url = f'http://localhost:{sys.argv[2]}/api/{sys.argv[3]}/tickets/{sys.argv[4]}'
+    with urllib.request.urlopen(url, timeout=1) as r:
+        ticket = json.loads(r.read())
+    ttype = ticket.get('type', 'feature')
+    status = ticket.get('status', '')
+    skills = step_skills.get(ttype, {}).get(status, [])
+    if skills:
+        print(','.join(skills))
+except: pass
+" "$COMPANY_DIR/config.json" "$DASHBOARD_PORT" "$PROJECT_ID" "$_msg_tk_id" 2>/dev/null)
+          export REQUIRED_SKILLS="${_step_skills_list:-}"
         fi
       fi
 
@@ -211,12 +229,32 @@ except: pass
       fi
 
       # knowledge/INDEX.md 주입 (KB-INDEX) — 활성화된 경우만
+      # SENSITIVE 헤더 처리: 첫 줄이 "SENSITIVE: agent1,agent2" 형태이면 해당 에이전트만 주입
       local _kb_inject
       _kb_inject=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('knowledge_inject',True))" "$COMPANY_DIR/config.json" 2>/dev/null || echo "True")
       if [ "$_kb_inject" = "True" ] && [ -f "$COMPANY_DIR/knowledge/INDEX.md" ]; then
-        local _kb
-        _kb=$(head -15 "$COMPANY_DIR/knowledge/INDEX.md" 2>/dev/null | tr '\n' ' ')
-        [ -n "$_kb" ] && flat="$flat  |  [KB] $_kb"
+        local _kb_first_line _kb_allowed _kb
+        _kb_first_line=$(head -1 "$COMPANY_DIR/knowledge/INDEX.md" 2>/dev/null)
+        _kb_allowed="true"
+        case "$_kb_first_line" in
+          SENSITIVE:*)
+            # "SENSITIVE: orch,pm" → 에이전트 목록 추출 후 현재 에이전트가 포함되는지 체크
+            local _sens_list
+            _sens_list=$(echo "$_kb_first_line" | sed 's/^SENSITIVE:[[:space:]]*//' | tr ',' ' ')
+            _kb_allowed="false"
+            for _sens_id in $_sens_list; do
+              _sens_id=$(echo "$_sens_id" | tr -d '[:space:]')
+              if [ "$_sens_id" = "$AGENT_ID" ]; then
+                _kb_allowed="true"
+                break
+              fi
+            done
+            ;;
+        esac
+        if [ "$_kb_allowed" = "true" ]; then
+          _kb=$(head -15 "$COMPANY_DIR/knowledge/INDEX.md" 2>/dev/null | tr '\n' ' ')
+          [ -n "$_kb" ] && flat="$flat  |  [KB] $_kb"
+        fi
       fi
 
       tmux send-keys -t "$PANE_ID" "$flat" Enter

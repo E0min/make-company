@@ -5,7 +5,7 @@ Virtual Company v2 Dashboard Server (의존성 0)
 - SSE(Server-Sent Events)로 실시간 스트리밍
 - localhost:7777
 """
-import os, sys, json, time, re, threading, subprocess, shlex, secrets, signal
+import os, sys, json, time, re, threading, subprocess, shlex, secrets, signal, shutil
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -143,6 +143,75 @@ def _stop_company_session(project_id):
     except Exception as e:
         return {"ok": False, "error": f"세션 종료 실패: {str(e)}"}
 
+def _is_admin_agent(agent_id, config):
+    """에이전트가 관리자 권한인지 판별. orch/pm 또는 protected: true인 에이전트."""
+    if not agent_id:
+        return False
+    if agent_id in ('orch', 'pm'):
+        return True
+    agents = config.get('agents', [])
+    for a in agents:
+        if isinstance(a, dict) and a.get('id') == agent_id:
+            if a.get('protected', False):
+                return True
+    return False
+
+
+def _is_qa_agent(agent_id, config):
+    """에이전트가 QA 역할인지 판별. config의 agents 배열에서 'qa' 스킬 보유 또는 ID에 'qa' 포함."""
+    if not agent_id:
+        return False
+    # ID 자체에 qa 포함 (fe-qa, be-qa 등)
+    if 'qa' in agent_id.lower():
+        return True
+    # config agents에서 assigned_skills에 'qa' 또는 'qa-only' 포함 여부
+    agents = config.get('agents', [])
+    for a in agents:
+        if isinstance(a, dict):
+            if a.get('id') == agent_id:
+                skills = a.get('assigned_skills', [])
+                if 'qa' in skills or 'qa-only' in skills:
+                    return True
+        elif isinstance(a, str) and a == agent_id:
+            # 문자열 에이전트는 기본 설정 — ID에 qa가 포함되는 경우 위에서 이미 처리
+            break
+    return False
+
+
+def _validate_goal(company_dir, goal_id):
+    """목표 ID의 존재 및 활성 상태를 검증. 경고 메시지 반환 (없으면 None)."""
+    if not goal_id:
+        return None
+    goals_dir = os.path.join(company_dir, 'state', 'goals')
+    goal_file = os.path.join(goals_dir, f"{goal_id}.json")
+    if not os.path.exists(goal_file):
+        return f"Goal not found: {goal_id}"
+    try:
+        with open(goal_file) as f:
+            goal = json.load(f)
+        if goal.get('status') != 'active':
+            return f"Goal is not active: {goal_id}"
+    except (json.JSONDecodeError, OSError):
+        return f"Goal not found: {goal_id}"
+    return None
+
+
+def _log_rejected_attempt(company_dir, event_type, detail):
+    """거부된 시도를 activity.jsonl에 기록."""
+    jsonl_path = os.path.join(company_dir, 'activity.jsonl')
+    now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    entry = {
+        "ts": now,
+        "event": event_type,
+        "data": detail,
+    }
+    try:
+        with open(jsonl_path, 'a') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    except OSError:
+        pass
+
+
 def _agent_short_label(agent_id):
     """에이전트 ID -> tmux 윈도우 이름 매핑"""
     labels = {
@@ -183,13 +252,9 @@ def _terminal_open(project_id, agent_id, cols=None, rows=None):
     pane_target = f"{session}:{win_idx}"
     pipe_file = f"/tmp/vc-term-{project_id}-{agent_id}.log"
 
-    # 웹 터미널 크기에 맞게 tmux pane 리사이즈 (출력이 전폭으로 렌더링됨)
-    if cols and cols > 0:
-        subprocess.run(['tmux', 'resize-window', '-t', pane_target, '-x', str(cols)],
-                       capture_output=True, timeout=2)
-    if rows and rows > 0:
-        subprocess.run(['tmux', 'resize-window', '-t', pane_target, '-y', str(rows)],
-                       capture_output=True, timeout=2)
+    # aggressive-resize: 각 윈도우가 독립적으로 크기를 가질 수 있게 (세션 전체 크기 영향 방지)
+    subprocess.run(['tmux', 'set-window-option', '-t', pane_target, 'aggressive-resize', 'on'],
+                   capture_output=True, timeout=2)
 
     # 기존 pipe 해제
     subprocess.run(['tmux', 'pipe-pane', '-t', pane_target], capture_output=True, timeout=2)
@@ -285,14 +350,24 @@ def register_project(project_id, project_path):
     with open(PROJECTS_REGISTRY, 'w') as f:
         json.dump({"projects": projects}, f, ensure_ascii=False, indent=2)
 
+_project_dir_cache = {}
+_project_dir_cache_ts = 0
+
 def get_project_company_dir(project_id):
-    """프로젝트 ID → .claude/company 디렉토리 경로 (없으면 None)."""
-    for p in read_projects():
-        if p["id"] == project_id:
-            company_dir = os.path.join(p["path"], ".claude", "company")
-            if os.path.isdir(company_dir):
-                return company_dir
-    return None
+    """프로젝트 ID → .claude/company 디렉토리 경로 (없으면 None). 10초 캐시."""
+    global _project_dir_cache, _project_dir_cache_ts
+    now = time.time()
+    if now - _project_dir_cache_ts > 10:
+        _project_dir_cache = {}
+        for p in read_projects():
+            cd = os.path.join(p["path"], ".claude", "company")
+            if os.path.isdir(cd):
+                _project_dir_cache[p["id"]] = cd
+            # company_dir 필드 fallback
+            elif p.get("company_dir") and os.path.isdir(p["company_dir"]):
+                _project_dir_cache[p["id"]] = p["company_dir"]
+        _project_dir_cache_ts = now
+    return _project_dir_cache.get(project_id)
 
 def get_project_agents_dir(project_id):
     """프로젝트 ID → .claude/agents 디렉토리 경로 (없으면 None)."""
@@ -318,6 +393,106 @@ def get_project_root(project_id):
         if p["id"] == project_id:
             return p["path"]
     return None
+
+# ━━━ Document Management Helpers ━━━
+
+def _safe_doc_id(value):
+    """문서 ID 검증: 영숫자, 하이픈, 언더스코어만 허용. ../ 방지."""
+    if not value or '..' in value or '/' in value or '\\' in value:
+        return False
+    return bool(re.match(r'^[a-zA-Z0-9_-]+$', value))
+
+def _file_updated_at(filepath):
+    """파일의 mtime을 ISO 형식으로 반환. 파일 없으면 None."""
+    try:
+        mtime = os.path.getmtime(filepath)
+        return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(mtime))
+    except OSError:
+        return None
+
+def _doc_path_for(company_dir, doc_type, doc_id):
+    """type+id → 절대 파일 경로. 잘못된 type이면 None.
+    company_dir = {project_root}/.claude/company
+    """
+    claude_dir = os.path.dirname(company_dir)          # {project_root}/.claude
+    project_root = os.path.dirname(claude_dir)          # {project_root}
+    if doc_type == 'project' and doc_id == 'CLAUDE':
+        return os.path.normpath(os.path.join(project_root, 'CLAUDE.md'))
+    elif doc_type == 'team':
+        return os.path.normpath(os.path.join(company_dir, 'teams', doc_id, 'CLAUDE.md'))
+    elif doc_type == 'agent':
+        return os.path.normpath(os.path.join(claude_dir, 'agents', f'{doc_id}.md'))
+    elif doc_type == 'rules':
+        return os.path.normpath(os.path.join(claude_dir, 'rules', 'teams', f'{doc_id}.md'))
+    return None
+
+def _list_docs(company_dir):
+    """관리 가능한 모든 문서 목록 반환.
+    company_dir = {project_root}/.claude/company
+    """
+    docs = []
+    config = _read_config_for_project(company_dir)
+    claude_dir = os.path.dirname(company_dir)          # {project_root}/.claude
+    project_root = os.path.dirname(claude_dir)          # {project_root}
+
+    # 1) 프로젝트 CLAUDE.md
+    project_claude = os.path.normpath(os.path.join(project_root, 'CLAUDE.md'))
+    docs.append({
+        "type": "project",
+        "id": "CLAUDE",
+        "path": "CLAUDE.md",
+        "label": "프로젝트 CLAUDE.md",
+        "updated_at": _file_updated_at(project_claude),
+    })
+
+    # 2) 팀 CLAUDE.md
+    teams = config.get("teams", {})
+    for team_id, team_info in teams.items():
+        team_claude = os.path.normpath(os.path.join(company_dir, 'teams', team_id, 'CLAUDE.md'))
+        label = team_info.get("label", team_id) if isinstance(team_info, dict) else team_id
+        docs.append({
+            "type": "team",
+            "id": team_id,
+            "path": f"teams/{team_id}/CLAUDE.md",
+            "label": f"{label} CLAUDE.md",
+            "updated_at": _file_updated_at(team_claude),
+        })
+
+    # 3) 에이전트 .md 파일
+    agents = config.get("agents", [])
+    agents_dir = os.path.normpath(os.path.join(claude_dir, 'agents'))
+    for agent in agents:
+        if isinstance(agent, dict):
+            aid = agent.get("id", "")
+            alabel = agent.get("label", aid)
+        else:
+            aid = str(agent)
+            alabel = aid
+        if not aid:
+            continue
+        agent_path = os.path.join(agents_dir, f'{aid}.md')
+        docs.append({
+            "type": "agent",
+            "id": aid,
+            "path": f"agents/{aid}.md",
+            "label": alabel,
+            "updated_at": _file_updated_at(agent_path),
+        })
+
+    # 4) 팀 규칙 파일
+    rules_dir = os.path.normpath(os.path.join(claude_dir, 'rules', 'teams'))
+    for team_id, team_info in teams.items():
+        label = team_info.get("label", team_id) if isinstance(team_info, dict) else team_id
+        rules_path = os.path.join(rules_dir, f'{team_id}.md')
+        docs.append({
+            "type": "rules",
+            "id": team_id,
+            "path": f".claude/rules/teams/{team_id}.md",
+            "label": f"{label} 규칙",
+            "updated_at": _file_updated_at(rules_path),
+        })
+
+    return docs
 
 # 활성 터미널 세션 관리
 # key: "{project_id}:{agent_id}", value: {"pipe_file": "/tmp/vc-term-...", "pane_target": "..."}
@@ -645,15 +820,129 @@ def _compute_workflow_analysis(company_dir):
     return result
 
 
+def _compute_team_metrics(company_dir, config):
+    """팀별 티켓 현황, 24시간 이벤트 수, 에이전트 수, WIP 사용률 계산."""
+    teams_config = config.get('teams', {})
+    wip_limits = config.get('wip_limits', {})
+    per_team_limit = wip_limits.get('per_team', 999)
+
+    # 에이전트 → 팀 매핑, 팀 → 에이전트 목록
+    _, team_map = _parse_config_agents(config)
+    team_agents = {}
+    for aid, tid in team_map.items():
+        if tid:
+            team_agents.setdefault(tid, []).append(aid)
+
+    # 모든 팀에 대해 빈 버킷 초기화 (config에 정의된 팀 포함)
+    result = {}
+    for tid in teams_config:
+        result[tid] = {
+            "tickets": {"backlog": 0, "todo": 0, "in_progress": 0, "review": 0, "done": 0},
+            "events_24h": 0,
+            "agents": len(team_agents.get(tid, [])),
+            "wip_usage": f"0/{per_team_limit}",
+        }
+
+    # 티켓 상태 집계
+    tickets_dir = os.path.join(company_dir, 'state', 'tickets')
+    if os.path.isdir(tickets_dir):
+        for fname in os.listdir(tickets_dir):
+            if not fname.endswith('.json'):
+                continue
+            try:
+                with open(os.path.join(tickets_dir, fname)) as fh:
+                    ticket = json.load(fh)
+                tid = ticket.get('team')
+                if not tid or tid not in result:
+                    continue
+                status = ticket.get('status', 'backlog')
+                if status in result[tid]["tickets"]:
+                    result[tid]["tickets"][status] += 1
+                else:
+                    result[tid]["tickets"][status] = result[tid]["tickets"].get(status, 0) + 1
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    # 24시간 이벤트 수 (activity.jsonl)
+    jsonl_path = os.path.join(company_dir, 'activity.jsonl')
+    if os.path.exists(jsonl_path):
+        from datetime import datetime, timezone, timedelta
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        cutoff_iso = cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        with open(jsonl_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = ev.get('ts', '')
+                if ts < cutoff_iso:
+                    continue
+                agent = ev.get('agent', '')
+                tid = team_map.get(agent)
+                if tid and tid in result:
+                    result[tid]["events_24h"] += 1
+
+    # WIP 사용률 (in_progress 티켓 수 / per_team_limit)
+    for tid in result:
+        in_progress = result[tid]["tickets"].get("in_progress", 0)
+        result[tid]["wip_usage"] = f"{in_progress}/{per_team_limit}"
+
+    return result
+
+
 # ━━━ 스킬 관리 (Phase 3) ━━━
 
 GLOBAL_SKILLS_DIR = os.path.expanduser('~/.claude/skills')
 
-def _scan_installed_skills():
-    """~/.claude/skills/ 에서 설치된 스킬 목록 스캔."""
+def _load_skill_index(company_dir=None):
+    """skill-index.json에서 스킬별 keywords 로드. {name: keywords[]} 맵 반환."""
+    index_map = {}
+    paths_to_try = []
+    if company_dir:
+        paths_to_try.append(os.path.join(company_dir, 'skill-index.json'))
+    paths_to_try.append(os.path.join(COMPANY_DIR, 'skill-index.json'))
+    for p in paths_to_try:
+        if os.path.isfile(p):
+            try:
+                with open(p) as f:
+                    entries = json.load(f)
+                for entry in entries:
+                    if isinstance(entry, dict) and 'name' in entry:
+                        index_map[entry['name']] = entry.get('keywords', [])
+                return index_map
+            except Exception:
+                pass
+    return index_map
+
+SKILL_CATEGORIES = {
+    "개발": {"careful", "code-review-expert", "codex", "freeze", "unfreeze", "guard", "benchmark"},
+    "디자인": {"design-consultation", "design-shotgun", "design-html", "design-review", "frontend-design", "algorithmic-art", "canvas-design", "theme-factory", "brand-guidelines"},
+    "QA/테스트": {"browse", "canary", "connect-chrome", "investigate", "qa", "qa-only", "setup-browser-cookies", "webapp-testing"},
+    "기획/관리": {"autoplan", "checkpoint", "learn", "office-hours", "plan-ceo-review", "plan-design-review", "plan-eng-review", "retro"},
+    "배포/인프라": {"health", "land-and-deploy", "setup-deploy", "ship"},
+    "보안/리뷰": {"review", "cso", "debate", "discussion"},
+    "문서/기타": {"document-release", "make-company"},
+}
+
+def _auto_categorize(skill_name):
+    """스킬 이름으로 역할 기반 카테고리 자동 분류."""
+    for cat, names in SKILL_CATEGORIES.items():
+        if skill_name in names:
+            return cat
+    return "기타"
+
+def _scan_installed_skills(company_dir=None):
+    """~/.claude/skills/ 에서 설치된 스킬 목록 스캔. skill-index.json의 keywords도 병합."""
     skills = []
     if not os.path.isdir(GLOBAL_SKILLS_DIR):
         return skills
+    # skill-index.json에서 keywords 로드
+    keyword_map = _load_skill_index(company_dir)
     for name in sorted(os.listdir(GLOBAL_SKILLS_DIR)):
         skill_dir = os.path.join(GLOBAL_SKILLS_DIR, name)
         # SKILL.md 찾기 (직접 또는 서브디렉토리)
@@ -693,8 +982,14 @@ def _scan_installed_skills():
         except Exception:
             pass
 
+        # 카테고리가 비어있거나 기본값이면 자동 분류
+        if not meta['category'] or meta['category'] in ('', 'general'):
+            meta['category'] = _auto_categorize(name)
+
         meta['path'] = skill_md
         meta['is_symlink'] = os.path.islink(skill_dir) or os.path.islink(skill_md)
+        # skill-index.json에서 keywords 병합
+        meta['keywords'] = keyword_map.get(name, [])
         skills.append(meta)
     return skills
 
@@ -724,6 +1019,33 @@ def _append_skill_usage(company_dir, entry):
         entry['ts'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     with open(path, 'a') as f:
         f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+
+def _check_skill_compliance(company_dir, ticket_id, ticket_type, current_status, config):
+    """strict 모드에서 현재 단계의 필수 스킬 완료 여부 확인.
+
+    Returns:
+        (compliant: bool, missing_skills: list[str])
+    """
+    enforcement = config.get('skill_enforcement', 'advisory')
+    if enforcement != 'strict':
+        return True, []
+
+    step_skills = config.get('step_skills', {})
+    required = step_skills.get(ticket_type, {}).get(current_status, [])
+    if not required:
+        return True, []
+
+    # skill-usage.jsonl에서 해당 티켓의 SKILL_DONE 수집
+    usage_entries = _read_skill_usage(company_dir, limit=1000)
+    done_skills = set()
+    for entry in usage_entries:
+        if entry.get('ticket') == ticket_id:
+            for sk in entry.get('done', []):
+                done_skills.add(sk)
+
+    missing = [s for s in required if s not in done_skills]
+    return len(missing) == 0, missing
 
 
 # ━━━ 도구 프로필 (Phase 4) ━━━
@@ -1096,6 +1418,193 @@ def _harness_drift_check(company_dir):
     }
 
 
+def _parse_csv(value):
+    """Comma-separated string → list of stripped non-empty tokens."""
+    if not value or not isinstance(value, str):
+        return []
+    return [s.strip() for s in value.split(',') if s.strip()]
+
+
+def _harness_summary(company_dir):
+    """activity.jsonl + config.json + skill-usage.jsonl 기반 하네스 요약.
+    단일 패스로 이벤트를 집계하여 hooks/gates/skills/workflow 정보를 반환."""
+
+    # --- 1. activity.jsonl 단일 패스 ---
+    hooks = {
+        "agent_harness": {"executions": 0, "last_run": None, "warnings": 0, "blocks": 0},
+        "post_tool_use": {"executions": 0, "commits_tagged": 0, "auto_verifies": 0,
+                          "auto_verify_pass": 0, "auto_verify_fail": 0},
+        "ticket_context": {"executions": 0, "wip_warnings": 0, "goal_warnings": 0},
+    }
+    gates = {"total_checks": 0, "passed": 0, "rejected": 0, "recent": []}
+    skills_agg = {
+        "total_checks": 0, "compliant": 0, "missing": 0,
+        "enforcement": "advisory", "by_agent": {},
+    }
+
+    jsonl_path = os.path.join(company_dir, 'activity.jsonl')
+    if os.path.exists(jsonl_path):
+        with open(jsonl_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                evt = ev.get('event', '')
+                data = ev.get('data', {}) if isinstance(ev.get('data'), dict) else {}
+                agent = ev.get('agent', '')
+                ts = ev.get('ts')
+
+                if evt == 'agent_start_harness':
+                    hooks['agent_harness']['executions'] += 1
+                    hooks['agent_harness']['last_run'] = ts
+
+                elif evt == 'checkpoint_missing':
+                    hooks['agent_harness']['warnings'] += 1
+
+                elif evt == 'quality_gate_fail':
+                    hooks['agent_harness']['warnings'] += 1
+                    gates['total_checks'] += 1
+                    gates['rejected'] += 1
+                    _gate_recent_append(gates, ev, 'rejected')
+
+                elif evt == 'skill_missing':
+                    skills_agg['missing'] += 1
+                    skills_agg['total_checks'] += 1
+                    if agent:
+                        by = skills_agg['by_agent'].setdefault(agent, {"missing": 0, "compliant": 0})
+                        by['missing'] += 1
+                        # Collect individual skill names from event data
+                        for sk in _parse_csv(data.get('missing', '')):
+                            by.setdefault('missing_skills', set()).add(sk)
+                        for sk in _parse_csv(data.get('done', '')):
+                            by.setdefault('compliant_skills', set()).add(sk)
+
+                elif evt == 'skill_blocked':
+                    hooks['agent_harness']['blocks'] += 1
+                    skills_agg['missing'] += 1
+                    skills_agg['total_checks'] += 1
+                    if agent:
+                        by = skills_agg['by_agent'].setdefault(agent, {"missing": 0, "compliant": 0})
+                        by['missing'] += 1
+                        # Collect blocked skill names from event data
+                        for sk in _parse_csv(data.get('missing', '')):
+                            by.setdefault('missing_skills', set()).add(sk)
+
+                elif evt == 'file_modified':
+                    hooks['post_tool_use']['executions'] += 1
+
+                elif evt == 'auto_verify':
+                    hooks['post_tool_use']['auto_verifies'] += 1
+                    result = data.get('result', '')
+                    if result == 'pass':
+                        hooks['post_tool_use']['auto_verify_pass'] += 1
+                    elif result == 'fail':
+                        hooks['post_tool_use']['auto_verify_fail'] += 1
+
+                elif evt == 'verify_passed_bypass_rejected':
+                    gates['total_checks'] += 1
+                    gates['rejected'] += 1
+                    _gate_recent_append(gates, ev, 'rejected')
+
+                elif evt == 'parent_done_blocked':
+                    gates['total_checks'] += 1
+                    gates['rejected'] += 1
+                    _gate_recent_append(gates, ev, 'rejected')
+
+                elif evt == 'ticket_context_injected':
+                    hooks['ticket_context']['executions'] += 1
+
+                elif evt == 'wip_limit_warning':
+                    hooks['ticket_context']['wip_warnings'] += 1
+
+                elif evt == 'goal_missing_warning':
+                    hooks['ticket_context']['goal_warnings'] += 1
+
+                elif evt == 'gate_passed':
+                    gates['total_checks'] += 1
+                    gates['passed'] += 1
+                    _gate_recent_append(gates, ev, 'passed')
+
+                elif evt == 'skill_compliant':
+                    skills_agg['total_checks'] += 1
+                    skills_agg['compliant'] += 1
+                    if agent:
+                        by = skills_agg['by_agent'].setdefault(agent, {"missing": 0, "compliant": 0})
+                        by['compliant'] += 1
+                        # Collect compliant skill names from event data
+                        for sk in _parse_csv(data.get('done', '')):
+                            by.setdefault('compliant_skills', set()).add(sk)
+
+                elif evt == 'commit_tagged':
+                    hooks['post_tool_use']['commits_tagged'] += 1
+
+    # recent: 최근 10건만 유지 (역순 = 최신 먼저)
+    gates['recent'] = gates['recent'][-10:][::-1]
+
+    # --- 2. config.json → workflow 섹션 ---
+    config = _read_config_for_project(company_dir)
+    workflow_raw = config
+    _wip_raw = workflow_raw.get('wip_limits', {})
+    workflow = {
+        "templates": workflow_raw.get('workflow_templates', {}),
+        "gates": workflow_raw.get('quality_gates', {}),
+        "wip_limits": {
+            "global": _wip_raw.get('global', 999),
+            "per_agent": _wip_raw.get('per_agent', 999),
+            "per_team": _wip_raw.get('per_team', 999),
+        },
+        "step_skills": workflow_raw.get('step_skills', {}),
+        "skill_enforcement": workflow_raw.get('skill_enforcement', 'advisory'),
+        "critic_loop": workflow_raw.get('critic_loop', {}),
+        "reporting": workflow_raw.get('reporting', {}),
+    }
+    skills_agg['enforcement'] = workflow.get('skill_enforcement', 'advisory')
+
+    # --- 3. skill-usage.jsonl → compliant 보정 ---
+    usage_entries = _read_skill_usage(company_dir, limit=5000)
+    for entry in usage_entries:
+        done_list = entry.get('done', [])
+        if done_list:
+            agent = entry.get('agent', '')
+            skills_agg['compliant'] += len(done_list)
+            skills_agg['total_checks'] += len(done_list)
+            if agent:
+                by = skills_agg['by_agent'].setdefault(agent, {"missing": 0, "compliant": 0})
+                by['compliant'] += len(done_list)
+                for sk in done_list:
+                    if isinstance(sk, str) and sk.strip():
+                        by.setdefault('compliant_skills', set()).add(sk.strip())
+
+    # Convert skill name sets to sorted lists for JSON serialization
+    for agent_data in skills_agg['by_agent'].values():
+        agent_data['compliant_skills'] = sorted(agent_data.get('compliant_skills', set()))
+        agent_data['missing_skills'] = sorted(agent_data.get('missing_skills', set()))
+
+    return {
+        "hooks": hooks,
+        "gates": gates,
+        "skills": skills_agg,
+        "workflow": workflow,
+    }
+
+
+def _gate_recent_append(gates, ev, result):
+    """gates['recent'] 리스트에 최근 게이트 이벤트 추가 (최대 10건 유지)."""
+    data = ev.get('data', {}) if isinstance(ev.get('data'), dict) else {}
+    gates['recent'].append({
+        "ticket": ev.get('ticket') or data.get('ticket', ''),
+        "gate": ev.get('event', ''),
+        "result": result,
+        "reason": data.get('reason', ''),
+        "ts": ev.get('ts', ''),
+    })
+
+
 def _parse_config_agents(config):
     """config.json의 agents[]에서 ID 목록과 team 매핑을 추출. string/dict 배열 모두 처리."""
     agents_raw = config.get('agents', [])
@@ -1440,6 +1949,10 @@ category: (leadership/engineering/design/qa/marketing 중 택1)
 
 def generate_workflow_with_ai(description):
     """Claude CLI로 워크플로우 YAML 생성"""
+    # claude CLI 존재 여부 확인
+    if not shutil.which('claude'):
+        return {"error": "claude CLI가 설치되지 않았습니다"}
+
     prompt = f"""다음 설명에 맞는 워크플로우 YAML을 생성하세요.
 
 설명: {description}
@@ -1465,6 +1978,9 @@ YAML만 출력하세요. 설명이나 코드블록 없이."""
             ['claude', '-p', prompt, '--no-input'],
             capture_output=True, text=True, timeout=60, cwd=PROJECT_DIR
         )
+        if result.returncode != 0:
+            stderr = (result.stderr or '').strip()
+            return {"error": f"생성 실패: {stderr[:300]}" if stderr else "claude CLI 실행에 실패했습니다"}
         output = result.stdout.strip()
         # 'name:' 시작 부분 찾기
         idx = output.find('name:')
@@ -1560,6 +2076,10 @@ def run_company_task(task, mode='run'):
         return {"ok": False, "error": "태스크가 너무 깁니다 (최대 5000자)"}
     task = task.replace('\x00', '')  # null byte 제거
 
+    # claude CLI 존재 여부 확인
+    if not shutil.which('claude'):
+        return {"ok": False, "error": "claude CLI가 설치되지 않았습니다"}
+
     global RUNNING_PROC
     with PROC_LOCK:
         if RUNNING_PROC["pid"]:
@@ -1582,7 +2102,7 @@ def run_company_task(task, mode='run'):
             cmd,
             cwd=PROJECT_DIR,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
         )
         with PROC_LOCK:
@@ -1595,11 +2115,13 @@ def run_company_task(task, mode='run'):
         # 백그라운드 스레드로 완료 대기
         def wait_and_log():
             global RUNNING_PROC
-            stdout, _ = proc.communicate()
+            stdout, stderr = proc.communicate()
             ts2 = time.strftime('%Y-%m-%d %H:%M:%S')
             status = '✅ 완료' if proc.returncode == 0 else f'❌ 실패 (code={proc.returncode})'
             with open(ACTIVITY_LOG, 'a') as f:
                 f.write(f"[{ts2}] 🌐 대시보드 태스크 {status}\n")
+                if proc.returncode != 0 and stderr:
+                    f.write(f"[{ts2}] 🌐 stderr: {stderr.strip()[:300]}\n")
             # 출력을 ceo output에 기록
             ceo_log = os.path.join(AGENT_OUTPUT_DIR, 'ceo.log')
             if stdout:
@@ -1611,9 +2133,9 @@ def run_company_task(task, mode='run'):
         threading.Thread(target=wait_and_log, daemon=True).start()
         return {"ok": True, "pid": proc.pid, "task": task}
     except FileNotFoundError:
-        return {"ok": False, "error": "claude CLI를 찾을 수 없습니다"}
+        return {"ok": False, "error": "claude CLI가 설치되지 않았습니다"}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"실행 실패: {str(e)}"}
 
 class FileWatcher:
     """파일 변경을 감지하여 SSE 이벤트 생성"""
@@ -1647,6 +2169,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', len(body))
+        self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(body)
 
@@ -1835,6 +2358,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 filter_status = _q.get('status', [None])[0]
                 filter_team = _q.get('team', [None])[0]
                 filter_assignee = _q.get('assignee', [None])[0]
+                filter_agent = _q.get('agent', [None])[0]
+
+                # agent 파라미터가 있으면 해당 에이전트의 팀도 조회 (visibility 필터용)
+                _agent_team_for_vis = None
+                if filter_agent:
+                    _vis_config = _read_config_for_project(company_dir)
+                    for _a in _vis_config.get('agents', []):
+                        if isinstance(_a, dict) and _a.get('id') == filter_agent:
+                            _agent_team_for_vis = _a.get('team') or None
+                            break
 
                 tickets = []
                 for f in sorted(os.listdir(tickets_dir)):
@@ -1845,11 +2378,188 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         if filter_status and t.get('status') != filter_status: continue
                         if filter_team and t.get('team') != filter_team: continue
                         if filter_assignee and t.get('assignee') != filter_assignee: continue
+                        # visibility 필터: agent 파라미터가 있고 visibility가 설정된 경우
+                        vis = t.get('visibility')
+                        if filter_agent and vis is not None:
+                            if filter_agent not in vis and (not _agent_team_for_vis or _agent_team_for_vis not in vis):
+                                continue
                         tickets.append(t)
                     except: pass
                 # 최신순 정렬
                 tickets.sort(key=lambda t: t.get('updated_at', ''), reverse=True)
                 self.send_json({"tickets": tickets})
+
+            elif sub_path.endswith('/transitions'):
+                # GET /api/{project}/tickets/{id}/transitions — 허용 전환 목록
+                parts = sub_path.split('/')
+                ticket_id = parts[1] if len(parts) >= 3 else ''
+                ticket_file = os.path.join(tickets_dir, f"{ticket_id}.json")
+                if not os.path.exists(ticket_file):
+                    self.send_json({"error": "ticket not found"}, 404)
+                    return
+                with open(ticket_file) as fh:
+                    ticket = json.load(fh)
+
+                config = _read_config_for_project(company_dir)
+                current_status = ticket.get('status', 'backlog')
+                ticket_type = ticket.get('type', 'feature')
+                completed = set(ticket.get('completed_steps', []))
+                completed.add(current_status)
+
+                # 워크플로 템플릿
+                wf_templates = config.get('workflow_templates', {})
+                wf = wf_templates.get(ticket_type, {})
+                required_before = wf.get('required_before', {})
+
+                # WIP 제한 사전 계산
+                wip_limits = config.get('wip_limits', {})
+                wip_global_limit = wip_limits.get('global', 999)
+                wip_agent_limit = wip_limits.get('per_agent', 999)
+                wip_team_limit = wip_limits.get('per_team', 999)
+                wip_count = 0
+                wip_agent_count = 0
+                wip_team_count = 0
+                assignee = ticket.get('assignee', '')
+                team_id = ticket.get('team', '')
+                for _f in os.listdir(tickets_dir):
+                    if not _f.endswith('.json'):
+                        continue
+                    try:
+                        with open(os.path.join(tickets_dir, _f)) as _fh:
+                            _t = json.load(_fh)
+                        if _t.get('status') == 'in_progress':
+                            wip_count += 1
+                            if assignee and _t.get('assignee') == assignee:
+                                wip_agent_count += 1
+                            if team_id and _t.get('team') == team_id:
+                                wip_team_count += 1
+                    except:
+                        pass
+
+                # 품질 게이트
+                gates = config.get('quality_gates', {})
+
+                # 미완료 자식 티켓
+                blocked_children = []
+                for child_id in ticket.get('children', []):
+                    child_file = os.path.join(tickets_dir, f"{child_id}.json")
+                    if os.path.exists(child_file):
+                        try:
+                            with open(child_file) as cfh:
+                                child = json.load(cfh)
+                            if child.get('status') != 'done':
+                                blocked_children.append(f"{child_id} ({child.get('status', '?')})")
+                        except:
+                            pass
+
+                # WIP 경고 문자열
+                wip_warning = None
+                if wip_limits and wip_global_limit < 999:
+                    remaining = wip_global_limit - wip_count
+                    if remaining <= 0:
+                        wip_warning = f"WIP {wip_count}/{wip_global_limit} -- 한도 도달"
+                    elif remaining <= 1:
+                        wip_warning = f"WIP {wip_count}/{wip_global_limit} -- {remaining}개 여유"
+
+                # 가능한 상태 목록 (전체 STATUSES)
+                all_statuses = ['backlog', 'todo', 'in_progress', 'review', 'done']
+                transitions = []
+                for target in all_statuses:
+                    if target == current_status:
+                        continue
+                    allowed = True
+                    reason = None
+
+                    # 1) 워크플로 required_before 체크
+                    if target in required_before:
+                        missing = [s for s in required_before[target] if s not in completed]
+                        if missing:
+                            allowed = False
+                            reason = f"{', '.join(missing)} 단계를 먼저 완료해야 합니다"
+
+                    # 2) WIP 제한 체크 (in_progress 전환 시, 현재 상태가 in_progress가 아닐 때)
+                    if allowed and target == 'in_progress' and current_status != 'in_progress':
+                        if wip_count >= wip_global_limit:
+                            allowed = False
+                            reason = f"전체 WIP 한도 초과 ({wip_count}/{wip_global_limit})"
+                        elif assignee and wip_agent_count >= wip_agent_limit:
+                            allowed = False
+                            reason = f"에이전트 WIP 한도 초과 ({wip_agent_count}/{wip_agent_limit})"
+                        elif team_id and wip_team_count >= wip_team_limit:
+                            allowed = False
+                            reason = f"팀 WIP 한도 초과 ({wip_team_count}/{wip_team_limit})"
+
+                    # 3) 품질 게이트 체크
+                    if allowed:
+                        transition_key = f"{current_status} → {target}"
+                        gate = gates.get(transition_key)
+                        if gate:
+                            criteria = gate.get('criteria', [])
+                            auto_verify_cfg = config.get('auto_verify', {})
+                            for c in criteria:
+                                c_lower = c.lower()
+                                gate_type = gate.get('gate_type', {}).get(c) if isinstance(gate.get('gate_type'), dict) else None
+                                if gate_type == 'auto_verify' or (gate_type is None and ('자동 검증' in c_lower or 'auto' in c_lower or 'test' in c_lower)):
+                                    if auto_verify_cfg.get('gate_integration') and ticket.get('verify_passed') is not True:
+                                        allowed = False
+                                        reason = f"품질 게이트: {c}"
+                                        break
+                                elif gate_type == 'acceptance_criteria' or (gate_type is None and ('ac' in c_lower or '완료 기준' in c_lower or 'acceptance' in c_lower)):
+                                    if not ticket.get('acceptance_criteria'):
+                                        allowed = False
+                                        reason = f"품질 게이트: {c}"
+                                        break
+                                elif gate_type == 'reviewer_approval' or (gate_type is None and ('리뷰어' in c_lower or 'reviewer' in c_lower or 'approval' in c_lower)):
+                                    qa_approved = False
+                                    for act in ticket.get('activity', []):
+                                        if _is_qa_agent(act.get('agent', ''), config):
+                                            if act.get('action') in ('comment', 'approve', 'gate_approved', 'review_approved'):
+                                                qa_approved = True
+                                                break
+                                    if not qa_approved:
+                                        allowed = False
+                                        reason = f"품질 게이트: {c}"
+                                        break
+
+                    # 4) done 전환 시 미완료 자식 체크
+                    if allowed and target == 'done' and blocked_children:
+                        allowed = False
+                        reason = f"미완료 서브태스크: {', '.join(blocked_children[:3])}"
+
+                    # 5) strict 모드: 현재 단계 필수 스킬 미완료 시 차단
+                    if allowed and target != current_status:
+                        _sk_ok, _sk_missing = _check_skill_compliance(
+                            company_dir, ticket_id, ticket_type, current_status, config)
+                        if not _sk_ok:
+                            allowed = False
+                            reason = f"필수 스킬 미완료: {', '.join(_sk_missing)}"
+
+                    entry = {"status": target, "allowed": allowed}
+                    if reason:
+                        entry["reason"] = reason
+                    transitions.append(entry)
+
+                # strict 모드 skill compliance 요약 정보
+                _enforcement_mode = config.get('skill_enforcement', 'advisory')
+                _sk_compliant, _sk_missing_current = _check_skill_compliance(
+                    company_dir, ticket_id, ticket_type, current_status, config)
+
+                resp = {
+                    "current": current_status,
+                    "transitions": transitions,
+                    "skill_enforcement": _enforcement_mode,
+                }
+                if not _sk_compliant:
+                    resp["skill_compliance"] = {
+                        "compliant": False,
+                        "missing": _sk_missing_current,
+                        "message": f"필수 스킬 미완료: {', '.join(_sk_missing_current)}"
+                    }
+                if wip_warning:
+                    resp["wip_warning"] = wip_warning
+                if blocked_children:
+                    resp["blocked_children"] = blocked_children
+                self.send_json(resp)
 
             else:
                 # GET /api/{project}/tickets/{id} — 상세
@@ -2077,8 +2787,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif sub_path == 'insights':
             # GET /api/{project}/insights — activity.jsonl 기반 병목 분석
+            from datetime import datetime, timezone, timedelta
             jsonl_path = os.path.join(company_dir, 'activity.jsonl')
             tickets_dir = os.path.join(company_dir, 'state', 'tickets')
+            hb_dir = os.path.join(company_dir, 'state', 'heartbeats')
 
             events = []
             if os.path.exists(jsonl_path):
@@ -2087,6 +2799,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         try: events.append(json.loads(line.strip()))
                         except: pass
 
+            now = datetime.now(timezone.utc)
+
             # 에이전트별 이벤트 수
             agent_activity = {}
             for ev in events:
@@ -2094,39 +2808,242 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if a:
                     agent_activity[a] = agent_activity.get(a, 0) + 1
 
-            # 게이트 거부 횟수
+            # 게이트 거부 — 전체 + 에이전트별
             gate_rejections = [ev for ev in events if ev.get('event') == 'gate_rejected' or 'gate' in str(ev.get('data', {}))]
+            gate_by_agent = {}
+            for ev in gate_rejections:
+                a = ev.get('agent')
+                if a:
+                    gate_by_agent[a] = gate_by_agent.get(a, 0) + 1
 
-            # 티켓 사이클 타임 (created → done)
-            cycle_times = []
+            # 티켓 전체 로드 (사이클 타임, 상태, 타입 등에 공용)
+            all_tickets = []
             if os.path.isdir(tickets_dir):
                 for f in os.listdir(tickets_dir):
                     if not f.endswith('.json'): continue
                     try:
                         with open(os.path.join(tickets_dir, f)) as fh:
-                            t = json.load(fh)
-                        if t.get('status') == 'done' and t.get('created_at') and t.get('updated_at'):
-                            from datetime import datetime
-                            created = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00'))
-                            updated = datetime.fromisoformat(t['updated_at'].replace('Z', '+00:00'))
-                            cycle_sec = (updated - created).total_seconds()
-                            cycle_times.append({"ticket": t['id'], "title": t['title'], "seconds": cycle_sec})
+                            all_tickets.append(json.load(fh))
                     except: pass
+
+            # 티켓 사이클 타임 (created -> done)
+            cycle_times = []
+            for t in all_tickets:
+                try:
+                    if t.get('status') == 'done' and t.get('created_at') and t.get('updated_at'):
+                        created = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00'))
+                        updated = datetime.fromisoformat(t['updated_at'].replace('Z', '+00:00'))
+                        cycle_sec = (updated - created).total_seconds()
+                        cycle_times.append({"ticket": t['id'], "title": t['title'], "seconds": cycle_sec})
+                except: pass
 
             # 상태별 티켓 수
             status_counts = {"backlog": 0, "todo": 0, "in_progress": 0, "review": 0, "done": 0}
-            if os.path.isdir(tickets_dir):
-                for f in os.listdir(tickets_dir):
-                    if not f.endswith('.json'): continue
-                    try:
-                        with open(os.path.join(tickets_dir, f)) as fh:
-                            t = json.load(fh)
-                        s = t.get('status', 'backlog')
-                        status_counts[s] = status_counts.get(s, 0) + 1
-                    except: pass
+            for t in all_tickets:
+                s = t.get('status', 'backlog')
+                status_counts[s] = status_counts.get(s, 0) + 1
 
             # 가장 활발한 에이전트 / 가장 비활성 에이전트
             sorted_agents = sorted(agent_activity.items(), key=lambda x: x[1], reverse=True)
+
+            # 에이전트별 마지막 이벤트 시각
+            agent_last_event = {}
+            for ev in events:
+                a = ev.get('agent')
+                ts = ev.get('timestamp') or ev.get('ts') or ev.get('time')
+                if a and ts:
+                    try:
+                        t_parsed = datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+                        if a not in agent_last_event or t_parsed > agent_last_event[a]:
+                            agent_last_event[a] = t_parsed
+                    except: pass
+
+            # heartbeat 데이터 로드
+            heartbeats = {}
+            if os.path.isdir(hb_dir):
+                for f in os.listdir(hb_dir):
+                    if f.endswith('.json'):
+                        try:
+                            with open(os.path.join(hb_dir, f)) as fh:
+                                heartbeats[f[:-5]] = json.load(fh)
+                        except: pass
+
+            # 워크플로우 단계별 소요시간 집계
+            step_durations = {}
+            for ev in events:
+                step = ev.get('step') or (ev.get('data', {}) if isinstance(ev.get('data'), dict) else {}).get('step')
+                duration = ev.get('duration') or (ev.get('data', {}) if isinstance(ev.get('data'), dict) else {}).get('duration')
+                if step and duration:
+                    try:
+                        dur = float(duration)
+                        if step not in step_durations:
+                            step_durations[step] = []
+                        step_durations[step].append(dur)
+                    except: pass
+
+            # 활성 에이전트 목록 (state 파일 기반)
+            active_agents = set()
+            state_dir = os.path.join(company_dir, 'state')
+            if os.path.isdir(state_dir):
+                for f in os.listdir(state_dir):
+                    if f.endswith('.state'):
+                        try:
+                            with open(os.path.join(state_dir, f)) as fh:
+                                st = fh.read().strip()
+                            if st in ('working', 'idle'):
+                                active_agents.add(f[:-6])
+                        except: pass
+
+            # ━━━ Suggestions 생성 (11 types) ━━━
+            suggestions = []
+
+            # 1. stuck — 사이클 타임 48시간 초과
+            for ct in cycle_times:
+                if ct['seconds'] > 48 * 3600:
+                    suggestions.append({
+                        "type": "stuck",
+                        "message": f"{ct['ticket']} ({ct['title'][:30]})이 {ct['seconds']/3600:.0f}시간+ 진행 중 — stuck 가능성",
+                        "severity": "high",
+                        "ticket": ct['ticket'],
+                    })
+
+            # 2. gate_issue — 게이트 거부 3회 초과
+            if len(gate_rejections) > 2:
+                suggestions.append({
+                    "type": "gate_issue",
+                    "message": f"게이트 거부 {len(gate_rejections)}회 — 리뷰 프로세스 점검 필요",
+                    "severity": "medium",
+                })
+
+            # 3. wip_high — in_progress 4개 초과
+            if status_counts.get('in_progress', 0) > 3:
+                suggestions.append({
+                    "type": "wip_high",
+                    "message": f"in_progress 티켓 {status_counts.get('in_progress', 0)}개 — WIP 과다",
+                    "severity": "high",
+                })
+
+            # 4. idle — 이벤트 0개
+            if len(events) == 0:
+                suggestions.append({
+                    "type": "idle",
+                    "message": "활동 이벤트 없음 — 시스템이 유휴 상태",
+                    "severity": "low",
+                })
+
+            # 5. repeat_reject — 에이전트별 게이트 거부 3회+
+            for agent, count in gate_by_agent.items():
+                if count >= 3:
+                    suggestions.append({
+                        "type": "repeat_reject",
+                        "message": f"{agent} 에이전트가 {count}회 게이트 거부 — 품질 개선 필요",
+                        "severity": "high",
+                        "agent": agent,
+                    })
+
+            # 6. type_ratio — bugfix 비율 50% 초과
+            type_counts = {}
+            for t in all_tickets:
+                tt = t.get('type', 'unknown')
+                type_counts[tt] = type_counts.get(tt, 0) + 1
+            total_tickets = sum(type_counts.values())
+            bugfix_count = type_counts.get('bugfix', 0) + type_counts.get('bug', 0)
+            if total_tickets > 0 and bugfix_count > 0:
+                pct = round(bugfix_count / total_tickets * 100)
+                if pct > 50:
+                    suggestions.append({
+                        "type": "type_ratio",
+                        "message": f"bugfix 비율 {pct}% — 기술 부채 주의",
+                        "severity": "medium",
+                    })
+
+            # 7. slow_step — 워크플로우 단계 평균 시간이 전체 평균의 2배 초과
+            if step_durations:
+                step_avgs = {s: sum(ds) / len(ds) for s, ds in step_durations.items()}
+                all_avgs = list(step_avgs.values())
+                overall_avg = sum(all_avgs) / len(all_avgs) if all_avgs else 0
+                if overall_avg > 0:
+                    for step, avg in step_avgs.items():
+                        if avg > overall_avg * 2:
+                            suggestions.append({
+                                "type": "slow_step",
+                                "message": f"{step} 단계 평균 {avg/3600:.1f}시간 — 병목 가능",
+                                "severity": "medium",
+                            })
+
+            # 8. idle_agent — 24시간+ 활동 없는 에이전트
+            all_known_agents = set(agent_activity.keys()) | active_agents
+            for agent in all_known_agents:
+                last = agent_last_event.get(agent)
+                if last:
+                    if (now - last).total_seconds() > 24 * 3600:
+                        suggestions.append({
+                            "type": "idle_agent",
+                            "message": f"{agent} 에이전트 24시간+ 활동 없음",
+                            "severity": "low",
+                            "agent": agent,
+                        })
+                elif agent in active_agents:
+                    # 이벤트가 아예 없지만 활성 상태인 에이전트
+                    suggestions.append({
+                        "type": "idle_agent",
+                        "message": f"{agent} 에이전트 24시간+ 활동 없음",
+                        "severity": "low",
+                        "agent": agent,
+                    })
+
+            # 9. no_heartbeat — 활성 에이전트 heartbeat 미수신 1시간+
+            for agent in active_agents:
+                hb = heartbeats.get(agent, {})
+                hb_ts = hb.get('timestamp') or hb.get('ts') or hb.get('time')
+                if hb_ts:
+                    try:
+                        hb_time = datetime.fromisoformat(str(hb_ts).replace('Z', '+00:00'))
+                        if (now - hb_time).total_seconds() > 3600:
+                            suggestions.append({
+                                "type": "no_heartbeat",
+                                "message": f"{agent} heartbeat 미수신 (1시간+)",
+                                "severity": "medium",
+                                "agent": agent,
+                            })
+                    except: pass
+                elif agent not in heartbeats:
+                    # heartbeat 파일 자체가 없는 활성 에이전트
+                    suggestions.append({
+                        "type": "no_heartbeat",
+                        "message": f"{agent} heartbeat 미수신 (1시간+)",
+                        "severity": "medium",
+                        "agent": agent,
+                    })
+
+            # 10. unassigned — backlog 7일+ 배정 없는 티켓
+            for t in all_tickets:
+                if t.get('status') == 'backlog' and not t.get('assignee'):
+                    created_at = t.get('created_at')
+                    if created_at:
+                        try:
+                            created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            if (now - created).total_seconds() > 7 * 24 * 3600:
+                                suggestions.append({
+                                    "type": "unassigned",
+                                    "message": f"{t['id']} 배정 없이 7일+ 대기",
+                                    "severity": "low",
+                                    "ticket": t['id'],
+                                })
+                        except: pass
+
+            # 11. cycle_anomaly — 사이클 타임 평균의 3배 초과
+            avg_cycle = sum(c['seconds'] for c in cycle_times) / len(cycle_times) if cycle_times else 0
+            if avg_cycle > 0:
+                for ct in cycle_times:
+                    if ct['seconds'] > avg_cycle * 3:
+                        multiplier = round(ct['seconds'] / avg_cycle, 1)
+                        suggestions.append({
+                            "type": "cycle_anomaly",
+                            "message": f"{ct['ticket']} 소요시간 이상치 ({ct['seconds']/3600:.1f}시간, 평균의 {multiplier}배)",
+                            "severity": "high",
+                            "ticket": ct['ticket'],
+                        })
 
             self.send_json({
                 "total_events": len(events),
@@ -2134,23 +3051,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "top_agents": sorted_agents[:5],
                 "gate_rejections": len(gate_rejections),
                 "cycle_times": sorted(cycle_times, key=lambda x: x['seconds']),
-                "avg_cycle_seconds": sum(c['seconds'] for c in cycle_times) / len(cycle_times) if cycle_times else 0,
+                "avg_cycle_seconds": avg_cycle,
                 "status_counts": status_counts,
-                "suggestions": (lambda: [
-                    s for s in [
-                        {"type": "stuck", "message": f"{ct['ticket']} ({ct['title'][:30]})이 {ct['seconds']/3600:.0f}시간+ 진행 중 — stuck 가능성", "severity": "high"}
-                        for ct in cycle_times if ct['seconds'] > 48 * 3600
-                    ] + ([
-                        {"type": "gate_issue", "message": f"게이트 거부 {len(gate_rejections)}회 — 리뷰 프로세스 점검 필요", "severity": "medium"}
-                    ] if len(gate_rejections) > 2 else []) + ([
-                        {"type": "tech_debt", "message": f"bugfix 티켓이 {status_counts.get('in_progress',0)+status_counts.get('review',0)+status_counts.get('done',0)}개 중 다수 — 기술 부채 주의", "severity": "medium"}
-                    ] if any(True for _ in []) else []) + ([
-                        {"type": "wip_high", "message": f"in_progress 티켓 {status_counts.get('in_progress',0)}개 — WIP 과다", "severity": "high"}
-                    ] if status_counts.get('in_progress', 0) > 3 else []) + ([
-                        {"type": "idle", "message": "활동 이벤트 없음 — 시스템이 유휴 상태", "severity": "low"}
-                    ] if len(events) == 0 else [])
-                ])(),
+                "suggestions": suggestions,
             })
+
+        elif sub_path == 'team-metrics':
+            # GET /api/{project}/team-metrics — 팀별 티켓·이벤트·WIP 메트릭
+            config = _read_config_for_project(company_dir)
+            metrics = _compute_team_metrics(company_dir, config)
+            self.send_json({"teams": metrics})
 
         elif sub_path == 'heartbeats':
             # GET /api/{project}/heartbeats — 에이전트별 최신 heartbeat
@@ -2223,6 +3133,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
             agents = _read_agents_full_for_project(agents_dir, company_dir)
             agent = next((a for a in agents if a['id'] == agent_id), None)
             self.send_json(agent or {"error": "not found"})
+
+        elif sub_path.startswith('agents/') and sub_path.endswith('/skills'):
+            # GET /api/{project}/agents/{id}/skills — 에이전트 할당 스킬 조회
+            parts = sub_path.split('/')
+            if len(parts) != 3:
+                self.send_json({"error": "invalid path"}, 400)
+                return
+            agent_id = parts[1]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"error": "invalid agent id"}, 400)
+                return
+            config = _read_config_for_project(company_dir)
+            agent_skills = []
+            for a in config.get('agents', []):
+                if isinstance(a, dict) and a.get('id') == agent_id:
+                    agent_skills = a.get('assigned_skills', [])
+                    break
+            self.send_json({"agent": agent_id, "skills": agent_skills})
 
         elif sub_path == 'retrospectives':
             retros = _read_retrospectives_for_project(company_dir)
@@ -2302,7 +3230,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             })
 
         elif sub_path == 'skills/installed':
-            skills = cached("global:skills_installed", 30, _scan_installed_skills)
+            skills = cached(f"{project_id}:skills_installed", 30, lambda: _scan_installed_skills(company_dir))
             self.send_json({"skills": skills})
 
         elif sub_path == 'skills/usage':
@@ -2371,6 +3299,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
             drift = _harness_drift_check(company_dir)
             self.send_json(drift)
 
+        elif sub_path == 'harness/summary':
+            summary = _harness_summary(company_dir)
+            self.send_json(summary)
+
+        # ━━━ Document Management GET ━━━
+
+        elif sub_path == 'docs':
+            # GET /api/{project}/docs — 관리 가능 문서 목록
+            docs = _list_docs(company_dir)
+            self.send_json({"docs": docs})
+
+        elif sub_path.startswith('docs/'):
+            # GET /api/{project}/docs/{type}/{id}
+            parts = sub_path.split('/')  # ['docs', type, id]
+            if len(parts) != 3:
+                self.send_json({"error": "invalid docs path, expected docs/{type}/{id}"}, 400)
+                return
+            doc_type = parts[1]
+            doc_id = parts[2]
+            if doc_type not in ('project', 'team', 'agent', 'rules'):
+                self.send_json({"error": f"invalid doc type: {doc_type}"}, 400)
+                return
+            if not _safe_doc_id(doc_id):
+                self.send_json({"error": "invalid doc id"}, 400)
+                return
+            filepath = _doc_path_for(company_dir, doc_type, doc_id)
+            if not filepath:
+                self.send_json({"error": "unknown doc type"}, 400)
+                return
+            content = ''
+            if os.path.isfile(filepath):
+                with open(filepath, encoding='utf-8') as f:
+                    content = f.read()
+            # 상대 경로 반환 (절대 경로 노출 방지)
+            project_root = os.path.dirname(os.path.dirname(company_dir))
+            rel_path = os.path.relpath(filepath, project_root) if filepath.startswith(project_root) else os.path.basename(filepath)
+            self.send_json({
+                "type": doc_type,
+                "id": doc_id,
+                "path": rel_path,
+                "content": content,
+                "updated_at": _file_updated_at(filepath),
+            })
 
         elif sub_path == 'sse':
             agent_output_dir = os.path.join(company_dir, 'agent-output')
@@ -2416,7 +3387,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         activity_watcher = FileWatcher(activity_log)
         agent_watchers = {}
         config = _read_config_for_project(company_dir)
-        for aid in config.get('agents', []):
+        for _a in config.get('agents', []):
+            aid = _a['id'] if isinstance(_a, dict) else _a
             p = os.path.join(agent_output_dir, f"{aid}.log")
             agent_watchers[aid] = FileWatcher(p)
 
@@ -2426,7 +3398,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if time.time() - last_config_check > 10:
                     last_config_check = time.time()
                     config = _read_config_for_project(company_dir)
-                    for aid in config.get('agents', []):
+                    for _a in config.get('agents', []):
+                        aid = _a['id'] if isinstance(_a, dict) else _a
                         if aid not in agent_watchers:
                             p = os.path.join(agent_output_dir, f"{aid}.log")
                             agent_watchers[aid] = FileWatcher(p)
@@ -2867,6 +3840,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             next_num = max([int(f[5:-5]) for f in existing] + [0]) + 1
             ticket_id = f"TASK-{next_num:03d}"
             now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            # visibility: string[] | null — 이 티켓을 볼 수 있는 에이전트/팀 ID 목록 (null=전체 공개)
+            _vis_raw = body.get('visibility')
+            _visibility = None
+            if isinstance(_vis_raw, list) and len(_vis_raw) > 0:
+                _visibility = [str(v).strip() for v in _vis_raw if str(v).strip()]
+                if not _visibility:
+                    _visibility = None
+
             ticket = {
                 "id": ticket_id,
                 "title": body.get('title', '').strip(),
@@ -2887,6 +3868,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "acceptance_criteria": body.get('acceptance_criteria', []),
                 "activity": [{"ts": now, "agent": body.get('created_by', 'user'), "action": "created"}],
                 "verify_passed": None,
+                "visibility": _visibility,
             }
             if not ticket['title']:
                 self.send_json({"ok": False, "error": "제목을 입력하세요"}, 400)
@@ -2906,7 +3888,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             _jsonl = os.path.join(company_dir, 'activity.jsonl')
             with open(_jsonl, 'a') as _jf:
                 _jf.write(json.dumps({"ts": now, "event": "ticket_created", "ticket": ticket_id, "agent": ticket['created_by'], "data": {"title": ticket['title'], "priority": ticket['priority']}}, ensure_ascii=False) + '\n')
-            self.send_json({"ok": True, "id": ticket_id, "ticket": ticket})
+            # ━━━ 목표 검증 (경고만, 차단 안 함) ━━━
+            goal_warning = _validate_goal(company_dir, ticket.get('goal'))
+            resp = {"ok": True, "id": ticket_id, "ticket": ticket}
+            if goal_warning:
+                resp["warning"] = goal_warning
+            self.send_json(resp)
 
         elif sub_path.startswith('tickets/') and sub_path.endswith('/update'):
             # POST /api/{project}/tickets/{id}/update — 상태/담당자 변경
@@ -2918,6 +3905,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             with open(ticket_file) as f: ticket = json.load(f)
             now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+            # ━━━ visibility 기반 권한 체크 ━━━
+            _ticket_vis = ticket.get('visibility')
+            if _ticket_vis is not None:
+                _req_agent = body.get('agent', '')
+                if _req_agent:
+                    # 에이전트의 팀도 확인
+                    _upd_config = _read_config_for_project(company_dir)
+                    _req_agent_team = None
+                    for _a in _upd_config.get('agents', []):
+                        if isinstance(_a, dict) and _a.get('id') == _req_agent:
+                            _req_agent_team = _a.get('team') or None
+                            break
+                    if _req_agent not in _ticket_vis and (not _req_agent_team or _req_agent_team not in _ticket_vis):
+                        _log_rejected_attempt(company_dir, 'ticket_visibility_rejected', {
+                            'ticket': ticket_id,
+                            'agent': _req_agent,
+                            'visibility': _ticket_vis,
+                        })
+                        self.send_json({
+                            "ok": False,
+                            "error": f"이 티켓에 대한 접근 권한이 없습니다 (visibility: {_ticket_vis})",
+                        }, 403)
+                        return
 
             # ━━━ 워크플로 강제 (status 변경 시) ━━━
             if 'status' in body and body['status'] != ticket.get('status'):
@@ -2979,6 +3990,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                 "wip_tickets": [t['id'] for t in agent_wip],
                             })
                             return
+                    # 팀별 WIP
+                    team_limit = wip_limits.get('per_team', 999)
+                    team_id = body.get('team') or ticket.get('team')
+                    if team_id:
+                        team_wip = [t for t in all_tickets if t.get('team') == team_id]
+                        if len(team_wip) >= team_limit:
+                            self.send_json({
+                                "ok": False,
+                                "error": f"팀 WIP 제한: {team_id}팀이 이미 {len(team_wip)}개 진행 중 (한도: {team_limit})",
+                                "wip_tickets": [t['id'] for t in team_wip],
+                            })
+                            return
 
             # ━━━ 품질 게이트 체크 (status 변경 시) ━━━
             if 'status' in body and body['status'] != ticket.get('status'):
@@ -2987,18 +4010,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 transition = f"{ticket['status']} → {body['status']}"
                 gate = gates.get(transition)
                 if gate:
-                    # AC 체크: acceptance_criteria가 정의되어 있는데 비어있으면 거부
                     criteria = gate.get('criteria', [])
                     failures = []
                     auto_verify = config.get('auto_verify', {})
                     for c in criteria:
                         c_lower = c.lower()
-                        if 'ac' in c_lower or '완료 기준' in c_lower or 'acceptance' in c_lower:
+                        # gate_type 명시 체크 (있으면 우선, 없으면 텍스트 폴백)
+                        gate_type = gate.get('gate_type', {}).get(c) if isinstance(gate.get('gate_type'), dict) else None
+
+                        if gate_type == 'auto_verify' or (gate_type is None and ('자동 검증' in c_lower or 'auto' in c_lower or 'test' in c_lower)):
+                            # 자동 검증 게이트: verify_passed 체크
+                            if auto_verify.get('gate_integration') and ticket.get('verify_passed') is not True:
+                                failures.append(c)
+
+                        elif gate_type == 'acceptance_criteria' or (gate_type is None and ('ac' in c_lower or '완료 기준' in c_lower or 'acceptance' in c_lower)):
+                            # AC 게이트: acceptance_criteria 비어있으면 거부
                             if not ticket.get('acceptance_criteria'):
                                 failures.append(c)
-                        elif ('자동 검증' in c_lower or 'auto' in c_lower or 'test' in c_lower) and auto_verify.get('gate_integration'):
-                            if ticket.get('verify_passed') is not True:
+
+                        elif gate_type == 'reviewer_approval' or (gate_type is None and ('리뷰어 승인' in c_lower or '리뷰어' in c_lower or 'reviewer' in c_lower or 'approval' in c_lower)):
+                            # 리뷰어 승인 게이트: QA 에이전트가 코멘트 또는 승인 활동을 남겼는지 확인
+                            qa_approved = False
+                            for act in ticket.get('activity', []):
+                                act_agent = act.get('agent', '')
+                                act_action = act.get('action', '')
+                                if _is_qa_agent(act_agent, config):
+                                    # QA 에이전트의 comment, approve, gate_approved 중 하나가 있으면 승인
+                                    if act_action in ('comment', 'approve', 'gate_approved', 'review_approved'):
+                                        qa_approved = True
+                                        break
+                            if not qa_approved:
                                 failures.append(c)
+
                     if failures:
                         ticket['activity'].append({
                             "ts": now,
@@ -3020,6 +4063,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         return
 
             changed = []
+            # visibility 필드 업데이트 (별도 처리: null 또는 string[] 검증)
+            if 'visibility' in body:
+                _new_vis = body['visibility']
+                _old_vis = ticket.get('visibility')
+                if _new_vis is None:
+                    if _old_vis is not None:
+                        ticket['visibility'] = None
+                        changed.append('visibility')
+                        ticket['activity'].append({
+                            "ts": now,
+                            "agent": body.get('agent', 'user'),
+                            "action": "visibility_change",
+                            "from": _old_vis,
+                            "to": None,
+                        })
+                elif isinstance(_new_vis, list):
+                    _cleaned = [str(v).strip() for v in _new_vis if str(v).strip()]
+                    _final_vis = _cleaned if _cleaned else None
+                    if _final_vis != _old_vis:
+                        ticket['visibility'] = _final_vis
+                        changed.append('visibility')
+                        ticket['activity'].append({
+                            "ts": now,
+                            "agent": body.get('agent', 'user'),
+                            "action": "visibility_change",
+                            "from": _old_vis,
+                            "to": _final_vis,
+                        })
+
             for field in ('status', 'priority', 'assignee', 'team', 'title', 'description', 'labels', 'acceptance_criteria', 'goal'):
                 if field in body and body[field] != ticket.get(field):
                     old_val = ticket.get(field)
@@ -3041,9 +4113,99 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if 'type' in body and body['type'] != ticket.get('type'):
                 ticket['type'] = body['type']
                 changed.append('type')
-            # verify_passed 업데이트
+            # ━━━ verify_passed 보호: 직접 설정 차단 ━━━
             if 'verify_passed' in body:
-                ticket['verify_passed'] = body['verify_passed']
+                x_source = self.headers.get('X-Source', '')
+                request_agent = body.get('agent', '')
+                force_flag = body.get('force', False)
+                config_for_vp = _read_config_for_project(company_dir)
+                allowed = False
+                reject_reason = ''
+
+                if x_source == 'auto-verify':
+                    # auto_verify 훅에서 온 요청 — 허용
+                    allowed = True
+                elif force_flag is True and _is_qa_agent(request_agent, config_for_vp):
+                    # QA 에이전트가 force: true로 명시 — 허용
+                    allowed = True
+                else:
+                    reject_reason = (
+                        f"verify_passed 직접 설정 거부: "
+                        f"agent={request_agent}, X-Source={x_source}, force={force_flag}"
+                    )
+
+                if allowed:
+                    ticket['verify_passed'] = body['verify_passed']
+                else:
+                    _log_rejected_attempt(company_dir, 'verify_passed_bypass_rejected', {
+                        'ticket': ticket_id,
+                        'agent': request_agent,
+                        'x_source': x_source,
+                        'force': force_flag,
+                        'attempted_value': body['verify_passed'],
+                        'reason': reject_reason,
+                    })
+                    self.send_json({
+                        "ok": False,
+                        "error": "verify_passed는 자동 검증 훅 또는 QA 에이전트(force:true)만 설정할 수 있습니다",
+                        "rejected_field": "verify_passed",
+                    }, 403)
+                    return
+
+            # ━━━ 부모 티켓 → done 전환 시 자식 완료 검증 ━━━
+            if 'status' in changed and ticket.get('status') == 'done':
+                children_ids = ticket.get('children', [])
+                if children_ids:
+                    incomplete_children = []
+                    for child_id in children_ids:
+                        child_file = os.path.join(tickets_dir, f"{child_id}.json")
+                        if os.path.exists(child_file):
+                            try:
+                                with open(child_file) as cf:
+                                    child = json.load(cf)
+                                if child.get('status') != 'done':
+                                    incomplete_children.append({
+                                        'id': child_id,
+                                        'status': child.get('status', 'unknown'),
+                                        'title': child.get('title', ''),
+                                    })
+                            except (json.JSONDecodeError, OSError):
+                                incomplete_children.append({
+                                    'id': child_id,
+                                    'status': 'unknown',
+                                    'title': '(읽기 실패)',
+                                })
+                        else:
+                            incomplete_children.append({
+                                'id': child_id,
+                                'status': 'missing',
+                                'title': '(파일 없음)',
+                            })
+                    if incomplete_children:
+                        _log_rejected_attempt(company_dir, 'parent_done_blocked', {
+                            'ticket': ticket_id,
+                            'incomplete_children': [c['id'] for c in incomplete_children],
+                            'agent': body.get('agent', 'user'),
+                        })
+                        # 상태 변경 되돌리기: ticket dict에서 status를 원래로 복원
+                        old_status = None
+                        for act in reversed(ticket.get('activity', [])):
+                            if act.get('action') == 'status_change':
+                                old_status = act.get('from')
+                                break
+                        if old_status:
+                            ticket['status'] = old_status
+                            # completed_steps에서 done 제거
+                            steps = ticket.get('completed_steps', [])
+                            if 'done' in steps:
+                                steps.remove('done')
+                        self.send_json({
+                            "ok": False,
+                            "error": f"부모 티켓을 done으로 전환할 수 없습니다: 미완료 하위 티켓 {len(incomplete_children)}개",
+                            "incomplete_children": incomplete_children,
+                        })
+                        return
+
             # 상태가 done으로 변경되면 연결된 goal의 티켓 목록에 추가
             if 'status' in changed and ticket.get('status') == 'done' and ticket.get('goal'):
                 goals_dir = os.path.join(company_dir, 'state', 'goals')
@@ -3063,7 +4225,192 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 for _cf in changed:
                     with open(_jsonl, 'a') as _jf:
                         _jf.write(json.dumps({"ts": now, "event": f"ticket_{_cf}_change", "ticket": ticket_id, "agent": body.get('agent', 'user'), "data": {"field": _cf, "to": ticket.get(_cf)}}, ensure_ascii=False) + '\n')
-            self.send_json({"ok": True, "changed": changed, "ticket": ticket})
+            # ━━━ 목표 검증 (goal 필드 변경 시, 경고만) ━━━
+            resp = {"ok": True, "changed": changed, "ticket": ticket}
+            if 'goal' in changed:
+                goal_warning = _validate_goal(company_dir, ticket.get('goal'))
+                if goal_warning:
+                    resp["warning"] = goal_warning
+            self.send_json(resp)
+
+        elif sub_path.startswith('tickets/') and sub_path.endswith('/force-transition'):
+            # POST /api/{project}/tickets/{id}/force-transition — 긴급 워크플로 건너뛰기
+            # 워크플로 required_before를 우회하되, 품질 게이트는 여전히 적용.
+            # 관리자 에이전트(orch, pm, protected:true)만 허용. 전체 감사 로그 기록.
+            ticket_id = sub_path.split('/')[1]
+            tickets_dir = os.path.join(company_dir, 'state', 'tickets')
+            ticket_file = os.path.join(tickets_dir, f"{ticket_id}.json")
+            if not os.path.exists(ticket_file):
+                self.send_json({"ok": False, "error": "ticket not found"}, 404)
+                return
+            with open(ticket_file) as f: ticket = json.load(f)
+            now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+            # ━━━ 헤더 검증: X-Source: force-override 필수 ━━━
+            x_source = self.headers.get('X-Source', '')
+            if x_source != 'force-override':
+                self.send_json({
+                    "ok": False,
+                    "error": "force-transition은 X-Source: force-override 헤더가 필요합니다",
+                }, 403)
+                return
+
+            # ━━━ 필수 필드 검증 ━━━
+            new_status = body.get('status', '').strip()
+            agent = body.get('agent', '').strip()
+            reason = body.get('reason', '').strip()
+            if not new_status:
+                self.send_json({"ok": False, "error": "status 필드 필수"}, 400)
+                return
+            if not agent:
+                self.send_json({"ok": False, "error": "agent 필드 필수"}, 400)
+                return
+            if not reason:
+                self.send_json({"ok": False, "error": "reason 필드 필수 (감사 로그용)"}, 400)
+                return
+
+            # ━━━ 관리자 에이전트 검증 ━━━
+            config = _read_config_for_project(company_dir)
+            if not _is_admin_agent(agent, config):
+                _log_rejected_attempt(company_dir, 'force_transition_denied', {
+                    'ticket': ticket_id,
+                    'agent': agent,
+                    'reason': reason,
+                    'attempted_status': new_status,
+                })
+                self.send_json({
+                    "ok": False,
+                    "error": f"권한 부족: {agent}은(는) 관리자 에이전트가 아닙니다 (orch, pm 또는 protected 에이전트만 가능)",
+                }, 403)
+                return
+
+            # ━━━ 동일 상태 전환 방지 ━━━
+            if new_status == ticket.get('status'):
+                self.send_json({
+                    "ok": False,
+                    "error": f"이미 {new_status} 상태입니다",
+                }, 400)
+                return
+
+            # ━━━ 품질 게이트 체크 (워크플로는 건너뛰되 품질은 유지) ━━━
+            gates = config.get('quality_gates', {})
+            transition = f"{ticket['status']} -> {new_status}"
+            gate = gates.get(transition)
+            if gate:
+                criteria = gate.get('criteria', [])
+                failures = []
+                auto_verify = config.get('auto_verify', {})
+                for c in criteria:
+                    c_lower = c.lower()
+                    gate_type = gate.get('gate_type', {}).get(c) if isinstance(gate.get('gate_type'), dict) else None
+
+                    if gate_type == 'auto_verify' or (gate_type is None and ('자동 검증' in c_lower or 'auto' in c_lower or 'test' in c_lower)):
+                        if auto_verify.get('gate_integration') and ticket.get('verify_passed') is not True:
+                            failures.append(c)
+                    elif gate_type == 'acceptance_criteria' or (gate_type is None and ('ac' in c_lower or '완료 기준' in c_lower or 'acceptance' in c_lower)):
+                        if not ticket.get('acceptance_criteria'):
+                            failures.append(c)
+                    elif gate_type == 'reviewer_approval' or (gate_type is None and ('리뷰어 승인' in c_lower or '리뷰어' in c_lower or 'reviewer' in c_lower or 'approval' in c_lower)):
+                        qa_approved = False
+                        for act in ticket.get('activity', []):
+                            act_agent = act.get('agent', '')
+                            act_action = act.get('action', '')
+                            if _is_qa_agent(act_agent, config):
+                                if act_action in ('comment', 'approve', 'gate_approved', 'review_approved'):
+                                    qa_approved = True
+                                    break
+                        if not qa_approved:
+                            failures.append(c)
+
+                if failures:
+                    ticket['activity'].append({
+                        "ts": now,
+                        "agent": agent,
+                        "action": "force_transition_gate_rejected",
+                        "gate": transition,
+                        "failures": failures,
+                        "reason": reason,
+                    })
+                    ticket['updated_at'] = now
+                    with open(ticket_file, 'w') as f:
+                        json.dump(ticket, f, ensure_ascii=False, indent=2)
+                    self.send_json({
+                        "ok": False,
+                        "error": f"품질 게이트 거부 (force-transition도 품질 게이트는 우회 불가): {transition}",
+                        "gate": transition,
+                        "failures": failures,
+                        "reviewer": gate.get('reviewer'),
+                    })
+                    return
+
+            # ━━━ 워크플로 건너뛰기 + 상태 전환 실행 ━━━
+            old_status = ticket.get('status')
+            # 건너뛴 워크플로 단계 계산
+            wf_templates = config.get('workflow_templates', {})
+            ticket_type = ticket.get('type', 'feature')
+            wf = wf_templates.get(ticket_type, {})
+            steps = wf.get('steps', [])
+            completed = set(ticket.get('completed_steps', []))
+            completed.add(old_status)
+            skipped_steps = []
+            if steps:
+                try:
+                    old_idx = steps.index(old_status) if old_status in steps else -1
+                    new_idx = steps.index(new_status) if new_status in steps else len(steps)
+                    if old_idx >= 0 and new_idx > old_idx:
+                        for i in range(old_idx + 1, new_idx):
+                            if steps[i] not in completed:
+                                skipped_steps.append(steps[i])
+                except ValueError:
+                    pass
+
+            ticket['status'] = new_status
+            # completed_steps에 현재 상태 추가
+            steps_list = ticket.setdefault('completed_steps', [])
+            if new_status not in steps_list:
+                steps_list.append(new_status)
+
+            # 감사 로그를 ticket.activity에 기록
+            ticket['activity'].append({
+                "ts": now,
+                "agent": agent,
+                "action": "force_transition",
+                "from": old_status,
+                "to": new_status,
+                "reason": reason,
+                "skipped_steps": skipped_steps,
+            })
+            ticket['updated_at'] = now
+            with open(ticket_file, 'w') as f:
+                json.dump(ticket, f, ensure_ascii=False, indent=2)
+
+            # activity.jsonl 감사 로그
+            _jsonl = os.path.join(company_dir, 'activity.jsonl')
+            with open(_jsonl, 'a') as _jf:
+                _jf.write(json.dumps({
+                    "ts": now,
+                    "event": "force_transition",
+                    "ticket": ticket_id,
+                    "agent": agent,
+                    "data": {
+                        "from": old_status,
+                        "to": new_status,
+                        "reason": reason,
+                        "skipped_steps": skipped_steps,
+                    },
+                }, ensure_ascii=False) + '\n')
+
+            self.send_json({
+                "ok": True,
+                "ticket": ticket,
+                "force_transition": {
+                    "from": old_status,
+                    "to": new_status,
+                    "skipped_steps": skipped_steps,
+                    "reason": reason,
+                    "agent": agent,
+                },
+            })
 
         elif sub_path.startswith('tickets/') and sub_path.endswith('/comment'):
             # POST /api/{project}/tickets/{id}/comment — 코멘트 추가
@@ -3415,6 +4762,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
             _write_skill_overrides(company_dir, overrides)
             self.send_json({"ok": True})
 
+        elif sub_path.startswith('agents/') and sub_path.endswith('/skills'):
+            # POST /api/{project}/agents/{id}/skills — 에이전트 스킬 할당 업데이트
+            parts = sub_path.split('/')
+            if len(parts) != 3:
+                self.send_json({"error": "invalid path"}, 400)
+                return
+            agent_id = parts[1]
+            if not re.match(r'^[a-z][a-z0-9-]*$', agent_id):
+                self.send_json({"ok": False, "error": "잘못된 에이전트 ID"}, 400)
+                return
+            new_skills = body.get('skills', [])
+            if not isinstance(new_skills, list):
+                self.send_json({"ok": False, "error": "skills 필드는 배열이어야 합니다"}, 400)
+                return
+            # config.json의 agents[].assigned_skills 업데이트
+            config_path = os.path.join(company_dir, 'config.json')
+            with CONFIG_LOCK:
+                config = _read_config_for_project(company_dir)
+                agents_list = config.get('agents', [])
+                found = False
+                for i, a in enumerate(agents_list):
+                    if isinstance(a, dict) and a.get('id') == agent_id:
+                        agents_list[i]['assigned_skills'] = new_skills
+                        found = True
+                        break
+                    elif not isinstance(a, dict) and str(a) == agent_id:
+                        # string → dict 승격
+                        agents_list[i] = {
+                            "id": agent_id,
+                            "engine": "claude",
+                            "agent_file": agent_id,
+                            "label": agent_id.replace('-', ' ').title(),
+                            "team": None,
+                            "protected": agent_id in ('ceo', 'orch'),
+                            "assigned_skills": new_skills,
+                        }
+                        found = True
+                        break
+                if not found:
+                    self.send_json({"ok": False, "error": f"에이전트 '{agent_id}'를 찾을 수 없습니다"}, 404)
+                    return
+                config['agents'] = agents_list
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
+            invalidate_cache(f"{project_id}:config")
+            invalidate_cache(f"{project_id}:states")
+            self.send_json({"ok": True, "skills": new_skills})
+
         elif sub_path == 'tools/profiles':
             profiles = body.get('profiles', {})
             _write_tool_profiles(company_dir, profiles)
@@ -3437,13 +4832,61 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 os.makedirs(os.path.join(company_dir, d), exist_ok=True)
             self.send_json({"ok": True, "created": True})
 
+        # ━━━ Document Management POST ━━━
+
+        elif sub_path.startswith('docs/') and sub_path.endswith('/save'):
+            # POST /api/{project}/docs/{type}/{id}/save
+            parts = sub_path.split('/')  # ['docs', type, id, 'save']
+            if len(parts) != 4:
+                self.send_json({"ok": False, "error": "invalid docs path, expected docs/{type}/{id}/save"}, 400)
+                return
+            doc_type = parts[1]
+            doc_id = parts[2]
+            if doc_type not in ('project', 'team', 'agent', 'rules'):
+                self.send_json({"ok": False, "error": f"invalid doc type: {doc_type}"}, 400)
+                return
+            if not _safe_doc_id(doc_id):
+                self.send_json({"ok": False, "error": "invalid doc id"}, 400)
+                return
+            content = body.get('content')
+            if content is None:
+                self.send_json({"ok": False, "error": "content 필드 필수"}, 400)
+                return
+            filepath = _doc_path_for(company_dir, doc_type, doc_id)
+            if not filepath:
+                self.send_json({"ok": False, "error": "unknown doc type"}, 400)
+                return
+            # 부모 디렉토리 생성
+            parent_dir = os.path.dirname(filepath)
+            os.makedirs(parent_dir, exist_ok=True)
+            # 파일 쓰기
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+            # activity.jsonl에 이벤트 기록
+            _append_activity_jsonl(company_dir, {
+                "event": "doc_updated",
+                "type": doc_type,
+                "id": doc_id,
+                "agent": "user",
+                "path": filepath,
+            })
+            self.send_json({
+                "ok": True,
+                "updated_at": _file_updated_at(filepath),
+            })
+
         else:
             self.send_json({"error": f"unknown POST sub-path: {sub_path}"}, 404)
 
+    def do_HEAD(self):
+        """HEAD는 GET과 동일 헤더, 본문 없이 응답."""
+        self.do_GET()
+
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Token')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Token, X-Source')
         self.end_headers()
 
 # ━━━ Main ━━━

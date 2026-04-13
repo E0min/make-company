@@ -18,6 +18,16 @@ echo ""
 echo -e "  ${BOLD}Virtual Company Installer${NC}"
 echo ""
 
+# 필수 도구 확인
+for tool in tmux python3; do
+  if ! command -v "$tool" &> /dev/null; then
+    echo -e "  ${RED}오류: '$tool' 설치 필요${NC}"
+    echo "  macOS: brew install $tool"
+    echo "  Ubuntu: sudo apt install $tool"
+    exit 1
+  fi
+done
+
 # 템플릿 존재 확인
 if [ ! -d "$TEMPLATE_DIR" ]; then
   echo -e "  ${RED}템플릿 디렉토리를 찾을 수 없습니다: $TEMPLATE_DIR${NC}"
@@ -90,12 +100,35 @@ cp "$TEMPLATE_DIR/dashboard/app.js"        "$TARGET_DIR/dashboard/" 2>/dev/null 
 cp "$TEMPLATE_DIR/dashboard/dag-render.js" "$TARGET_DIR/dashboard/" 2>/dev/null || true
 chmod +x "$TARGET_DIR/dashboard/server.py" 2>/dev/null
 
-# dashboard-next/out 복사 (15차 — Next.js + shadcn 정적 산출물)
+# dashboard.sh 복사 (대시보드 런처)
+cp "$TEMPLATE_DIR/dashboard.sh" "$TARGET_DIR/" 2>/dev/null || true
+
+# hooks/ 복사 (하네스 엔지니어링 — 필수)
+mkdir -p "$TARGET_DIR/hooks"
+cp "$TEMPLATE_DIR/hooks/"*.sh "$TARGET_DIR/hooks/" 2>/dev/null || true
+cp "$TEMPLATE_DIR/hooks/"*.py "$TARGET_DIR/hooks/" 2>/dev/null || true
+chmod +x "$TARGET_DIR/hooks/"*.sh 2>/dev/null || true
+
+# dashboard-next-v2/out 복사 (Next.js + shadcn 정적 산출물)
 # server.py가 이게 있으면 우선해서 서빙. 없으면 legacy로 폴백.
-if [ -d "$TEMPLATE_DIR/dashboard-next/out" ]; then
-  mkdir -p "$TARGET_DIR/dashboard-next/out"
-  cp -R "$TEMPLATE_DIR/dashboard-next/out/." "$TARGET_DIR/dashboard-next/out/" 2>/dev/null || \
-    rsync -a "$TEMPLATE_DIR/dashboard-next/out/" "$TARGET_DIR/dashboard-next/out/" 2>/dev/null || true
+if [ -d "$TEMPLATE_DIR/dashboard-next-v2/out" ]; then
+  mkdir -p "$TARGET_DIR/dashboard-next-v2/out"
+  cp -R "$TEMPLATE_DIR/dashboard-next-v2/out/." "$TARGET_DIR/dashboard-next-v2/out/" 2>/dev/null || \
+    rsync -a "$TEMPLATE_DIR/dashboard-next-v2/out/" "$TARGET_DIR/dashboard-next-v2/out/" 2>/dev/null || true
+fi
+
+# dashboard-next-v2 소스 복사 (개발/커스텀용)
+if [ -d "$TEMPLATE_DIR/dashboard-next-v2/components" ]; then
+  mkdir -p "$TARGET_DIR/dashboard-next-v2"
+  for sub in components lib hooks app public; do
+    [ -d "$TEMPLATE_DIR/dashboard-next-v2/$sub" ] && \
+      cp -R "$TEMPLATE_DIR/dashboard-next-v2/$sub" "$TARGET_DIR/dashboard-next-v2/" 2>/dev/null || true
+  done
+  # 설정 파일
+  for f in package.json tsconfig.json next.config.ts tailwind.config.ts postcss.config.mjs components.json; do
+    [ -f "$TEMPLATE_DIR/dashboard-next-v2/$f" ] && \
+      cp "$TEMPLATE_DIR/dashboard-next-v2/$f" "$TARGET_DIR/dashboard-next-v2/" 2>/dev/null || true
+  done
 fi
 
 # config.json 기본값 항상 복사 (참조용)
@@ -234,3 +267,10 @@ echo ""
 
 # setup 실행
 bash "$TARGET_DIR/setup.sh"
+
+echo ""
+echo -e "  ${BOLD}다음 단계:${NC}"
+echo "  1. 에이전트 시작:  bash $TARGET_DIR/run.sh"
+echo "  2. 대시보드:       python3 $TARGET_DIR/dashboard/server.py"
+echo "  3. 태스크 전달:    bash $TARGET_DIR/kickoff.sh '태스크 설명'"
+echo ""

@@ -203,11 +203,12 @@ export type SSEEvent = SSEActivityEvent | SSEAgentOutputEvent;
 
 // --- Generic result wrapper ---
 
-export interface ApiResult<T = unknown> {
+export type ApiResult<T = unknown> = {
   ok: boolean;
-  [key: string]: unknown;
   error?: string;
-}
+} & {
+  [K in keyof T]?: T[K];
+};
 
 // ━━━ Workflow Builder ━━━
 
@@ -287,6 +288,7 @@ export interface InstalledSkill {
   category: string;
   path: string;
   is_symlink: boolean;
+  keywords?: string[];
 }
 
 /** 스킬 사용 집계 */
@@ -368,6 +370,38 @@ export interface Retrospective {
   feedback: RetroFeedback[];
   summary: string;
   tags: string[];
+}
+
+// ━━━ Harness Summary (Hook/Gate/Skill/Workflow) ━━━
+
+export interface HarnessSummary {
+  hooks: {
+    agent_harness: { executions: number; last_run: string | null; warnings: number; blocks: number };
+    post_tool_use: { executions: number; commits_tagged: number; auto_verifies: number; auto_verify_pass: number; auto_verify_fail: number };
+    ticket_context: { executions: number; wip_warnings: number; goal_warnings: number };
+  };
+  gates: {
+    total_checks: number;
+    passed: number;
+    rejected: number;
+    recent: Array<{ ticket: string; gate: string; result: string; reason: string; ts: string }>;
+  };
+  skills: {
+    total_checks: number;
+    compliant: number;
+    missing: number;
+    enforcement: string;
+    by_agent: Record<string, { compliant: number; missing: number; compliant_skills?: string[]; missing_skills?: string[] }>;
+  };
+  workflow: {
+    templates: Record<string, { steps: string[]; required_before?: Record<string, string[]> }>;
+    gates: Record<string, { reviewer: string; criteria: string[] }>;
+    wip_limits: { global: number; per_agent: number; per_team: number };
+    step_skills: Record<string, Record<string, string[]>>;
+    skill_enforcement: string;
+    critic_loop: Record<string, string>;
+    reporting: Record<string, { reports_to: string | null; approves?: string[] }>;
+  };
 }
 
 // ━━━ v1 호환 타입 (다른 컴포넌트 마이그레이션 전까지 유지) ━━━

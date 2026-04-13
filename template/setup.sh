@@ -37,6 +37,10 @@ current_threshold=50
 printf "  auto-compact 임계치 (%%) [%s]: " "$current_threshold"
 read -r input_threshold
 THRESHOLD="${input_threshold:-$current_threshold}"
+# 숫자 검증 — 비숫자 입력 시 기본값 사용
+case "$THRESHOLD" in
+  ''|*[!0-9]*) THRESHOLD="$current_threshold" ;;
+esac
 
 # 4. 에이전트 구성
 echo ""
@@ -47,14 +51,23 @@ echo ""
 
 # config.json 생성/업데이트
 if [ -f "$CONFIG" ]; then
-  # 기존 config에서 agents 유지, 나머지만 업데이트
+  # 기존 config에서 agents 유지 + config.json.default 필드 병합
   python3 - "$CONFIG" "$PROJECT" "$SESSION" "$THRESHOLD" << 'PYEOF'
-import json, sys
+import json, sys, os
 
 config_path, project, session, threshold = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 
 with open(config_path) as f:
     config = json.load(f)
+
+# config.json.default에서 누락된 필드 병합 (Phase 10-14)
+default_path = os.path.join(os.path.dirname(config_path), 'config.json.default')
+if os.path.exists(default_path):
+    with open(default_path) as df:
+        defaults = json.load(df)
+    for key, val in defaults.items():
+        if key not in config:
+            config[key] = val
 
 config["project"] = project
 config["session_name"] = session
@@ -71,18 +84,32 @@ import json, sys
 
 config_path, project, session, threshold = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 
-config = {
-    "project": project,
-    "session_name": session,
-    "compact_threshold": threshold,
-    "cost_limit_tokens": 200000,
-    "cost_warning_tokens": 150000,
-    "skill_index_refresh_interval": 300,
-    "knowledge_inject": True,
-    "critic_loop": {},
-    "dashboard_port": 7777,
-    "dashboard_auto_open": True,
-    "agents": [
+import os
+# config.json.default가 있으면 기본값으로 사용 (Phase 10-14 필드 포함)
+default_path = os.path.join(os.path.dirname(config_path), 'config.json.default')
+if os.path.exists(default_path):
+    with open(default_path) as df:
+        config = json.load(df)
+    config["project"] = project
+    config["session_name"] = session
+    config["compact_threshold"] = threshold
+else:
+    config = {
+        "project": project,
+        "session_name": session,
+        "compact_threshold": threshold,
+        "cost_limit_tokens": 200000,
+        "cost_warning_tokens": 150000,
+        "skill_index_refresh_interval": 300,
+        "knowledge_inject": True,
+        "critic_loop": {},
+        "dashboard_port": 7777,
+        "dashboard_auto_open": True,
+    }
+
+# agents 기본값 (config.json.default에 없거나 비어있으면)
+if not config.get("agents"):
+    config["agents"] = [
         {"id": "orch",     "engine": "claude", "agent_file": "ceo",                "label": "Orch", "protected": True,
          "assigned_skills": ["autoplan", "plan-ceo-review", "office-hours", "retro", "ship", "land-and-deploy", "setup-deploy", "checkpoint", "learn", "make-company"]},
         {"id": "pm",       "engine": "claude", "agent_file": "product-manager",    "label": "PM",
@@ -102,7 +129,6 @@ config = {
         {"id": "gemini",   "engine": "gemini", "agent_file": "",                   "label": "Gemini",
          "assigned_skills": ["codex", "review", "cso", "investigate", "plan-eng-review", "debate", "discussion"]}
     ]
-}
 
 with open(config_path, "w") as f:
     json.dump(config, f, ensure_ascii=False, indent=2)

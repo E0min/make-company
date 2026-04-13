@@ -94,7 +94,7 @@ async function postJSON<T = unknown>(
     const data = (await res.json().catch(() => ({}))) as ApiResult<T>;
     return { ...data, ok: res.ok && data.ok !== false };
   } catch (e) {
-    return { ok: false, error: String(e) };
+    return { ok: false, error: String(e) } as ApiResult<T>;
   }
 }
 
@@ -191,7 +191,11 @@ export const api = {
     postJSON<{ ok: boolean }>(`${apiBase()}/heartbeats`, body),
 
   insights: () =>
-    getJSON<{ total_events: number; agent_activity: Record<string, number>; top_agents: [string, number][]; gate_rejections: number; cycle_times: Array<{ ticket: string; title: string; seconds: number }>; avg_cycle_seconds: number; status_counts: Record<string, number> }>(`${apiBase()}/insights`),
+    getJSON<{ total_events: number; agent_activity: Record<string, number>; top_agents: [string, number][]; gate_rejections: number; cycle_times: Array<{ ticket: string; title: string; seconds: number }>; avg_cycle_seconds: number; status_counts: Record<string, number>; suggestions?: Array<{ type: string; message: string; severity: string; ticket?: string; agent?: string }> }>(`${apiBase()}/insights`),
+
+  /** 팀 메트릭 (팀별 티켓 수/WIP/이벤트) */
+  teamMetrics: () =>
+    getJSON<{ teams: Record<string, { tickets: Record<string, number>; events_24h: number; agents: number; wip_usage: string }> }>(`${apiBase()}/team-metrics`),
 
   // ── Org Chart ──
 
@@ -239,6 +243,15 @@ export const api = {
   ticket: (id: string) =>
     getJSON<import("./types").Ticket>(`${apiBase()}/tickets/${id}`),
 
+  /** 티켓 허용 전환 목록 (서버 기반 워크플로/WIP/게이트 검증) */
+  ticketTransitions: (id: string) =>
+    getJSON<{
+      current: string;
+      transitions: Array<{ status: string; allowed: boolean; reason?: string }>;
+      wip_warning?: string;
+      blocked_children?: string[];
+    }>(`${apiBase()}/tickets/${id}/transitions`),
+
   /** 티켓 생성 */
   ticketCreate: (body: {
     title: string;
@@ -256,7 +269,7 @@ export const api = {
 
   /** 티켓 업데이트 (상태/담당자/등 변경) */
   ticketUpdate: (id: string, body: Record<string, unknown>) =>
-    postJSON<{ ok: boolean; changed?: string[]; ticket?: import("./types").Ticket }>(`${apiBase()}/tickets/${id}/update`, body),
+    postJSON<{ ok: boolean; changed?: string[]; ticket?: import("./types").Ticket; missing_steps?: string[]; wip_tickets?: string[]; failures?: string[]; ticket_type?: string }>(`${apiBase()}/tickets/${id}/update`, body),
 
   /** 티켓 코멘트 추가 */
   ticketComment: (id: string, message: string, agent?: string) =>
@@ -305,7 +318,7 @@ export const api = {
 
   /** AI로 에이전트 .md 생성 */
   agentsGenerate: (role: string, id?: string) =>
-    postJSON(`${apiBase()}/agents/generate`, { role, id: id ?? "" }),
+    postJSON<{ content?: string }>(`${apiBase()}/agents/generate`, { role, id: id ?? "" }),
 
   /** 에이전트 삭제 */
   agentsDelete: (id: string) => postJSON(`${apiBase()}/agents/delete`, { id }),
@@ -367,6 +380,20 @@ export const api = {
   terminalWrite: (agent: string, input: string) =>
     postJSON<{ ok: boolean }>(`${apiBase()}/terminal/${agent}/write`, { input }),
 
+  // ━━━ Docs API ━━━
+
+  /** 문서 목록 조회 */
+  docs: () =>
+    getJSON<{ docs: Array<{ type: string; id: string; path: string; label: string; updated_at: string }> }>(`${apiBase()}/docs`),
+
+  /** 문서 내용 조회 */
+  docContent: (type: string, id: string) =>
+    getJSON<{ type: string; id: string; path: string; content: string; updated_at: string }>(`${apiBase()}/docs/${type}/${id}`),
+
+  /** 문서 저장 */
+  docSave: (type: string, id: string, content: string) =>
+    postJSON<{ ok: boolean; updated_at?: string }>(`${apiBase()}/docs/${type}/${id}/save`, { content }),
+
   // ━━━ Analytics API ━━━
 
   analyticsActivity: (limit = 200, event?: string, agent?: string) => {
@@ -415,6 +442,14 @@ export const api = {
   skillsCandidates: () =>
     getJSON<{ candidates: import("./types").SkillCandidate[] }>(`${apiBase()}/skills/candidates`),
 
+  /** 에이전트 할당 스킬 조회 */
+  agentSkills: (agentId: string) =>
+    getJSON<{ agent: string; skills: string[] }>(`${apiBase()}/agents/${agentId}/skills`),
+
+  /** 에이전트 스킬 할당 업데이트 */
+  agentSkillsUpdate: (agentId: string, skills: string[]) =>
+    postJSON<{ ok: boolean; skills?: string[] }>(`${apiBase()}/agents/${agentId}/skills`, { skills }),
+
   skillConfig: (skill: string) =>
     getJSON<{ skill: string; overrides: Record<string, unknown> }>(`${apiBase()}/skills/${skill}/config`),
 
@@ -436,4 +471,9 @@ export const api = {
 
   improvements: () =>
     getJSON<{ improvements: import("./types").Improvement[] }>(`${apiBase()}/improvements`),
+
+  // ━━━ Harness API ━━━
+
+  harnessSummary: () =>
+    getJSON<import("./types").HarnessSummary>(`${apiBase()}/harness/summary`),
 };

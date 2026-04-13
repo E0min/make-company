@@ -4,9 +4,13 @@
   "compact_threshold": 50,
   "cost_limit_tokens": 200000,
   "cost_warning_tokens": 150000,
+  "skill_enforcement": "advisory",
   "skill_index_refresh_interval": 300,
   "knowledge_inject": true,
-  "critic_loop": {},
+  "critic_loop": {
+    "frontend": "fe-qa",
+    "backend": "be-qa"
+  },
   "dashboard_port": 7777,
   "lazy_spawn": true,
   "max_concurrent_agents": 4,
