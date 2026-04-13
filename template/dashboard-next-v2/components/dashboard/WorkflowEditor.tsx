@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
   Tooltip,
@@ -10,10 +11,12 @@ import {
   TooltipContent,
   TooltipProvider,
 } from "@/components/ui/tooltip";
-import { Save, Trash2, Play, Plus, FileText, LayoutGrid } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
+import { Save, Trash2, Play, Plus, FileText, LayoutGrid, ChevronDown, ChevronRight, Wrench, X } from "lucide-react";
 import WorkflowCanvas from "./workflow/WorkflowCanvas";
 import { WorkflowPromptDialog } from "./WorkflowPromptDialog";
-import type { WorkflowDefinition, WorkflowStep } from "@/lib/types";
+import type { WorkflowDefinition, WorkflowStep, InstalledSkill } from "@/lib/types";
 
 interface Props {
   definition: WorkflowDefinition | null;
@@ -37,6 +40,42 @@ export function WorkflowEditor({
   projectActive,
 }: Props) {
   const [promptStep, setPromptStep] = useState<string | null>(null);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [installedSkills, setInstalledSkills] = useState<InstalledSkill[]>([]);
+  const [skillSearch, setSkillSearch] = useState("");
+
+  // 설치된 스킬 목록 로드
+  useEffect(() => {
+    api.skillsInstalled().then((res) => {
+      if ((res as { skills?: InstalledSkill[] }).skills) {
+        setInstalledSkills((res as { skills: InstalledSkill[] }).skills);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handleToggleSkill = useCallback((stepId: string, skillName: string) => {
+    if (!definition) return;
+    const next = definition.steps.map((s) => {
+      if (s.id !== stepId) return s;
+      const current = s.skills ?? [];
+      const has = current.includes(skillName);
+      return { ...s, skills: has ? current.filter((sk) => sk !== skillName) : [...current, skillName] };
+    });
+    onChange({ ...definition, steps: next });
+  }, [definition, onChange]);
+
+  const handleRemoveSkill = useCallback((stepId: string, skillName: string) => {
+    if (!definition) return;
+    const next = definition.steps.map((s) => {
+      if (s.id !== stepId) return s;
+      return { ...s, skills: (s.skills ?? []).filter((sk) => sk !== skillName) };
+    });
+    onChange({ ...definition, steps: next });
+  }, [definition, onChange]);
+
+  const filteredSkills = installedSkills.filter((sk) =>
+    !skillSearch || sk.name.toLowerCase().includes(skillSearch.toLowerCase())
+  );
 
   // 빈 상태
   if (!definition) {
@@ -147,13 +186,105 @@ export function WorkflowEditor({
         )}
       </div>
 
-      {/* 하단 toolbar */}
+      {/* ── 단계별 스킬 설정 (접이식) ── */}
+      {definition.steps.length > 0 && (
+        <>
+          <Separator />
+          <div className="py-2">
+            <button
+              type="button"
+              onClick={() => setSkillsOpen((v) => !v)}
+              className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md hover:bg-muted/50 transition-colors text-left"
+            >
+              {skillsOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              <Wrench className="size-3.5 text-indigo-400" />
+              <span className="text-xs font-semibold">단계별 스킬</span>
+              <span className="text-xs text-muted-foreground ml-auto">
+                {definition.steps.reduce((n, s) => n + (s.skills?.length ?? 0), 0)}개 배정
+              </span>
+            </button>
+
+            {skillsOpen && (
+              <div className="mt-2 space-y-3 px-1">
+                {/* 스킬 검색 */}
+                <Input
+                  value={skillSearch}
+                  onChange={(e) => setSkillSearch(e.target.value)}
+                  placeholder="스킬 검색..."
+                  className="h-7 text-xs"
+                />
+
+                {/* 단계별 스킬 배정 */}
+                {definition.steps.map((step) => (
+                  <div key={step.id} className="rounded-md border border-border/50 p-2.5 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold font-mono">{step.id}</span>
+                      <span className="text-xs text-muted-foreground">({step.agent || "미배정"})</span>
+                    </div>
+
+                    {/* 현재 배정된 스킬 */}
+                    {(step.skills?.length ?? 0) > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {step.skills!.map((sk) => (
+                          <Badge
+                            key={sk}
+                            variant="outline"
+                            className="text-xs font-mono gap-1 bg-indigo-400/10 text-indigo-400 border-indigo-400/30"
+                          >
+                            {sk}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveSkill(step.id, sk)}
+                              className="hover:text-red-400 transition-colors"
+                            >
+                              <X className="size-2.5" />
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 추가 가능한 스킬 (클릭으로 토글) */}
+                    <div className="flex flex-wrap gap-1">
+                      {filteredSkills
+                        .filter((sk) => !(step.skills ?? []).includes(sk.name))
+                        .slice(0, 20)
+                        .map((sk) => (
+                          <button
+                            key={sk.name}
+                            type="button"
+                            onClick={() => handleToggleSkill(step.id, sk.name)}
+                            className={cn(
+                              "px-1.5 py-0.5 rounded text-xs font-mono",
+                              "border border-border/40 text-muted-foreground",
+                              "hover:border-indigo-400/50 hover:text-indigo-400 hover:bg-indigo-400/5",
+                              "transition-colors"
+                            )}
+                          >
+                            + {sk.name}
+                          </button>
+                        ))}
+                      {filteredSkills.filter((sk) => !(step.skills ?? []).includes(sk.name)).length > 20 && (
+                        <span className="text-xs text-muted-foreground py-0.5">
+                          +{filteredSkills.filter((sk) => !(step.skills ?? []).includes(sk.name)).length - 20}개 더...
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* 하단 toolbar: 스텝 추가 */}
       {definition.steps.length > 0 && (
         <>
           <Separator />
           <div className="py-2">
             <Button variant="outline" size="sm" onClick={handleAddStep} className="w-full gap-1.5">
-              <Plus className="size-3.5" /> Add Step
+              <Plus className="size-3.5" /> 스텝 추가
             </Button>
           </div>
         </>

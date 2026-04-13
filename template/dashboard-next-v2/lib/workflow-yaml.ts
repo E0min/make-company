@@ -155,6 +155,17 @@ export function parseWorkflowYaml(raw: string): WorkflowDefinition {
         continue;
       }
 
+      // skills: [a, b]
+      const skillsMatch = cur.match(/^\s+skills:\s*\[([^\]]*)\]/);
+      if (skillsMatch) {
+        step.skills = skillsMatch[1]
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        i++;
+        continue;
+      }
+
       // output:
       const outputMatch = cur.match(/^\s+output:\s*(.+)/);
       if (outputMatch) {
@@ -204,6 +215,11 @@ export function serializeWorkflowYaml(def: WorkflowDefinition): string {
     }
 
     lines.push(`    output: ${step.output}`);
+
+    // skills → 플로우 시퀀스 (비어있으면 생략)
+    if (step.skills && step.skills.length > 0) {
+      lines.push(`    skills: [${step.skills.join(", ")}]`);
+    }
     lines.push("");
   }
 

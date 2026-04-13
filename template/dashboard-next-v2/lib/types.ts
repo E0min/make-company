@@ -219,6 +219,7 @@ export interface WorkflowStep {
   prompt: string;
   depends_on: string[];
   output: string;
+  skills?: string[];
 }
 
 export interface WorkflowDefinition {
