@@ -34,7 +34,7 @@ interface Props {
  * xterm.js로 에이전트 터미널을 실시간 표시 + 직접 키보드 입력.
  *
  * 라이프사이클:
- * 1. 마운트 → POST /terminal/{agent}/open (cols/rows 전달 → tmux 리사이즈) → 스크롤백 로드
+ * 1. 마운트 → POST /terminal/{agent}/open → tmux pane 크기 수신 → xterm.js가 그 크기에 맞춤
  * 2. 500ms 간격으로 GET /terminal/{agent}/read?since={offset} 폴링
  * 3. xterm onData → POST /terminal/{agent}/write (raw 키 입력 → tmux send-keys -l)
  * 4. 언마운트 → POST /terminal/{agent}/close
@@ -123,14 +123,21 @@ export function TerminalPanel({ projectId, agentId, onClose }: Props) {
       /* 터미널 클릭 시 포커스 (키보드 입력 받기 위해) */
       term.focus();
 
-      /* 터미널 세션 열기 (웹 터미널 cols/rows 전달 → tmux pane 리사이즈) */
+      /* 터미널 세션 열기 — tmux pane 크기를 읽어서 xterm.js가 맞춤 (tmux를 리사이즈하지 않음) */
       try {
-        const res = await api.terminalOpen(agent, term.cols, term.rows);
+        const res = await api.terminalOpen(agent);
         if (cancelled) return;
 
         if (res.ok) {
           setConnected(true);
           setError(null);
+
+          /* ── tmux pane 크기에 xterm.js 맞추기 ── */
+          const tmuxCols = (res as { cols?: number }).cols;
+          const tmuxRows = (res as { rows?: number }).rows;
+          if (tmuxCols && tmuxRows && term) {
+            term.resize(tmuxCols, tmuxRows);
+          }
 
           /* 스크롤백이 있으면 출력 */
           const scrollback = (res as { scrollback?: string }).scrollback;
@@ -146,9 +153,12 @@ export function TerminalPanel({ projectId, agentId, onClose }: Props) {
             waitFrames(3, () => {
               if (cancelled || !termRef.current) return;
               termRef.current.reset();
+              /* tmux 크기 재적용 후 스크롤백 렌더 */
+              if (tmuxCols && tmuxRows) {
+                termRef.current.resize(tmuxCols, tmuxRows);
+              }
               termRef.current.write(scrollback, () => {
                 if (termRef.current) termRef.current.scrollToBottom();
-                if (fitAddonRef.current) fitAddonRef.current.fit();
               });
             });
           }

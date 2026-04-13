@@ -227,7 +227,11 @@ def _agent_short_label(agent_id):
     return labels.get(agent_id, agent_id)
 
 def _terminal_open(project_id, agent_id, cols=None, rows=None):
-    """tmux pipe-pane 시작 + 스크롤백 반환. cols/rows가 있으면 pane 리사이즈."""
+    """tmux pipe-pane 시작 + 스크롤백 반환 + tmux pane 실제 크기 반환.
+
+    웹 터미널은 tmux를 리사이즈하지 않음 — tmux 크기를 읽어서 xterm.js가 맞춤.
+    이렇게 해야 실제 터미널(CLI)의 크기가 줄어들지 않음.
+    """
     session = f"vc-{project_id}"
     # tmux 세션 존재 확인
     if not _check_tmux_session(project_id):
@@ -252,9 +256,44 @@ def _terminal_open(project_id, agent_id, cols=None, rows=None):
     pane_target = f"{session}:{win_idx}"
     pipe_file = f"/tmp/vc-term-{project_id}-{agent_id}.log"
 
-    # aggressive-resize: 각 윈도우가 독립적으로 크기를 가질 수 있게 (세션 전체 크기 영향 방지)
-    subprocess.run(['tmux', 'set-window-option', '-t', pane_target, 'aggressive-resize', 'on'],
-                   capture_output=True, timeout=2)
+    # ── tmux pane 실제 크기 읽기 (웹 터미널이 이 크기에 맞춤) ──
+    pane_cols, pane_rows = 200, 50  # 기본값
+    try:
+        size_result = subprocess.run(
+            ['tmux', 'display-message', '-t', pane_target, '-p', '#{pane_width} #{pane_height}'],
+            capture_output=True, text=True, timeout=2
+        )
+        if size_result.returncode == 0:
+            parts = size_result.stdout.strip().split()
+            if len(parts) == 2:
+                pane_cols, pane_rows = int(parts[0]), int(parts[1])
+    except Exception:
+        pass
+
+    # ── window-size가 manual로 잠겨있으면 latest로 복원 (이전 버그 복구) ──
+    try:
+        ws_result = subprocess.run(
+            ['tmux', 'show-window-option', '-t', pane_target, '-v', 'window-size'],
+            capture_output=True, text=True, timeout=2
+        )
+        if ws_result.returncode == 0 and ws_result.stdout.strip() == 'manual':
+            # 1) 세션 기본 크기로 리사이즈 (-A: 가장 큰 클라이언트에 맞춤)
+            subprocess.run(['tmux', 'resize-window', '-t', pane_target, '-A'],
+                           capture_output=True, timeout=2)
+            # 2) resize-window가 manual을 다시 설정하므로, 반드시 그 후에 latest로 변경
+            subprocess.run(['tmux', 'set-window-option', '-t', pane_target, 'window-size', 'latest'],
+                           capture_output=True, timeout=2)
+            # 복원 후 다시 읽기
+            size_result = subprocess.run(
+                ['tmux', 'display-message', '-t', pane_target, '-p', '#{pane_width} #{pane_height}'],
+                capture_output=True, text=True, timeout=2
+            )
+            if size_result.returncode == 0:
+                parts = size_result.stdout.strip().split()
+                if len(parts) == 2:
+                    pane_cols, pane_rows = int(parts[0]), int(parts[1])
+    except Exception:
+        pass
 
     # 기존 pipe 해제
     subprocess.run(['tmux', 'pipe-pane', '-t', pane_target], capture_output=True, timeout=2)
@@ -281,7 +320,7 @@ def _terminal_open(project_id, agent_id, cols=None, rows=None):
         initial_offset = os.path.getsize(pipe_file) if os.path.exists(pipe_file) else 0
         TERMINAL_SESSIONS[key] = {"pipe_file": pipe_file, "pane_target": pane_target}
 
-    return {"scrollback": scrollback, "offset": initial_offset}, None
+    return {"scrollback": scrollback, "offset": initial_offset, "cols": pane_cols, "rows": pane_rows}, None
 
 def _terminal_read(project_id, agent_id, since=0):
     """pipe-pane 출력에서 since 이후 새 내용 반환"""
