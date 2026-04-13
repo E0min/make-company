@@ -1,5 +1,5 @@
 # npm-specific ignore — overrides .gitignore for `npm pack`/`publish`.
-# Goal: ship the prebuilt Next.js static export (template/dashboard-next/out/)
+# Goal: ship the prebuilt Next.js static export (template/dashboard-next-v2/out/)
 # but exclude development cruft.
 
 # Dev / source artifacts we don't ship to npm consumers
@@ -8,12 +8,11 @@
 .claude/
 examples/
 node_modules/
-template/dashboard-next/node_modules/
-template/dashboard-next/.next/
-template/dashboard-next/.turbo/
-template/dashboard-next/node_modules
-template/dashboard-next/AGENTS.md
-template/dashboard-next/CLAUDE.md
+template/dashboard-next-v2/node_modules/
+template/dashboard-next-v2/.next/
+template/dashboard-next-v2/.turbo/
+template/dashboard-next-v2/AGENTS.md
+template/dashboard-next-v2/CLAUDE.md
 
 # Internal docs that aren't needed at runtime
 DESIGN.md

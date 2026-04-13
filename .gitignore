@@ -1,4 +1,4 @@
-# Virtual Company runtime state (생성되는 파일들)
+# ── Virtual Company runtime state (생성되는 파일들) ──
 .claude/company/inbox/
 .claude/company/outbox/
 .claude/company/channel/
@@ -11,4 +11,52 @@
 .claude/company/.kickoff_*
 .claude/company/skill-index.json
 .claude/company/config.json.default
+.claude/company/activity.log
+.claude/company/activity.jsonl
+.claude/company/agent-memory/
+.claude/company/agent-output/
+.claude/company/artifacts/
+.claude/company/.version
+.claude/company/analytics/
+.claude/company/improvements/
+.claude/company/retrospectives/
+
+# ── Local install artifacts (install.sh 산출물 — template/만 트래킹) ──
+.claude/company/config.json
+.claude/company/agents/
+.claude/company/agents-library/
+.claude/company/scripts/
+.claude/company/hooks/
+.claude/company/presets/
+.claude/company/workflows/
+.claude/company/test/
+.claude/company/knowledge-init/
+.claude/company/dashboard/
+.claude/company/dashboard-next/
+.claude/company/dashboard-next-v2/
+.claude/company/*.sh
+.claude/agents/
+
+# ── Build artifacts ──
+**/out/
 __pycache__/
+*.pyc
+node_modules/
+.next/
+
+# ── OS / editor ──
+.DS_Store
+*.swp
+*.swo
+*~
+
+# ── Environment ──
+.env
+.env.*
+.env.local
+
+# ── Backups ──
+template/.backup-*/
+
+# ── Session-specific ──
+SESSION_PROGRESS.md
