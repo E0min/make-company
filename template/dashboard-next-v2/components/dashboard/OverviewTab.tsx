@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -25,10 +25,22 @@ import {
   Download,
   Ticket,
   Play,
+  Pause,
+  RotateCcw,
+  MessageSquare,
   BarChart3,
   AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
 import { LiveFlowGraph } from "./LiveFlowGraph";
 import { OrgChartView } from "./OrgChartView";
 import { AgentDetailPopover } from "./AgentDetailPopover";
@@ -57,6 +69,51 @@ export function OverviewTab({ state, agents, activityEntries, onOpenTerminal, on
   const [teamMetrics, setTeamMetrics] = useState<TeamMetrics | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<{ id: string; position: { x: number; y: number } } | null>(null);
   const gridContainerRef = useRef<HTMLDivElement>(null);
+
+  // ── 에이전트 제어 상태 ──
+  const [injectTarget, setInjectTarget] = useState<string | null>(null);
+  const [injectMessage, setInjectMessage] = useState("");
+
+  const handlePauseAll = useCallback(async () => {
+    const res = await api.agentsPause();
+    if (res.ok) toast.success(`전체 일시정지 (${res.paused?.length ?? 0}개)`);
+    else toast.error("일시정지 실패");
+  }, []);
+
+  const handleResumeAll = useCallback(async () => {
+    const res = await api.agentsResume();
+    if (res.ok) toast.success(`전체 재개 (${res.resumed?.length ?? 0}개)`);
+    else toast.error("재개 실패");
+  }, []);
+
+  const handlePause = useCallback(async (agentId: string) => {
+    const res = await api.agentsPause(agentId);
+    if (res.ok) toast.success(`${agentId} 일시정지`);
+    else toast.error(`${agentId} 일시정지 실패`);
+  }, []);
+
+  const handleRestart = useCallback(async (agentId: string) => {
+    const res = await api.agentsRestart(agentId);
+    if (res.ok) toast.success(`${agentId} 재시작`);
+    else toast.error(`${agentId} 재시작 실패`);
+  }, []);
+
+  const openInjectDialog = useCallback((agentId: string) => {
+    setInjectTarget(agentId);
+    setInjectMessage("");
+  }, []);
+
+  const handleInjectSend = useCallback(async () => {
+    if (!injectTarget || !injectMessage.trim()) return;
+    const res = await api.agentsInject(injectTarget, injectMessage.trim());
+    if (res.ok) {
+      toast.success(`${injectTarget}에 메시지 주입 완료`);
+      setInjectTarget(null);
+      setInjectMessage("");
+    } else {
+      toast.error("메시지 주입 실패");
+    }
+  }, [injectTarget, injectMessage]);
 
   // viewMode localStorage 동기화
   useEffect(() => {
@@ -120,6 +177,18 @@ export function OverviewTab({ state, agents, activityEntries, onOpenTerminal, on
         <KpiCard icon={<Clock className="size-4 text-zinc-400" />} label={projectActive ? "Idle" : "Offline"} value={projectActive ? idle : offline} />
         <KpiCard icon={<Activity className="size-4 text-amber-400" />} label="Events" value={eventCount} />
       </div>
+
+      {/* Agent Control Bar */}
+      {agentStatuses.length > 0 && projectActive && (
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handlePauseAll} className="gap-1.5 text-xs">
+            <Pause className="size-3" /> 전체 일시정지
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleResumeAll} className="gap-1.5 text-xs">
+            <Play className="size-3" /> 전체 재개
+          </Button>
+        </div>
+      )}
 
       {/* Agent Grid Header + 뷰 모드 토글 */}
       {agentStatuses.length > 0 && (
@@ -235,7 +304,7 @@ export function OverviewTab({ state, agents, activityEntries, onOpenTerminal, on
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                   {members.map((agent) => (
-                    <AgentStatusCard key={agent.id} agent={agent} teams={teams} onOpenTerminal={onOpenTerminal} onCardClick={handleCardClick} />
+                    <AgentStatusCard key={agent.id} agent={agent} teams={teams} onOpenTerminal={onOpenTerminal} onCardClick={handleCardClick} onPause={handlePause} onRestart={handleRestart} onInject={openInjectDialog} projectActive={projectActive} />
                   ))}
                 </div>
               </div>
@@ -259,7 +328,7 @@ export function OverviewTab({ state, agents, activityEntries, onOpenTerminal, on
         <div ref={gridContainerRef} className="relative">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
             {agentStatuses.map((agent) => (
-              <AgentStatusCard key={agent.id} agent={agent} teams={teams} onOpenTerminal={onOpenTerminal} onCardClick={handleCardClick} />
+              <AgentStatusCard key={agent.id} agent={agent} teams={teams} onOpenTerminal={onOpenTerminal} onCardClick={handleCardClick} onPause={handlePause} onRestart={handleRestart} onInject={openInjectDialog} projectActive={projectActive} />
             ))}
           </div>
 
@@ -276,6 +345,34 @@ export function OverviewTab({ state, agents, activityEntries, onOpenTerminal, on
           )}
         </div>
       ) : null}
+
+      {/* Inject Message Dialog */}
+      <Dialog open={injectTarget !== null} onOpenChange={(open) => { if (!open) setInjectTarget(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-sm">
+              메시지 주입 — <span className="font-mono text-violet-400">{injectTarget}</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Input
+              placeholder="에이전트에게 전달할 메시지..."
+              value={injectMessage}
+              onChange={(e) => setInjectMessage(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleInjectSend(); }}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setInjectTarget(null)}>
+              취소
+            </Button>
+            <Button size="sm" onClick={handleInjectSend} disabled={!injectMessage.trim()}>
+              <MessageSquare className="size-3 mr-1.5" /> 전송
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -322,11 +419,19 @@ function AgentStatusCard({
   teams,
   onOpenTerminal,
   onCardClick,
+  onPause,
+  onRestart,
+  onInject,
+  projectActive,
 }: {
   agent: StateResponse["agents"][number];
   teams: StateResponse["teams"];
   onOpenTerminal?: (agentId: string) => void;
   onCardClick?: (agentId: string, rect: DOMRect) => void;
+  onPause?: (agentId: string) => void;
+  onRestart?: (agentId: string) => void;
+  onInject?: (agentId: string) => void;
+  projectActive?: boolean;
 }) {
   const c = stateColor(agent.state);
   const teamLabel = agent.team && teams[agent.team] ? teams[agent.team].label : null;
@@ -354,6 +459,43 @@ function AgentStatusCard({
             )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            {projectActive && (
+              <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                {onPause && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="size-6 p-0 text-muted-foreground hover:text-foreground"
+                    onClick={(e) => { e.stopPropagation(); onPause(agent.id); }}
+                    title="일시정지"
+                  >
+                    <Pause className="size-3" />
+                  </Button>
+                )}
+                {onRestart && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="size-6 p-0 text-muted-foreground hover:text-foreground"
+                    onClick={(e) => { e.stopPropagation(); onRestart(agent.id); }}
+                    title="재시작"
+                  >
+                    <RotateCcw className="size-3" />
+                  </Button>
+                )}
+                {onInject && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="size-6 p-0 text-muted-foreground hover:text-foreground"
+                    onClick={(e) => { e.stopPropagation(); onInject(agent.id); }}
+                    title="메시지 주입"
+                  >
+                    <MessageSquare className="size-3" />
+                  </Button>
+                )}
+              </div>
+            )}
             {onOpenTerminal && (
               <Button
                 variant="ghost"

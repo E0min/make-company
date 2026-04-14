@@ -323,6 +323,22 @@ export const api = {
   /** 에이전트 삭제 */
   agentsDelete: (id: string) => postJSON(`${apiBase()}/agents/delete`, { id }),
 
+  /** 에이전트 일시정지 */
+  agentsPause: (agent?: string) =>
+    postJSON<{ ok: boolean; paused?: string[] }>(`${apiBase()}/agents/pause`, agent ? { agent } : {}),
+
+  /** 에이전트 재개 */
+  agentsResume: (agent?: string) =>
+    postJSON<{ ok: boolean; resumed?: string[] }>(`${apiBase()}/agents/resume`, agent ? { agent } : {}),
+
+  /** 에이전트에 메시지 주입 */
+  agentsInject: (agent: string, message: string) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/agents/inject`, { agent, message }),
+
+  /** 에이전트 재시작 */
+  agentsRestart: (agent: string) =>
+    postJSON<{ ok: boolean }>(`${apiBase()}/agents/restart`, { agent }),
+
   /** 글로벌 에이전트를 프로젝트로 가져오기 */
   agentsImport: (id: string) => postJSON(`${apiBase()}/agents/import`, { id }),
 

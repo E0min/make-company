@@ -4990,6 +4990,185 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "updated_at": _file_updated_at(filepath),
             })
 
+        # ━━━ Agent Control POST API (pause/resume/inject/restart) ━━━
+
+        elif sub_path == 'agents/pause':
+            # POST /api/{project}/agents/pause — 에이전트 일시정지
+            session = f"vc-{project_id}"
+            if not _check_tmux_session(project_id):
+                self.send_json({"ok": False, "error": "tmux 세션이 실행중이지 않습니다"}, 409)
+                return
+            target_agent = body.get('agent', '').strip()
+            system_windows = {"claude", "Monitor", "Usage", "Router", "DAG"}
+            windows = _get_tmux_windows(session)
+            paused = []
+            for w in windows:
+                if ':' not in w:
+                    continue
+                idx, name = w.split(':', 1)
+                if name in system_windows:
+                    continue
+                if target_agent:
+                    # 특정 에이전트만 대상
+                    agent_label = _agent_short_label(target_agent)
+                    if name != agent_label and name != target_agent:
+                        continue
+                try:
+                    subprocess.run(
+                        ['tmux', 'send-keys', '-t', f'{session}:{idx}', '', 'C-z'],
+                        capture_output=True, timeout=3
+                    )
+                    paused.append(name)
+                except Exception:
+                    pass
+            _append_activity_jsonl(company_dir, {
+                "event": "agents_paused",
+                "agents": paused,
+                "target": target_agent or "all",
+            })
+            self.send_json({"ok": True, "paused": paused})
+
+        elif sub_path == 'agents/resume':
+            # POST /api/{project}/agents/resume — 에이전트 재개
+            session = f"vc-{project_id}"
+            if not _check_tmux_session(project_id):
+                self.send_json({"ok": False, "error": "tmux 세션이 실행중이지 않습니다"}, 409)
+                return
+            target_agent = body.get('agent', '').strip()
+            system_windows = {"claude", "Monitor", "Usage", "Router", "DAG"}
+            windows = _get_tmux_windows(session)
+            resumed = []
+            for w in windows:
+                if ':' not in w:
+                    continue
+                idx, name = w.split(':', 1)
+                if name in system_windows:
+                    continue
+                if target_agent:
+                    agent_label = _agent_short_label(target_agent)
+                    if name != agent_label and name != target_agent:
+                        continue
+                try:
+                    subprocess.run(
+                        ['tmux', 'send-keys', '-t', f'{session}:{idx}', 'fg', 'Enter'],
+                        capture_output=True, timeout=3
+                    )
+                    resumed.append(name)
+                except Exception:
+                    pass
+            _append_activity_jsonl(company_dir, {
+                "event": "agents_resumed",
+                "agents": resumed,
+                "target": target_agent or "all",
+            })
+            self.send_json({"ok": True, "resumed": resumed})
+
+        elif sub_path == 'agents/inject':
+            # POST /api/{project}/agents/inject — 에이전트에 메시지 주입
+            session = f"vc-{project_id}"
+            if not _check_tmux_session(project_id):
+                self.send_json({"ok": False, "error": "tmux 세션이 실행중이지 않습니다"}, 409)
+                return
+            target_agent = body.get('agent', '').strip()
+            message = body.get('message', '').strip()
+            if not target_agent:
+                self.send_json({"ok": False, "error": "agent 필드 필수"}, 400)
+                return
+            if not message:
+                self.send_json({"ok": False, "error": "message 필드 필수"}, 400)
+                return
+            if len(message) > 4096:
+                self.send_json({"ok": False, "error": "메시지가 너무 깁니다 (최대 4096자)"}, 400)
+                return
+            windows = _get_tmux_windows(session)
+            agent_label = _agent_short_label(target_agent)
+            win_idx = None
+            for w in windows:
+                if ':' not in w:
+                    continue
+                idx, name = w.split(':', 1)
+                if name == agent_label or name == target_agent:
+                    win_idx = idx
+                    break
+            if win_idx is None:
+                self.send_json({"ok": False, "error": f"에이전트 '{target_agent}' 윈도우를 찾을 수 없습니다"}, 404)
+                return
+            try:
+                subprocess.run(
+                    ['tmux', 'send-keys', '-t', f'{session}:{win_idx}', '-l', message],
+                    capture_output=True, timeout=3
+                )
+                subprocess.run(
+                    ['tmux', 'send-keys', '-t', f'{session}:{win_idx}', 'Enter'],
+                    capture_output=True, timeout=3
+                )
+            except Exception as e:
+                self.send_json({"ok": False, "error": f"tmux send-keys 실패: {e}"}, 500)
+                return
+            _append_activity_jsonl(company_dir, {
+                "event": "agent_inject",
+                "agent": target_agent,
+                "message": message[:200],  # 로그에는 200자까지만
+            })
+            self.send_json({"ok": True})
+
+        elif sub_path == 'agents/restart':
+            # POST /api/{project}/agents/restart — 에이전트 재시작
+            session = f"vc-{project_id}"
+            if not _check_tmux_session(project_id):
+                self.send_json({"ok": False, "error": "tmux 세션이 실행중이지 않습니다"}, 409)
+                return
+            target_agent = body.get('agent', '').strip()
+            if not target_agent:
+                self.send_json({"ok": False, "error": "agent 필드 필수"}, 400)
+                return
+            windows = _get_tmux_windows(session)
+            agent_label = _agent_short_label(target_agent)
+            win_idx = None
+            for w in windows:
+                if ':' not in w:
+                    continue
+                idx, name = w.split(':', 1)
+                if name == agent_label or name == target_agent:
+                    win_idx = idx
+                    break
+            if win_idx is None:
+                self.send_json({"ok": False, "error": f"에이전트 '{target_agent}' 윈도우를 찾을 수 없습니다"}, 404)
+                return
+            # 현재 프로세스 중단
+            try:
+                subprocess.run(
+                    ['tmux', 'send-keys', '-t', f'{session}:{win_idx}', '', 'C-c'],
+                    capture_output=True, timeout=3
+                )
+            except Exception:
+                pass
+            # agent_file 결정: config.json에서 agent_file 필드를 찾거나, 기본값은 agent_id
+            config = _read_config_for_project(company_dir)
+            agent_file = target_agent
+            for a in config.get('agents', []):
+                if isinstance(a, dict) and a.get('id') == target_agent:
+                    agent_file = a.get('agent_file', target_agent)
+                    break
+            # 1초 대기 후 에이전트 재실행 (별도 스레드로 비동기)
+            def _do_restart():
+                time.sleep(1)
+                try:
+                    subprocess.run(
+                        ['tmux', 'send-keys', '-t', f'{session}:{win_idx}',
+                         f'command claude --agent .claude/agents/{agent_file}.md', 'Enter'],
+                        capture_output=True, timeout=5
+                    )
+                except Exception:
+                    pass
+            threading.Thread(target=_do_restart, daemon=True).start()
+            _append_activity_jsonl(company_dir, {
+                "event": "agent_restart",
+                "agent": target_agent,
+                "agent_file": agent_file,
+            })
+            self.send_json({"ok": True})
+
         else:
             self.send_json({"error": f"unknown POST sub-path: {sub_path}"}, 404)
 
